@@ -1,0 +1,28 @@
+services:
+  ros:
+    build: .
+    image: ros2-humble-mavros-rpi5
+    privileged: true
+    network_mode: host
+    pid: host
+    ipc: host
+    user: "1000:1000"
+
+    volumes:
+      - /dev:/dev
+      - /sys:/sys
+      - /proc:/proc
+      - /run/dbus:/run/dbus
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
+      - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
+      - /home/batuhan/drone-project/config:/config
+      - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
+
+    environment:
+      ROS_DOMAIN_ID: 10
+      
+    working_dir: /home/batuhan/ros2_ws
+    command: bash 
+    stdin_open: true
+    tty: true

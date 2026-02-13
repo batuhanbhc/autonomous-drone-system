@@ -1,0 +1,26 @@
+# ROS2
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/core
+
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Bags
+*.bag
+
+# Docker
+*.tar
+
+# Misc
+*.bin
+*.so

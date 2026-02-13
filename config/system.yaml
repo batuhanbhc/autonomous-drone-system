@@ -1,0 +1,15 @@
+drone:
+  id: 0
+
+network:
+  gcs_ip: "192.168.1.112"
+  base_gcs_port: 5600
+
+camera:
+  device: "/dev/video0"
+  width: 640
+  height: 480
+  fps: 30
+
+topics:
+  nn_input_image: "/camera/nn_input_image"
