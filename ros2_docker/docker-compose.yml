@@ -1,15 +1,23 @@
 services:
   ros:
+    image: test-ros
     build: .
-    image: ros2-humble-mavros-rpi5
+
     privileged: true
     network_mode: host
     pid: host
     ipc: host
-    user: "1000:1000"
+
+    devices:
+      - /dev/hailo0:/dev/hailo0
 
     volumes:
       - /dev:/dev
+      - /lib/firmware:/lib/firmware
+      - /lib/udev/rules.d:/lib/udev/rules.d:ro
+      - /lib/modules:/lib/modules:ro
+      - /run/udev:/run/udev:ro
+
       - /sys:/sys
       - /proc:/proc
       - /run/dbus:/run/dbus
@@ -17,7 +25,8 @@ services:
       - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
       - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
       - /home/batuhan/drone-project/config:/config
-      - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
+      - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh  
+      - /usr/share/hailo-models:/usr/share/hailo-models    
 
     environment:
       ROS_DOMAIN_ID: 10
