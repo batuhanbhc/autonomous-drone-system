@@ -26,7 +26,8 @@ services:
       - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
       - /home/batuhan/drone-project/config:/config
       - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh  
-      - /usr/share/hailo-models:/usr/share/hailo-models    
+      - /usr/share/hailo-models:/usr/share/hailo-models   
+      - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
 
     environment:
       ROS_DOMAIN_ID: 10
