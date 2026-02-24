@@ -10,6 +10,8 @@ services:
 
     devices:
       - /dev/hailo0:/dev/hailo0
+      - /dev/ttyAMA0:/dev/ttyAMA0
+      - /dev/ttyUSB0:/dev/ttyUSB0
 
     volumes:
       - /dev:/dev
@@ -29,6 +31,9 @@ services:
       - /usr/share/hailo-models:/usr/share/hailo-models   
       - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
 
+    group_add:
+      - "20"
+      
     environment:
       ROS_DOMAIN_ID: 10
       

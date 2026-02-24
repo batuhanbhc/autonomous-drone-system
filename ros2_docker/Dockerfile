@@ -107,6 +107,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-usb-cam \
     ros-humble-image-tools \
     ros-humble-image-view \
+    ros-humble-tf-transformations \
     python3-colcon-common-extensions \
     python3-rosdep \
     python3-dev \
@@ -152,7 +153,6 @@ RUN apt-get update && apt-get install -y \
     python3-numpy \
  && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir yq
 
 RUN set -eux; \
     cd /tmp; \
@@ -216,6 +216,7 @@ RUN apt-get update && apt-get install -y \
     gstreamer1.0-x \
  && rm -rf /var/lib/apt/lists/*
 
+RUN pip3 install --no-cache-dir yq rich pymavlink
 
 ARG TAPPAS_ZIP=tappas_3.31.0_linux_installer.zip
 ARG TAPPAS_DIR=tappas_v3.31.0
