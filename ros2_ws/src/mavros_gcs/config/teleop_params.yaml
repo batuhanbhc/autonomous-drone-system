@@ -1,0 +1,53 @@
+teleop:
+  hz: 8.0
+
+  velocity:
+    categories:
+      horizontal: [1, 2, 3, 5, 10]
+      vertical: [0.25, 0.5, 1, 2, 5]
+      default_start_index: 0      # e.g. horizontal vel: horizontal[default_start_index] => 1 m/s
+
+    yaw_rate: 1.0   # rad/s
+
+  commands:
+    params:
+      KILL_SWITCH:
+        activation_time_s: 1.0
+        latch: true
+      KILL_CONFIRM:
+        activation_time_s: 0.0
+        latch: true
+      CONSOLE_TOGGLE:
+        activation_time_s: 1.0
+        latch: true
+      ARM:
+        activation_time_s: 1.0
+        latch: true
+      DISARM:
+        activation_time_s: 2.0
+        latch: true
+      MODE_LAND:
+        activation_time_s: 0.5
+        latch: true
+      MODE_RTL:
+        activation_time_s: 1.0
+        latch: true
+      MODE_LOITER:
+        activation_time_s: 1.0
+        latch: true
+      TAKEOFF:
+        activation_time_s: 1.0
+        latch: true
+      SPEED_UP:
+        activation_time_s: 0.0
+        latch: true
+      SPEED_DOWN:
+        activation_time_s: 0.0
+        latch: true
+      VEL_YAW:
+        activation_time_s: 0.0
+        latch: false
+
+    hover:
+      activation_time_s: 0.0
+      latch: false
