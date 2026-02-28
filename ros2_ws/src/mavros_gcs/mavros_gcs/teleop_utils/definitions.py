@@ -99,6 +99,12 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
         activation_switch_key=MODE_SWITCH,
         press_type="ALL",
     ),
+    "CONTROL_TOGGLE": COMMAND_CONFIG(
+        key_list=("KEY_C",),
+        activation_switch=True,
+        activation_switch_key=MODE_SWITCH,
+        press_type="ALL",
+    ),
 }
 
 class ClampedIndex:

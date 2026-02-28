@@ -20,42 +20,46 @@ teleop:
         activation_time_s: 0.0
         latch: true
         command_id: 2
+      CONTROL_TOGGLE:
+        activation_time_s: 0.2
+        latch: true
+        command_id: 3
       CONSOLE_TOGGLE:
         activation_time_s: 1.0
         latch: true
-        command_id: 3
+        command_id: 4
       ARM:
         activation_time_s: 1.0
         latch: true
-        command_id: 4
+        command_id: 5
       DISARM:
         activation_time_s: 2.0
         latch: true
-        command_id: 5
+        command_id: 6
       LAND:
         activation_time_s: 0.5
         latch: true
-        command_id: 6
+        command_id: 7
       RTL:
         activation_time_s: 1.0
         latch: true
-        command_id: 7
+        command_id: 8
       LOITER:
         activation_time_s: 1.0
         latch: true
-        command_id: 8
+        command_id: 9
       TAKEOFF:
         activation_time_s: 1.0
         latch: true
-        command_id: 9
+        command_id: 10
       SPEED_UP:
         activation_time_s: 0.0
         latch: true
-        command_id: 10
+        command_id: 11
       SPEED_DOWN:
         activation_time_s: 0.0
         latch: true
-        command_id: 11
+        command_id: 12
       VEL_YAW:
         activation_time_s: 0.0
         latch: false

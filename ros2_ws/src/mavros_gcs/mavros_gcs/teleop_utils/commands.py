@@ -93,7 +93,41 @@ class Command:
         return f"{self.name}(prio={self.priority}, act={self.activation_time_s})"
 
 # ---------------------------
+
+class KillSwitch(Command):
+    """
+    After sent, starts X second period that enables the activation of "KillConfirm" command.
+    """
+    name = "KILL_SWITCH"
+    allow_when_console_inactive = True
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=2.0, kill_window_s=2.0):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self._hook_fn = hook_fn
+        self.latch = latch
+        self.kill_window_s = kill_window_s
+
+    def on_hold_hook(self):
+        log_warn("ARMING KILL WINDOW")
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(
+            state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
+        )
+
+    def execute(self, state):
+        self._hook_fn(seconds=self.kill_window_s)
+        log_info(f"Sending command: Kill window ARMED for {self.kill_window_s} seconds")
+        publish_command(command_name=self.name)
+
 class KillConfirm(Command):
+    """
+    If sent immediately after "KillSwitch" within X seconds, sends "kill motors" command to FCU.
+    """
     name = "KILL_CONFIRM"
     allow_when_console_inactive = True
     priority = 9999          # ensure it's always selected when triggered
@@ -121,35 +155,10 @@ class KillConfirm(Command):
         publish_command(command_name=self.name)
 
 
-class KillSwitch(Command):
-    name = "KILL_SWITCH"
-    allow_when_console_inactive = True
-
-    def __init__(self, config, hook_fn, latch, activation_time_s=2.0, kill_window_s=2.0):
-        self._keys = tuple(config.key_list)
-        self._config = config
-        self.activation_time_s = activation_time_s
-        self._hook_fn = hook_fn
-        self.latch = latch
-        self.kill_window_s = kill_window_s
-
-    def on_hold_hook(self):
-        log_warn("ARMING KILL WINDOW")
-
-    def is_triggered(self, state):
-        cfg = self._config
-        return command_triggered(
-            state, self._keys,
-            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
-        )
-
-    def execute(self, state):
-        self._hook_fn(seconds=self.kill_window_s)
-        log_info(f"Sending command: Kill window ARMED for {self.kill_window_s} seconds")
-        publish_command(command_name=self.name)
-
-
 class Arm(Command):
+    """
+    Sends command to arm the motors.
+    """
     name = "ARM"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
@@ -171,6 +180,9 @@ class Arm(Command):
 
 
 class Disarm(Command):
+    """
+    Sends command to disarm the motors.
+    """
     name = "DISARM"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
@@ -187,13 +199,51 @@ class Disarm(Command):
         )
     
     def on_hold_hook(self):
-        print("WARNING: Disarming vehicle")
+        log_warn("WARNING: Disarming vehicle")
 
     def execute(self, state):
-        print("Sending command: DISARM")
+        log_info("Sending command: DISARM")
+        publish_command(command_name=self.name)
 
+
+class ControlToggle(Command):
+    """
+    Toggle command.
+    When enabled, gives control to autonomous RL agent node.
+    When disabled, gives copter control to "teleop_keyboard" node.
+    """
+    name = "Control_TOGGLE"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(
+            state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
+        )
+
+    def execute(self, state):
+        active = self._hook_fn()
+        if active:
+            cmd_msg = "Control AUTONOMOUS"
+        else:
+            cmd_msg = "Console MANUAL"
+        
+        log_info(f"Sending command: {cmd_msg}")
+
+        publish_command(command_name=self.name, bool_1=active)
 
 class ConsoleToggle(Command):
+    """
+    Toggle command.
+    When enabled, allows all commands from "teleop_keyboard" node to be sent to "command_gate" node in mavros_gate package.
+    When disabled, blocks all commands except the ones with "allow_when_console_inactive" set to "True".
+    """
     name = "CONSOLE_TOGGLE"
     allow_when_console_inactive = True
 
@@ -224,6 +274,9 @@ class ConsoleToggle(Command):
 
 
 class ModeLand(Command):
+    """
+    Switches copter mode to land.
+    """
     name = "LAND"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.5):
@@ -245,6 +298,9 @@ class ModeLand(Command):
 
 
 class ModeRTL(Command):
+    """
+    Switches copter mode to RTL (Return-To-Launch).
+    """
     name = "RTL"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
@@ -266,6 +322,9 @@ class ModeRTL(Command):
 
 
 class ModeLoiter(Command):
+    """
+    Switches copter mode to Loiter (hover).
+    """
     name = "LOITER"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
@@ -285,6 +344,9 @@ class ModeLoiter(Command):
         publish_command(self.name)
 
 class Takeoff(Command):
+    """
+    Sends take-off task to copter to spesified altitude.
+    """
     name = "TAKEOFF"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
@@ -307,6 +369,9 @@ class Takeoff(Command):
 
 
 class SpeedUp(Command):
+    """
+    Sends command to switch to higher velocity level for action commands.
+    """
     name = "SPEED_UP"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
@@ -330,6 +395,9 @@ class SpeedUp(Command):
 
 
 class SpeedDown(Command):
+    """
+    Sends command to switch to lower velocity level for action commands.
+    """
     name = "SPEED_DOWN"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
@@ -347,12 +415,15 @@ class SpeedDown(Command):
         )
 
     def execute(self, state):
-        hv, vv,  = self._hook_fn()
+        hv, vv, _ = self._hook_fn()
         log_info(f"Sending command: Change speed (HV={hv} m/s, VV={vv} m/s)")
         publish_command(self.name, float_1=hv, float_2=vv)
 
 
 class VelocityYaw(Command):
+    """
+    Sends desired Vx, Vy, Vz, Yaw Rate values to FCU.
+    """
     name = "VEL_YAW"
 
     def __init__(

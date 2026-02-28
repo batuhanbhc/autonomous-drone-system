@@ -26,7 +26,7 @@ from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP
 from mavros_gcs.teleop_utils.commands import (
     Command,
     KillConfirm, KillSwitch, Arm, Disarm,
-    ConsoleToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
+    ConsoleToggle, ControlToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
     SpeedDown, SpeedUp, VelocityYaw,
 )
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
@@ -126,6 +126,12 @@ class TeleopKeyboardNode(Node):
                 hook_fn=None,
                 latch=cmd_params["DISARM"]["latch"],
                 activation_time_s=cmd_params["DISARM"]["activation_time_s"],
+            ),
+            ControlToggle(
+                config=TELEOP_CONFIG["CONTROL_TOGGLE"],
+                hook_fn=lambda: manager.toggle_control(),
+                latch=cmd_params["CONTROL_TOGGLE"]["latch"],
+                activation_time_s=cmd_params["CONTROL_TOGGLE"]["activation_time_s"],
             ),
             ConsoleToggle(
                 config=TELEOP_CONFIG["CONSOLE_TOGGLE"],
