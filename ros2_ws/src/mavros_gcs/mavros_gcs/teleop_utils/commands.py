@@ -2,6 +2,8 @@ from typing import Dict
 import math
 
 from mavros_gcs.teleop_utils.command_helpers import command_triggered
+from mavros_gcs.teleop_utils.teleop_io import log_info, log_warn, log_error
+from mavros_gcs.teleop_utils.teleop_io import publish_command, publish_action
 
 class Command:
     """
@@ -115,22 +117,24 @@ class KillConfirm(Command):
 
     def execute(self, state):
         self._clear_window()
-        print("!!! KILL SWITCH ACTIVATED !!!")
+        log_info("Sending command: KILL CONFIRM")
+        publish_command(command_name=self.name)
 
 
 class KillSwitch(Command):
     name = "KILL_SWITCH"
     allow_when_console_inactive = True
 
-    def __init__(self, config, hook_fn, latch, activation_time_s=2.0):
+    def __init__(self, config, hook_fn, latch, activation_time_s=2.0, kill_window_s=2.0):
         self._keys = tuple(config.key_list)
         self._config = config
         self.activation_time_s = activation_time_s
         self._hook_fn = hook_fn
         self.latch = latch
+        self.kill_window_s = kill_window_s
 
     def on_hold_hook(self):
-        print("WARNING: Kill pending... press confirm combo!")
+        log_warn("ARMING KILL WINDOW")
 
     def is_triggered(self, state):
         cfg = self._config
@@ -140,11 +144,13 @@ class KillSwitch(Command):
         )
 
     def execute(self, state):
-        self._hook_fn(seconds=2.0)
-        print("Kill window ARMED for 2 seconds")
+        self._hook_fn(seconds=self.kill_window_s)
+        log_info(f"Sending command: Kill window ARMED for {self.kill_window_s} seconds")
+        publish_command(command_name=self.name)
+
 
 class Arm(Command):
-    name = "Arm"
+    name = "ARM"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
         self._keys = tuple(config.key_list)
@@ -160,11 +166,12 @@ class Arm(Command):
         )
 
     def execute(self, state):
-        print("Sending ARM")
+        log_info("Sending command: ARM")
+        publish_command(command_name=self.name)
 
 
 class Disarm(Command):
-    name = "Disarm"
+    name = "DISARM"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
         self._keys = tuple(config.key_list)
@@ -183,7 +190,7 @@ class Disarm(Command):
         print("WARNING: Disarming vehicle")
 
     def execute(self, state):
-        print("Sending DISARM")
+        print("Sending command: DISARM")
 
 
 class ConsoleToggle(Command):
@@ -206,11 +213,18 @@ class ConsoleToggle(Command):
 
     def execute(self, state):
         active = self._hook_fn()
-        print(f"Console active -> {active}")
+        if active:
+            cmd_msg = "Console ENABLED"
+        else:
+            cmd_msg = "Console DISABLED"
+        
+        log_info(f"Sending command: {cmd_msg}")
+
+        publish_command(command_name=self.name, bool_1=active)
 
 
 class ModeLand(Command):
-    name = "MODE_LAND"
+    name = "LAND"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.5):
         self._keys = tuple(config.key_list)
@@ -226,11 +240,12 @@ class ModeLand(Command):
         )
 
     def execute(self, state):
-        print("Sending LAND")
+        log_info("Sending command: LAND")
+        publish_command(self.name)
 
 
 class ModeRTL(Command):
-    name = "MODE_RTL"
+    name = "RTL"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
         self._keys = tuple(config.key_list)
@@ -246,11 +261,12 @@ class ModeRTL(Command):
         )
 
     def execute(self, state):
-        print("Sending RTL")
+        log_info("Sending command: RTL")
+        publish_command(self.name)
 
 
 class ModeLoiter(Command):
-    name = "MODE_LOITER"
+    name = "LOITER"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
         self._keys = tuple(config.key_list)
@@ -265,8 +281,8 @@ class ModeLoiter(Command):
         )
 
     def execute(self, state: Dict[str, bool]) -> None:
-        print("Sending LOITER")
-
+        log_info("Sending command: LOITER")
+        publish_command(self.name)
 
 class Takeoff(Command):
     name = "TAKEOFF"
@@ -276,6 +292,7 @@ class Takeoff(Command):
         self._config = config
         self.activation_time_s = activation_time_s
         self.latch = latch 
+        self.takeoff_m = 2.0
 
     def is_triggered(self, state):
         cfg = self._config
@@ -285,7 +302,8 @@ class Takeoff(Command):
         )
 
     def execute(self, state):
-        print("Sending TAKEOFF")
+        log_info(f"Sending command: TAKEOFF ({self.takeoff_m} m)")
+        publish_command(self.name, float_1=self.takeoff_m)
 
 
 class SpeedUp(Command):
@@ -306,8 +324,9 @@ class SpeedUp(Command):
         )
 
     def execute(self, state):
-        hv, vv, vel_idx = self._hook_fn()
-        print(f"Speed index -> {vel_idx} (HV={hv} m/s, VV={vv} m/s)")
+        hv, vv, _ = self._hook_fn()
+        log_info(f"Sending command: Change speed (HV={hv} m/s, VV={vv} m/s)")
+        publish_command(self.name, float_1=hv, float_2=vv)
 
 
 class SpeedDown(Command):
@@ -328,8 +347,9 @@ class SpeedDown(Command):
         )
 
     def execute(self, state):
-        hv, vv, vel_idx = self._hook_fn()
-        print(f"Speed index -> {vel_idx} (HV={hv} m/s, VV={vv} m/s)")
+        hv, vv,  = self._hook_fn()
+        log_info(f"Sending command: Change speed (HV={hv} m/s, VV={vv} m/s)")
+        publish_command(self.name, float_1=hv, float_2=vv)
 
 
 class VelocityYaw(Command):
@@ -365,7 +385,8 @@ class VelocityYaw(Command):
 
     def execute(self, state):
         if self._hover:
-            print(f"{self.name} CMD: HOVER command")
+            log_info(f"SETPOINT: vx=0.00 vy=0.00 vz=0.00, yaw_rate=0.00")
+            publish_action(0, 0, 0, 0)
             return
 
         hv, vv, _ = self._hook_fn()  # hv: desired horizontal speed, vv: desired vertical speed
@@ -392,4 +413,7 @@ class VelocityYaw(Command):
         yaw_dir= (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
         yaw_rate = yaw_dir * self._yaw_rate
 
-        print(f"VEL cmd: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")
+        log_info(f"SETPOINT: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")
+        publish_action(vx, vy, vz, yaw_rate)
+
+        

@@ -14,40 +14,49 @@ teleop:
       KILL_SWITCH:
         activation_time_s: 1.0
         latch: true
+        command_id: 1
+        kill_window_s: 2.0
       KILL_CONFIRM:
         activation_time_s: 0.0
         latch: true
+        command_id: 2
       CONSOLE_TOGGLE:
         activation_time_s: 1.0
         latch: true
+        command_id: 3
       ARM:
         activation_time_s: 1.0
         latch: true
+        command_id: 4
       DISARM:
         activation_time_s: 2.0
         latch: true
-      MODE_LAND:
+        command_id: 5
+      LAND:
         activation_time_s: 0.5
         latch: true
-      MODE_RTL:
+        command_id: 6
+      RTL:
         activation_time_s: 1.0
         latch: true
-      MODE_LOITER:
+        command_id: 7
+      LOITER:
         activation_time_s: 1.0
         latch: true
+        command_id: 8
       TAKEOFF:
         activation_time_s: 1.0
         latch: true
+        command_id: 9
       SPEED_UP:
         activation_time_s: 0.0
         latch: true
+        command_id: 10
       SPEED_DOWN:
         activation_time_s: 0.0
         latch: true
+        command_id: 11
       VEL_YAW:
         activation_time_s: 0.0
         latch: false
-
-    hover:
-      activation_time_s: 0.0
-      latch: false
+        command_id: 100

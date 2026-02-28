@@ -5,8 +5,7 @@ from dataclasses import dataclass
 
 from mavros_gcs.teleop_utils.commands import Command, VelocityYaw
 from mavros_gcs.teleop_utils.definitions import TELEOP_CONFIG, ClampedIndex
-from mavros_gcs.teleop_utils.mavros_comm import publish_teleop_state
-
+from mavros_gcs.teleop_utils.teleop_io import log_info, log_warn, log_error
 
 @dataclass
 class HoldSlot:
@@ -53,9 +52,6 @@ class CommandManager:
             activation_time_s=0.0,
             hover=True,
         )
-
-        # Internal variable used for calling state publish function every second
-        self._sec_counter = time.monotonic()
 
         self.vel_categories = vel_categories
         size = len(self.vel_categories["horizontal"])
@@ -169,12 +165,6 @@ class CommandManager:
 
         # Execute the command
         self._update_selected(state_tuple)
-        
-        # Publish teleop node state to info_panel node
-        t = time.monotonic()
-        if t - self._sec_counter >= 1.0:
-            publish_teleop_state()
-            self._sec_counter = t
 
 
     def _update_selected(self, state_tuple: tuple) -> None:

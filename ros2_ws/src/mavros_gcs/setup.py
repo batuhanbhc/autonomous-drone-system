@@ -26,6 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             'info_panel = mavros_gcs.nodes.info_panel:main',
+            'teleop_keyboard = mavros_gcs.nodes.teleop_keyboard:main',
+            'command_gate = mavros_gcs.nodes.command_gate:main'
         ],
     },
 )
