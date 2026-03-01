@@ -30,7 +30,7 @@ from mavros_gcs.teleop_utils.commands import (
     SpeedDown, SpeedUp, VelocityYaw,
 )
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
-from mavros_gcs.teleop_utils.params import load_teleop_yaml
+from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
 from mavros_gcs.teleop_utils.command_manager import CommandManager
 
 from mavros_gcs.teleop_utils.teleop_io import init_teleop_io
@@ -42,13 +42,10 @@ class TeleopKeyboardNode(Node):
         super().__init__("teleop_keyboard")
 
         self.declare_parameter("keyboard_device", "")
-        self.declare_parameter("teleop_yaml", "")
-
         self._keyboard_device = self.get_parameter("keyboard_device").value
-        self._teleop_yaml = self.get_parameter("teleop_yaml").value
 
-        if not self._keyboard_device or not self._teleop_yaml:
-            raise RuntimeError("Set params: keyboard_device and teleop_yaml")
+        if not self._keyboard_device:
+            raise RuntimeError("Set params: keyboard_device")
 
         # -------------------------
         # QoS profiles 
@@ -70,7 +67,13 @@ class TeleopKeyboardNode(Node):
 
         # -------------------------
         # Load teleop yaml
-        teleop_cfg = load_teleop_yaml(self._teleop_yaml)
+        self.declare_parameter("teleop_pkg", "mavros_config")
+        self.declare_parameter("teleop_rel", "config/teleop_params.yaml")
+
+        teleop_pkg = self.get_parameter("teleop_pkg").value
+        teleop_rel = self.get_parameter("teleop_rel").value
+
+        teleop_cfg = load_teleop_yaml_from_pkg(teleop_pkg, teleop_rel)
         self.teleop_cfg = teleop_cfg
 
         self._hz = float(teleop_cfg.get("hz", 8.0))
@@ -129,7 +132,7 @@ class TeleopKeyboardNode(Node):
             ),
             ControlToggle(
                 config=TELEOP_CONFIG["CONTROL_TOGGLE"],
-                hook_fn=lambda: manager.toggle_control(),
+                hook_fn=None,
                 latch=cmd_params["CONTROL_TOGGLE"]["latch"],
                 activation_time_s=cmd_params["CONTROL_TOGGLE"]["activation_time_s"],
             ),
@@ -206,7 +209,7 @@ class TeleopKeyboardNode(Node):
         self._kbd_thread.start()
 
         self.get_logger().info(
-            f"TeleopKeyboardNode started: device={self._keyboard_device}, yaml={self._teleop_yaml}, hz={self._hz}"
+            f"TeleopKeyboardNode started: device={self._keyboard_device}, hz={self._hz}"
         )
 
     # -------------------------

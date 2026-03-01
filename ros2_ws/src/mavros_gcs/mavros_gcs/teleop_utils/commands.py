@@ -121,8 +121,15 @@ class KillSwitch(Command):
 
     def execute(self, state):
         self._hook_fn(seconds=self.kill_window_s)
-        log_info(f"Sending command: Kill window ARMED for {self.kill_window_s} seconds")
+        log_warn("")
+        log_warn("------------------------------------------------------------------------")
+        log_warn("")
+        log_warn(f"KILL WINDOW ARMED FOR {self.kill_window_s} SECONDS. THIS WILL STOP THE MOTORS IMMEDIATELY.")
+        log_warn("PRESS {RIGHTALT} + {Y} TO CONFIRM ACTION")
+        log_warn("")
+        log_warn("------------------------------------------------------------------------")
         publish_command(command_name=self.name)
+
 
 class KillConfirm(Command):
     """
@@ -151,7 +158,9 @@ class KillConfirm(Command):
 
     def execute(self, state):
         self._clear_window()
-        log_info("Sending command: KILL CONFIRM")
+        log_error("--------------------------------")
+        log_error("VEHICLE KILLED. RESTART THE FCU.")
+        log_error("--------------------------------")
         publish_command(command_name=self.name)
 
 
@@ -175,7 +184,7 @@ class Arm(Command):
         )
 
     def execute(self, state):
-        log_info("Sending command: ARM")
+        log_info("ARM")
         publish_command(command_name=self.name)
 
 
@@ -199,18 +208,17 @@ class Disarm(Command):
         )
     
     def on_hold_hook(self):
-        log_warn("WARNING: Disarming vehicle")
+        log_warn("Disarming vehicle")
 
     def execute(self, state):
-        log_info("Sending command: DISARM")
+        log_warn("DISARM")
         publish_command(command_name=self.name)
 
 
 class ControlToggle(Command):
     """
     Toggle command.
-    When enabled, gives control to autonomous RL agent node.
-    When disabled, gives copter control to "teleop_keyboard" node.
+    Toggles the control state of "command_gate" node between AUTO / MANUAL.
     """
     name = "Control_TOGGLE"
 
@@ -228,15 +236,8 @@ class ControlToggle(Command):
         )
 
     def execute(self, state):
-        active = self._hook_fn()
-        if active:
-            cmd_msg = "Control AUTONOMOUS"
-        else:
-            cmd_msg = "Console MANUAL"
-        
-        log_info(f"Sending command: {cmd_msg}")
-
-        publish_command(command_name=self.name, bool_1=active)
+        log_info(f"Control Toggle")
+        publish_command(command_name=self.name)
 
 class ConsoleToggle(Command):
     """
@@ -268,7 +269,7 @@ class ConsoleToggle(Command):
         else:
             cmd_msg = "Console DISABLED"
         
-        log_info(f"Sending command: {cmd_msg}")
+        log_info(f"{cmd_msg}")
 
         publish_command(command_name=self.name, bool_1=active)
 
@@ -293,7 +294,7 @@ class ModeLand(Command):
         )
 
     def execute(self, state):
-        log_info("Sending command: LAND")
+        log_info("LAND")
         publish_command(self.name)
 
 
@@ -317,7 +318,7 @@ class ModeRTL(Command):
         )
 
     def execute(self, state):
-        log_info("Sending command: RTL")
+        log_info("RTL")
         publish_command(self.name)
 
 
@@ -340,7 +341,7 @@ class ModeLoiter(Command):
         )
 
     def execute(self, state: Dict[str, bool]) -> None:
-        log_info("Sending command: LOITER")
+        log_info("LOITER")
         publish_command(self.name)
 
 class Takeoff(Command):
@@ -364,7 +365,7 @@ class Takeoff(Command):
         )
 
     def execute(self, state):
-        log_info(f"Sending command: TAKEOFF ({self.takeoff_m} m)")
+        log_info(f"TAKEOFF ({self.takeoff_m} m)")
         publish_command(self.name, float_1=self.takeoff_m)
 
 
@@ -390,7 +391,7 @@ class SpeedUp(Command):
 
     def execute(self, state):
         hv, vv, _ = self._hook_fn()
-        log_info(f"Sending command: Change speed (HV={hv} m/s, VV={vv} m/s)")
+        log_info(f"Change speed (HV={hv} m/s, VV={vv} m/s)")
         publish_command(self.name, float_1=hv, float_2=vv)
 
 
@@ -416,7 +417,7 @@ class SpeedDown(Command):
 
     def execute(self, state):
         hv, vv, _ = self._hook_fn()
-        log_info(f"Sending command: Change speed (HV={hv} m/s, VV={vv} m/s)")
+        log_info(f"Change speed (HV={hv} m/s, VV={vv} m/s)")
         publish_command(self.name, float_1=hv, float_2=vv)
 
 
@@ -456,8 +457,8 @@ class VelocityYaw(Command):
 
     def execute(self, state):
         if self._hover:
-            log_info(f"SETPOINT: vx=0.00 vy=0.00 vz=0.00, yaw_rate=0.00")
-            publish_action(0, 0, 0, 0)
+            #log_info(f"SETPOINT: vx=0.00 vy=0.00 vz=0.00, yaw_rate=0.00")
+            publish_action(0.0, 0.0, 0.0, 0.0)
             return
 
         hv, vv, _ = self._hook_fn()  # hv: desired horizontal speed, vv: desired vertical speed

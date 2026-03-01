@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mavros_gate</name>
+  <version>0.0.0</version>
+  <description>Command gating node(s) for MAVROS integrations.</description>
+
+  <maintainer email="you@todo.todo">you</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>mavros_msgs</depend>
+  <depend>teleop_msgs</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>yaml-cpp</depend>
+  
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

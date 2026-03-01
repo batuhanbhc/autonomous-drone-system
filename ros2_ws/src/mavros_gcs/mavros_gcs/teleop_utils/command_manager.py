@@ -43,9 +43,6 @@ class CommandManager:
 
         # flag for accepting command inputs
         self._console_active = True
-        
-        # flag for manual vs autonomous control
-        self._autonomous_control = False
 
         # hover command to keep Hz > 2 requirement for ardupilot guided mode
         self._hover_command= VelocityYaw(
@@ -71,13 +68,6 @@ class CommandManager:
 
     def clear_kill_window(self) -> None:
         self._kill_pending_until = None
-
-    def toggle_control(self) -> bool:
-        """
-        Toggles control between manual/autonomous
-        """
-        self._autonomous_control = not self._autonomous_control
-        return self._autonomous_control
     
     def toggle_console(self) -> bool:
         """

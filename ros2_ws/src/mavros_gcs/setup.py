@@ -10,7 +10,6 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/mavros_gcs/config', ['config/teleop_params.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,7 +26,6 @@ setup(
         'console_scripts': [
             'info_panel = mavros_gcs.nodes.info_panel:main',
             'teleop_keyboard = mavros_gcs.nodes.teleop_keyboard:main',
-            'command_gate = mavros_gcs.nodes.command_gate:main'
         ],
     },
 )
