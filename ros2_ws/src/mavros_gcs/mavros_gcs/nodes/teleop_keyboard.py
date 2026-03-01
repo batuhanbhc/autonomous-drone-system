@@ -24,16 +24,15 @@ from evdev import InputDevice, ecodes
 
 from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP_CONFIG
 from mavros_gcs.teleop_utils.commands import (
-    Command,
-    KillConfirm, KillSwitch, Arm, Disarm,
+    Command, KillConfirm, KillSwitch, Arm, Disarm,
     ConsoleToggle, ControlToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
-    SpeedDown, SpeedUp, VelocityYaw,
-)
+    SpeedDown, SpeedUp, VelocityYaw)
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
 from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
 from mavros_gcs.teleop_utils.command_manager import CommandManager
 
 from mavros_gcs.teleop_utils.teleop_io import init_teleop_io
+
 from teleop_msgs.msg import TeleopCommand, TeleopAction
 
 
@@ -68,7 +67,7 @@ class TeleopKeyboardNode(Node):
         # -------------------------
         # Load teleop yaml
         self.declare_parameter("teleop_pkg", "mavros_config")
-        self.declare_parameter("teleop_rel", "config/teleop_params.yaml")
+        self.declare_parameter("teleop_rel", "config/control_params.yaml")
 
         teleop_pkg = self.get_parameter("teleop_pkg").value
         teleop_rel = self.get_parameter("teleop_rel").value
@@ -267,7 +266,10 @@ class TeleopKeyboardNode(Node):
         msg.source = self.get_name()
 
         # Map name->id
-        msg.command_id = int(self.cmd_params[command_name]["command_id"])
+        try:
+            msg.command_id = getattr(TeleopCommand, command_name)
+        except AttributeError:
+            raise ValueError(f"Unknown command name: {command_name}")
 
         msg.float_1 = float(float_1)
         msg.float_2 = float(float_2)
