@@ -1,6 +1,7 @@
 builtin_interfaces/Time stamp
 string source
-float64 float_1  # vx
-float64 float_2  # vy
-float64 float_3  # vz
-float32 float_4  # yaw_rate
+float64 vx
+float64 vy
+float64 vz
+float32 yaw_rate
+bool hover  # bool flag for quick checking whether all fields above are zero (hover command)

@@ -105,17 +105,15 @@ class TeleopKeyboardNode(Node):
         commands: List[Command] = [
             KillConfirm(
                 config=TELEOP_CONFIG["KILL_CONFIRM"],
+                hook_fn=None,
                 latch=cmd_params["KILL_CONFIRM"]["latch"],
                 activation_time_s=cmd_params["KILL_CONFIRM"]["activation_time_s"],
-                is_window_open_fn=lambda: manager.kill_window_open(),
-                clear_window_fn=lambda: manager.clear_kill_window(),
             ),
             KillSwitch(
                 config=TELEOP_CONFIG["KILL_SWITCH"],
-                hook_fn=lambda seconds=2.0: manager.arm_kill_window(seconds),
+                hook_fn=None,
                 latch=cmd_params["KILL_SWITCH"]["latch"],
                 activation_time_s=cmd_params["KILL_SWITCH"]["activation_time_s"],
-                kill_window_s=cmd_params["KILL_SWITCH"]["kill_window_s"]
             ),
             Arm(
                 config=TELEOP_CONFIG["ARM"],
@@ -276,14 +274,15 @@ class TeleopKeyboardNode(Node):
         msg.bool_1 = bool_1
         self._pub_command.publish(msg)
 
-    def _publish_action_msg(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
+    def _publish_action_msg(self, vx: float, vy: float, vz: float, yaw_rate: float, hover: bool) -> None:
         msg = TeleopAction()
         msg.stamp = self.get_clock().now().to_msg()
         msg.source = self.get_name()
-        msg.float_1 = float(vx)
-        msg.float_2 = float(vy)
-        msg.float_3 = float(vz)
-        msg.float_4 = float(yaw_rate)
+        msg.vx = float(vx)
+        msg.vy = float(vy)
+        msg.vz = float(vz)
+        msg.yaw_rate = float(yaw_rate)
+        msg.hover = bool(hover)
         self._pub_action.publish(msg)
 
     # -------------------------

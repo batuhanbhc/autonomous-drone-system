@@ -101,13 +101,11 @@ class KillSwitch(Command):
     name = "KILL_SWITCH"
     allow_when_console_inactive = True
 
-    def __init__(self, config, hook_fn, latch, activation_time_s=2.0, kill_window_s=2.0):
+    def __init__(self, config, hook_fn, latch, activation_time_s=2.0):
         self._keys = tuple(config.key_list)
         self._config = config
         self.activation_time_s = activation_time_s
-        self._hook_fn = hook_fn
         self.latch = latch
-        self.kill_window_s = kill_window_s
 
     def on_hold_hook(self):
         log_warn("ARMING KILL WINDOW")
@@ -120,36 +118,32 @@ class KillSwitch(Command):
         )
 
     def execute(self, state):
-        self._hook_fn(seconds=self.kill_window_s)
         log_warn("")
-        log_warn("------------------------------------------------------------------------")
+        log_warn("----------------------------------------")
         log_warn("")
-        log_warn(f"KILL WINDOW ARMED FOR {self.kill_window_s} SECONDS. THIS WILL STOP THE MOTORS IMMEDIATELY.")
+        log_warn(f"KILL WINDOW ARMED")
         log_warn("PRESS {RIGHTALT} + {Y} TO CONFIRM ACTION")
         log_warn("")
-        log_warn("------------------------------------------------------------------------")
+        log_warn("----------------------------------------")
         publish_command(command_name=self.name)
 
 
 class KillConfirm(Command):
     """
-    If sent immediately after "KillSwitch" within X seconds, sends "kill motors" command to FCU.
+    Sends command request to open kill window for pre-determined seconds
     """
     name = "KILL_CONFIRM"
     allow_when_console_inactive = True
     priority = 9999          # ensure it's always selected when triggered
 
-    def __init__(self, config, latch, activation_time_s, is_window_open_fn, clear_window_fn):
+    def __init__(self, config, latch, hook_fn, activation_time_s):
         self._keys = tuple(config.key_list)  # confirm combo keys
         self._config = config
         self.latch = latch
         self.activation_time_s = activation_time_s
-        self._is_window_open = is_window_open_fn
-        self._clear_window = clear_window_fn
+
 
     def is_triggered(self, state):
-        if not self._is_window_open():
-            return False
         cfg = self._config
         return command_triggered(
             state, self._keys,
@@ -157,10 +151,7 @@ class KillConfirm(Command):
         )
 
     def execute(self, state):
-        self._clear_window()
-        log_error("--------------------------------")
-        log_error("VEHICLE KILLED. RESTART THE FCU.")
-        log_error("--------------------------------")
+        log_warn("KILL CONFIRM")
         publish_command(command_name=self.name)
 
 
@@ -457,8 +448,7 @@ class VelocityYaw(Command):
 
     def execute(self, state):
         if self._hover:
-            #log_info(f"SETPOINT: vx=0.00 vy=0.00 vz=0.00, yaw_rate=0.00")
-            publish_action(0.0, 0.0, 0.0, 0.0)
+            publish_action(0.0, 0.0, 0.0, 0.0, True)
             return
 
         hv, vv, _ = self._hook_fn()  # hv: desired horizontal speed, vv: desired vertical speed
@@ -486,6 +476,6 @@ class VelocityYaw(Command):
         yaw_rate = yaw_dir * self._yaw_rate
 
         log_info(f"SETPOINT: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")
-        publish_action(vx, vy, vz, yaw_rate)
+        publish_action(vx, vy, vz, yaw_rate, False)
 
         

@@ -59,15 +59,6 @@ class CommandManager:
 
         # Time variable that stores when kill-switch window will close
         self._kill_pending_until: float | None = None
-
-    def arm_kill_window(self, seconds: float = 2.0) -> None:
-        self._kill_pending_until = time.monotonic() + float(seconds)
-
-    def kill_window_open(self) -> bool:
-        return self._kill_pending_until is not None and time.monotonic() <= self._kill_pending_until
-
-    def clear_kill_window(self) -> None:
-        self._kill_pending_until = None
     
     def toggle_console(self) -> bool:
         """
