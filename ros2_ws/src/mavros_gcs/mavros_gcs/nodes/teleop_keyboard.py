@@ -25,7 +25,7 @@ from evdev import InputDevice, ecodes
 from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP_CONFIG
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
-    KeyboardToggle, ControlToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
+    KeyboardToggle, ControlToggle, ModeLand, ModeRTL, Takeoff,
     SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch)
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
 from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
@@ -150,12 +150,6 @@ class TeleopKeyboardNode(Node):
                 hook_fn=None,
                 latch=cmd_params["RTL"]["latch"],
                 activation_time_s=cmd_params["RTL"]["activation_time_s"],
-            ),
-            ModeLoiter(
-                config=TELEOP_CONFIG["LOITER"],
-                hook_fn=None,
-                latch=cmd_params["LOITER"]["latch"],
-                activation_time_s=cmd_params["LOITER"]["activation_time_s"],
             ),
             Takeoff(
                 config=TELEOP_CONFIG["TAKEOFF"],

@@ -313,28 +313,6 @@ class ModeRTL(Command):
         publish_command(self.name)
 
 
-class ModeLoiter(Command):
-    """
-    Switches copter mode to Loiter (hover).
-    """
-    name = "LOITER"
-
-    def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
-        self._keys = tuple(config.key_list)
-        self._config = config
-        self.activation_time_s = activation_time_s
-        self.latch = latch
-    def is_triggered(self, state):
-        cfg = self._config
-        return command_triggered(
-            state, self._keys,
-            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
-        )
-
-    def execute(self, state: Dict[str, bool]) -> None:
-        log_info("LOITER")
-        publish_command(self.name)
-
 class Takeoff(Command):
     """
     Sends take-off task to copter

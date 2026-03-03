@@ -44,9 +44,6 @@ teleop:
       RTL:
         activation_time_s: 1.0
         latch: true
-      LOITER:
-        activation_time_s: 1.0
-        latch: true
       TAKEOFF:
         activation_time_s: 1.0
         latch: true

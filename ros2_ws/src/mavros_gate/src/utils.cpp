@@ -13,7 +13,6 @@ const char* ControlGateNode::commandName(int8_t id) {
     case Cmd::DISARM:         return "DISARM";
     case Cmd::LAND:           return "LAND";
     case Cmd::RTL:            return "RTL";
-    case Cmd::LOITER:         return "LOITER";
     case Cmd::TAKEOFF:        return "TAKEOFF";
     case Cmd::SPEED_UP:       return "SPEED_UP";
     case Cmd::SPEED_DOWN:     return "SPEED_DOWN";
@@ -114,10 +113,6 @@ void ControlGateNode::initCommandHandlers() {
 
   cmd_handlers_[TeleopCmd::RTL] = [this](const TeleopCmd& cmd, const InternalState& st) {
     return this->executeRTL(cmd, st);
-  };
-
-  cmd_handlers_[TeleopCmd::LOITER] = [this](const TeleopCmd& cmd, const InternalState& st) {
-    return this->executeLoiter(cmd, st);
   };
 
   cmd_handlers_[TeleopCmd::TAKEOFF] = [this](const TeleopCmd& cmd, const InternalState& st) {

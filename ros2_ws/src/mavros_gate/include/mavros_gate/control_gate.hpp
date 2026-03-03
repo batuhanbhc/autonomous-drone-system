@@ -92,7 +92,6 @@ private:
   CommandResult executeKillConfirm(const TeleopCmd&, const InternalState&);
   CommandResult executeLand(const TeleopCmd&, const InternalState&);
   CommandResult executeRTL(const TeleopCmd&, const InternalState&);
-  CommandResult executeLoiter(const TeleopCmd&, const InternalState&);
   CommandResult executeGuided(const TeleopCmd&, const InternalState&);
   CommandResult executeTakeoff(const TeleopCmd&, const InternalState&);
   CommandResult executeControlToggle(const TeleopCmd&, const InternalState&);

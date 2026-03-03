@@ -266,45 +266,6 @@ ControlGateNode::executeRTL(const TeleopCmd&, const InternalState&)
   return {true, "RTL request sent."};
 }
 
-
-
-ControlGateNode::CommandResult
-ControlGateNode::executeLoiter(const TeleopCmd&, const InternalState&) {
-  /*
-    Uses /mavros/set_mode (mavros_msgs/srv/SetMode).
-  */
-
-  if (!set_mode_client_) {
-    return {false, "SetMode client not initialized."};
-  }
-
-  if (!set_mode_client_->service_is_ready()) {
-    if (!set_mode_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/set_mode not available."};
-    }
-  }
-
-  auto req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
-
-  req->base_mode = 0;                 // leave autopilot to interpret custom_mode
-  req->custom_mode = "LOITER";   
-
-  (void)set_mode_client_->async_send_request(
-    req,
-    [this](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture fut) {
-      const auto resp = fut.get();
-      if (resp->mode_sent) {
-        RCLCPP_INFO(get_logger(), "Loiter mode request reached FCU.");
-      } else {
-        RCLCPP_WARN(get_logger(), "Loiter mode request could not reach FCU.");
-      }
-    }
-  );
-
-  return {true, "Loiter mode request sent."};
-}
-
-
 ControlGateNode::CommandResult
 ControlGateNode::executeGuided(const TeleopCmd&, const InternalState&) {
   /*
