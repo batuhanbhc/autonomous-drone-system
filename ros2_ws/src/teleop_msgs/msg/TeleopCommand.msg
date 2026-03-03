@@ -7,6 +7,7 @@ int8 ARM=5
 int8 DISARM=6
 int8 LAND=7
 int8 RTL=8
+int8 GUIDED=9
 int8 TAKEOFF=10
 int8 SPEED_UP=11
 int8 SPEED_DOWN=12

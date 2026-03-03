@@ -15,7 +15,7 @@ teleop:
       vertical: [0.25, 0.5, 1, 2, 5]
       default_start_index: 0      # e.g. horizontal vel: horizontal[default_start_index] => 1 m/s
 
-    yaw_rate: 1.0   # rad/s
+    yaw_rate: 0.5   # rad/s
   
   commands:
     params:
@@ -46,6 +46,9 @@ teleop:
         latch: true
       TAKEOFF:
         activation_time_s: 1.0
+        latch: true
+      GUIDED:
+        activation_time_s: 0.1
         latch: true
       SPEED_UP:
         activation_time_s: 0.0

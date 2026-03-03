@@ -25,7 +25,7 @@ from evdev import InputDevice, ecodes
 from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP_CONFIG
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
-    KeyboardToggle, ControlToggle, ModeLand, ModeRTL, Takeoff,
+    KeyboardToggle, ControlToggle, Land, RTL, Takeoff, Guided,
     SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch)
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
 from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
@@ -139,17 +139,23 @@ class TeleopKeyboardNode(Node):
                 latch=cmd_params["KEYBOARD_TOGGLE"]["latch"],
                 activation_time_s=cmd_params["KEYBOARD_TOGGLE"]["activation_time_s"],
             ),
-            ModeLand(
+            Land(
                 config=TELEOP_CONFIG["LAND"],
                 hook_fn=None,
                 latch=cmd_params["LAND"]["latch"],
                 activation_time_s=cmd_params["LAND"]["activation_time_s"],
             ),
-            ModeRTL(
+            RTL(
                 config=TELEOP_CONFIG["RTL"],
                 hook_fn=None,
                 latch=cmd_params["RTL"]["latch"],
                 activation_time_s=cmd_params["RTL"]["activation_time_s"],
+            ),
+            Guided(
+                config=TELEOP_CONFIG["GUIDED"],
+                hook_fn=None,
+                latch=cmd_params["GUIDED"]["latch"],
+                activation_time_s=cmd_params["GUIDED"]["activation_time_s"],
             ),
             Takeoff(
                 config=TELEOP_CONFIG["TAKEOFF"],

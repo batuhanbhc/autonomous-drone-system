@@ -265,7 +265,7 @@ class KeyboardToggle(Command):
         publish_command(command_name=self.name, bool_1=active)
 
 
-class ModeLand(Command):
+class Land(Command):
     """
     Switches copter mode to land.
     """
@@ -289,7 +289,7 @@ class ModeLand(Command):
         publish_command(self.name)
 
 
-class ModeRTL(Command):
+class RTL(Command):
     """
     Switches copter mode to RTL (Return-To-Launch).
     """
@@ -336,6 +336,28 @@ class Takeoff(Command):
         log_info(f"TAKEOFF")
         publish_command(self.name)
 
+class Guided(Command):
+    """
+    Sends take-off task to copter
+    """
+    name = "GUIDED"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self.latch = latch 
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(
+            state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
+        )
+
+    def execute(self, state):
+        log_info(f"GUIDED")
+        publish_command(self.name)
 
 class SpeedUp(Command):
     """
@@ -415,6 +437,7 @@ class PressSafetySwitch(Command):
 class VelocityYaw(Command):
     """
     Sends desired Vx, Vy, Vz, Yaw Rate values to FCU.
+    Mavros direction assumption is FLU (x+: forward, y+: left, z+:up), positive yaw_rate: clock-wise
     """
     name = "VEL_YAW"
 
@@ -456,7 +479,7 @@ class VelocityYaw(Command):
         # 1) Horizontal velocity
         # calculate unit direction vectors
         x_dir = (1.0 if "KEY_W" in state else 0.0) + (-1.0 if "KEY_S" in state else 0.0)
-        y_dir = (1.0 if "KEY_D" in state else 0.0) + (-1.0 if "KEY_A" in state else 0.0)
+        y_dir = (1.0 if "KEY_A" in state else 0.0) + (-1.0 if "KEY_D" in state else 0.0)
 
         # normalize so combined velocity vector in x-y axis has length 1
         mag = math.hypot(x_dir, y_dir)

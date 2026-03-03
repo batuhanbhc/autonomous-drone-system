@@ -59,6 +59,10 @@ class CommandManager:
 
         # Time variable that stores when kill-switch window will close
         self._kill_pending_until: float | None = None
+        
+        # Track last *executed* non-hover command
+        self._last_executed_cmd: Optional[Command] = None
+        self._last_executed_time_s: Optional[float] = None
     
     def toggle_keyboard(self) -> bool:
         """
@@ -95,6 +99,23 @@ class CommandManager:
     def execute_hover(self):
         self._hover_command.execute(state=dict())
 
+    def _is_non_hover_velocity_yaw(self, cmd: Optional[Command]) -> bool:
+        if cmd is None:
+            return False
+        if not isinstance(cmd, VelocityYaw):
+            return False
+        return not getattr(cmd, "hover", False)
+
+    def _maybe_send_hover_keepalive(self, now_s: float) -> None:
+        # Only send hover if last executed cmd was non-hover VelocityYaw and it was < 1s ago
+        if (
+            self._last_executed_time_s is not None
+            and self._is_non_hover_velocity_yaw(self._last_executed_cmd)
+            and (now_s - self._last_executed_time_s) < 1.0
+        ):
+            self.execute_hover()
+        # else: send nothing
+
     def _is_allowed_now(self, cmd: Command):
         """
         Returns true if (teleop input is on) OR (command is allowed while teleop input is off) 
@@ -104,91 +125,97 @@ class CommandManager:
     def _select_candidate(self, state: Dict[str, bool]) -> Command:
         """
         Iterate priority list; return first triggered command.
-        Issues dummy velocity command in case no command is selected
+        Returns None if no command is selected (do not default to hover).
         """
         for cmd in self.commands:
             if not cmd.is_triggered(state):
                 continue
-            
             if self._is_allowed_now(cmd):
                 return cmd
-                    
-        # No command input was given
-        return self._hover_command
 
+        return None
+
+    
     def tick(self, state_tuple: tuple):
-        """
-        Callback function for timer.
-        Selects which command to issue, updates command on hold structure, executes the command
-        """
         state, _ = state_tuple
+        now_s = time.time()
 
-        # Select which command to run
         candidate = self._select_candidate(state)
 
-        # Decide whether to switch/update hold slot
-        if self._hold is None:
-            self._hold = HoldSlot(
-                cmd=candidate,
-                ticks_left=candidate.get_required_ticks(),
-                complete=False,
-            )
-        else:
-            hold_cmd = self._hold.cmd
+        # If nothing triggered and nothing on hold, do not send hover blindly.
+        if candidate is None and self._hold is None:
+            self._maybe_send_hover_keepalive(now_s)
+            return
 
-            # If current hold command is no longer triggered, drop it
-            # (this is also the "release resets latch" behavior).
+        # If nothing triggered but we have a hold, we may need to drop it if released.
+        if candidate is None and self._hold is not None:
+            hold_cmd = self._hold.cmd
             if not hold_cmd.is_triggered(state):
+                self._hold = None
+                self._maybe_send_hover_keepalive(now_s)
+                return
+            # else: keep holding existing command; fall through to update
+
+        # Normal hold-slot setup/arbitration (only if candidate exists)
+        if candidate is not None:
+            if self._hold is None:
                 self._hold = HoldSlot(
                     cmd=candidate,
                     ticks_left=candidate.get_required_ticks(),
                     complete=False,
                 )
             else:
-                # Arbitration: if candidate has higher priority than current hold, preempt
-                if candidate.priority > hold_cmd.priority:
+                hold_cmd = self._hold.cmd
+                if not hold_cmd.is_triggered(state):
                     self._hold = HoldSlot(
                         cmd=candidate,
                         ticks_left=candidate.get_required_ticks(),
                         complete=False,
                     )
-                # else keep current hold
+                else:
+                    if candidate.priority > hold_cmd.priority:
+                        self._hold = HoldSlot(
+                            cmd=candidate,
+                            ticks_left=candidate.get_required_ticks(),
+                            complete=False,
+                        )
 
-        # Execute the command
         self._update_selected(state_tuple)
 
-
     def _update_selected(self, state_tuple: tuple) -> None:
-        state, last_event_t = state_tuple
+        state, _ = state_tuple
+        now_s = time.time()
 
         slot = self._hold
+        if slot is None:
+            self._maybe_send_hover_keepalive(now_s)
+            return
+
         cmd = slot.cmd
 
         # If command set to be complete, it means latched command is being sent
         if slot.complete:
-            # Send hover command instead
-            self.execute_hover()
+            self._maybe_send_hover_keepalive(now_s)
             return
-        
+
         # Countdown logic
         if slot.ticks_left > 0:
             slot.ticks_left -= 1
             cmd.on_hold_hook()
 
-            # Send hover command while waiting
-            self.execute_hover()
-        
-        else:
-            if not slot.complete:
-                # ticks left = 0 and command not complete, execute it
-                cmd.execute(state)
+            # Only send hover if your rule allows it
+            self._maybe_send_hover_keepalive(now_s)
+            return
 
-                if cmd.latch:
-                    # command has latch behavior, do not clear slot, but mark it complete
-                    slot.complete = True
-                else:
-                    # command does not have latch behavior, clear slot
-                    self._hold = None
-            else:
-                # Send hover command instead
-                self.execute_hover()
+        # ticks_left == 0, execute it
+        cmd.execute(state)
+
+        # Remember last EXECUTED command (except hover)
+        if cmd is not self._hover_command and not getattr(cmd, "hover", False):
+            self._last_executed_cmd = cmd
+            self._last_executed_time_s = now_s
+
+        if cmd.latch:
+            slot.complete = True
+        else:
+            self._hold = None

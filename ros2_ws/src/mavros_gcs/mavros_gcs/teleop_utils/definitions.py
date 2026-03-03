@@ -51,16 +51,22 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
         activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
+    "GUIDED": COMMAND_CONFIG(
+        key_list=("KEY_G",),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
     "SPEED_UP": COMMAND_CONFIG(
         key_list=("KEY_EQUAL",),
-        activation_switch=False,
-        activation_switch_key=None,
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "SPEED_DOWN": COMMAND_CONFIG(
         key_list=("KEY_MINUS",),
-        activation_switch=False,
-        activation_switch_key=None,
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "KILL_SWITCH": COMMAND_CONFIG(
