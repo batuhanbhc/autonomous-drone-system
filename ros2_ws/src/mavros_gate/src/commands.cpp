@@ -434,3 +434,22 @@ ControlGateNode::executeKeyboardToggle(const TeleopCmd& msg, const InternalState
   std::string out_msg = std::string("Keyboard state: ") + keyboard_state;
   return {true, out_msg};
 }
+
+
+ControlGateNode::CommandResult
+ControlGateNode::executeChangeSpeed(const TeleopCmd& msg, const InternalState&) {
+  /*
+    Updates internal state according to current ControlGateNode::ControlMode::/Manual mode velocity settings
+  */
+  
+  double hv = msg.float_1, vv = msg.float_2;
+
+  InternalStateUpdate upt;
+  upt.vel = VelocityLevel{hv, vv};
+  updateInternalStateAtomic(upt);
+
+  std::ostringstream oss;
+  oss << "Velocity levels: (Horizontal: " << std::fixed << std::setprecision(2) << hv << " m/s, " \
+      << "Vertical: " << std::fixed << std::setprecision(2) << vv << " m/s).";
+  return {true, oss.str()};
+}

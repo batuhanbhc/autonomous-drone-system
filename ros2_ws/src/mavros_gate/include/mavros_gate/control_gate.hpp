@@ -47,8 +47,14 @@ private:
     std::string manual_command;
   };
 
+  struct VelocityLevel {
+    double hv;  // horizontal veloctiy
+    double vv;  // vertical velocity
+  };
+
   struct InternalState {
     ControlMode control_mode{ControlMode::Manual};
+    VelocityLevel vel{0.0, 0.0};
     bool keyboard_on{false};
     bool connected{false};
     bool armed{false};
@@ -59,6 +65,7 @@ private:
 
   struct InternalStateUpdate {
     std::optional<ControlMode> control_mode;
+    std::optional<VelocityLevel> vel;
     std::optional<bool> keyboard_on;
     std::optional<bool> connected;
     std::optional<bool> armed;
@@ -68,6 +75,7 @@ private:
   };
 
   using TeleopCmd = teleop_msgs::msg::TeleopCommand;
+  using TeleopAct = teleop_msgs::msg::TeleopAction;
 
   // map from command ID to function pointers
   std::unordered_map<uint8_t, std::function<CommandResult(const TeleopCmd&, const InternalState&)>> cmd_handlers_;
@@ -87,6 +95,7 @@ private:
   CommandResult executeTakeoff(const TeleopCmd&, const InternalState&);
   CommandResult executeControlToggle(const TeleopCmd&, const InternalState&);
   CommandResult executeKeyboardToggle(const TeleopCmd&, const InternalState&);
+  CommandResult executeChangeSpeed(const TeleopCmd&, const InternalState&);
 
   // function that initializes assigning command IDs to function pointers
   void initCommandHandlers();
@@ -100,8 +109,8 @@ private:
   InternalState snapshotState() const;
 
   // callbacks
-  void onTeleopCommand(const teleop_msgs::msg::TeleopCommand::SharedPtr);
-  void onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr);
+  void onTeleopCommand(const TeleopCmd::SharedPtr);
+  void onTeleopAction(const TeleopAct::SharedPtr);
   void onMavrosState(const mavros_msgs::msg::State::SharedPtr);
 
   // members
@@ -119,8 +128,8 @@ private:
   bool initialization_phase_{true};
 
   // subscriptions
-  rclcpp::Subscription<teleop_msgs::msg::TeleopCommand>::SharedPtr sub_teleop_command_;
-  rclcpp::Subscription<teleop_msgs::msg::TeleopAction>::SharedPtr sub_teleop_action_;
+  rclcpp::Subscription<TeleopCmd>::SharedPtr sub_teleop_command_;
+  rclcpp::Subscription<TeleopAct>::SharedPtr sub_teleop_action_;
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr sub_mavros_state_;
 
   // publishers

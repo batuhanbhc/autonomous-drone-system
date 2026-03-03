@@ -29,6 +29,7 @@ const char* ControlGateNode::commandName(int8_t id) {
 void ControlGateNode::updateInternalStateAtomic(const InternalStateUpdate & update) {
   std::lock_guard<std::mutex> lk(state_mtx_);
   if (update.control_mode)    state_.control_mode = *update.control_mode;
+  if (update.vel)             state_.vel = *update.vel;
   if (update.keyboard_on)     state_.keyboard_on = *update.keyboard_on;
   if (update.connected)       state_.connected = *update.connected;
   if (update.armed)           state_.armed = *update.armed;
@@ -127,6 +128,14 @@ void ControlGateNode::initCommandHandlers() {
 
   cmd_handlers_[TeleopCmd::KEYBOARD_TOGGLE] = [this](const TeleopCmd& cmd, const InternalState& st) {
     return this->executeKeyboardToggle(cmd, st);
+  };
+
+  cmd_handlers_[TeleopCmd::SPEED_UP] = [this](const TeleopCmd& cmd, const InternalState& st) {
+    return this->executeChangeSpeed(cmd, st);
+  };
+
+  cmd_handlers_[TeleopCmd::SPEED_DOWN] = [this](const TeleopCmd& cmd, const InternalState& st) {
+    return this->executeChangeSpeed(cmd, st);
   };
 }
 
