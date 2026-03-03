@@ -41,23 +41,34 @@ void ControlGateNode::onTeleopCommand(const teleop_msgs::msg::TeleopCommand::Sha
 void ControlGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr msg) {
     if (inInitializationPhase()) return;
 
-    const char* command_name = commandName(msg->command_id);
-    
-    if (msg->command_id == teleop_msgs::msg::TeleopCommand::HOVER) {
-      return;
-    }
-
     // Take a snapshot of current state
     InternalState current_state = snapshotState();
-    if (current_state.connected == false) {
-      RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name);
-      return;
-    } else if (current_state.armed == false) {
-      RCLCPP_WARN(get_logger(), "Action failed: Motors not armed.");
-      return;
+    bool send_action = true;
+
+    // The only difference below is that for hover command, we do not print logs unnecessarily
+    if (msg->command_id == teleop_msgs::msg::TeleopCommand::HOVER) {
+      if (current_state.connected == false || current_state.system_killed || 
+            current_state.armed == false || current_state.control_mode == ControlMode::Auto) {
+          send_action = false;
+      }
+    } else {
+      if (current_state.control_mode == ControlMode::Auto) {
+          RCLCPP_WARN(get_logger(), "Control is in AUTONOMOUS mode, velocity setpoint ignored.");
+          send_action = false;
+      } else if (current_state.connected == false) {
+          RCLCPP_WARN(get_logger(), "Rejected (id=%d, VEL_YAW): Mavlink connection failed.", msg->command_id);
+          send_action = false;
+      } else if (current_state.system_killed) {
+          RCLCPP_ERROR(get_logger(), "System is killed, reboot is required.");
+          send_action = false;
+      } else if (current_state.armed == false) {
+          RCLCPP_WARN(get_logger(), "Action failed: Motors not armed.");
+          send_action = false;
+      }
     }
 
-
+    if (send_action == false) return;
+    
     mavros_msgs::msg::PositionTarget sp;
     sp.header.stamp = msg->stamp;
     sp.header.frame_id = "base_link";
@@ -78,6 +89,11 @@ void ControlGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::Share
     sp.yaw_rate = msg->yaw_rate;
 
     pub_setpoint_raw_local_->publish(sp);
+
+    // update last action time
+    InternalStateUpdate update;
+    update.last_action_t = std::chrono::steady_clock::now();
+    updateInternalStateAtomic(update);
 }
 
 // Updates internal state from /mavros/state

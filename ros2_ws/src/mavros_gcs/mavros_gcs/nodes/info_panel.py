@@ -62,7 +62,7 @@ class InfoPanelNode(Node):
         # --------------------------------------------------
         # node parameters
         # determines the size of history for StatusText topic panel
-        self.queue_size = int(self.declare_parameter("queue_size", 5).value)
+        self.queue_size = int(self.declare_parameter("queue_size", 10).value)
 
         # determines the thresholds in seconds for marking panels as stale since last update
         self.stale_threshold_s = float(self.declare_parameter("stale_threshold_s", 2.0).value)

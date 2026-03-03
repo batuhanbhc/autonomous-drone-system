@@ -45,12 +45,6 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
         activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
-    "LOITER": COMMAND_CONFIG(
-        key_list=("KEY_H",),
-        activation_switch=True,
-        activation_switch_key=COMMAND_SWITCH,
-        press_type="ALL",
-    ),
     "TAKEOFF": COMMAND_CONFIG(
         key_list=("KEY_T",),
         activation_switch=True,

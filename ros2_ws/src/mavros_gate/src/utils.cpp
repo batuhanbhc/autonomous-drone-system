@@ -30,6 +30,7 @@ void ControlGateNode::updateInternalStateAtomic(const InternalStateUpdate & upda
   std::lock_guard<std::mutex> lk(state_mtx_);
   if (update.control_mode)    state_.control_mode = *update.control_mode;
   if (update.vel)             state_.vel = *update.vel;
+  if (update.last_action_t) state_.last_action_t = *update.last_action_t;
   if (update.keyboard_on)     state_.keyboard_on = *update.keyboard_on;
   if (update.safety_switch_on)  state_.safety_switch_on = *update.safety_switch_on;
   if (update.connected)       state_.connected = *update.connected;
@@ -76,10 +77,12 @@ bool ControlGateNode::loadConfig() {
 
 // Used by subscription callback functions to ignore messages until node initialization is fully complete
 bool ControlGateNode::inInitializationPhase() const {
+  // will only be used during initialization, no need for mutex
   return initialization_phase_;
 }
 
 float ControlGateNode::getTakeoffMeters() const {
+  // read-only, no need for mutex
   return takeoff_m_;
 }
 
@@ -154,13 +157,39 @@ bool ControlGateNode::initializationRoutine() {
   st.guided = false;
   st.kill_switch_window = false;
   st.system_killed = false;
+  st.last_action_t = std::chrono::steady_clock::now();
   updateInternalStateAtomic(st);
+
 
   // Initialize clients
   arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
   command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>("/mavros/cmd/command");
   set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
   takeoff_client_ = this->create_client<mavros_msgs::srv::CommandTOL>("/mavros/cmd/takeoff");
+  msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>("/mavros/set_message_interval");
+
+  //  Request /mavros/extended_state to start publishing
+  if (msg_interval_client_->wait_for_service(std::chrono::seconds(2))) {
+    auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
+    req->message_id = 245;     // MAVLink EXTENDED_SYS_STATE
+    req->message_rate = 2.0f;  // Hz
+
+    auto fut = msg_interval_client_->async_send_request(req);
+    // block briefly to log success
+    if (rclcpp::spin_until_future_complete(
+          this->get_node_base_interface(), fut, std::chrono::seconds(2)) ==
+        rclcpp::FutureReturnCode::SUCCESS) {
+      RCLCPP_INFO(this->get_logger(), "Requested EXTENDED_SYS_STATE stream: success=%s",
+                  fut.get()->success ? "true" : "false");
+    } else {
+      RCLCPP_ERROR(this->get_logger(), "set_message_interval call timed out");
+      return false;
+    }
+  } else {
+    RCLCPP_ERROR(this->get_logger(), "/mavros/set_message_interval not available");
+    return false;
+  }
+
 
   // Initialize command handlers
   initCommandHandlers();

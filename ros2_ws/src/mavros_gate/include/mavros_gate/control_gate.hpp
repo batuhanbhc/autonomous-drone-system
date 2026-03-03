@@ -11,6 +11,7 @@
 #include <functional>
 #include <cstdint>
 #include <rclcpp/rclcpp.hpp>
+#include <chrono>
 
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/msg/position_target.hpp>
@@ -21,6 +22,7 @@
 #include <mavros_msgs/srv/command_long.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
 #include <mavros_msgs/srv/set_mode.hpp>
+#include "mavros_msgs/srv/message_interval.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
@@ -36,6 +38,10 @@ public:
   };
 
 private:
+  using TeleopCmd = teleop_msgs::msg::TeleopCommand;
+  using TeleopAct = teleop_msgs::msg::TeleopAction;
+  using MonotonicTime = std::chrono::steady_clock::time_point;
+  
   enum class ControlMode : std::uint8_t {
       Auto   = 0,
       Manual = 1
@@ -62,6 +68,7 @@ private:
     bool guided{false};
     bool kill_switch_window{false};
     bool system_killed{false};
+    MonotonicTime last_action_t{};
   };
 
   struct InternalStateUpdate {
@@ -74,10 +81,8 @@ private:
     std::optional<bool> guided;
     std::optional<bool> kill_switch_window;
     std::optional<bool> system_killed;
+    std::optional<MonotonicTime> last_action_t;
   };
-
-  using TeleopCmd = teleop_msgs::msg::TeleopCommand;
-  using TeleopAct = teleop_msgs::msg::TeleopAction;
 
   // map from command ID to function pointers
   std::unordered_map<uint8_t, std::function<CommandResult(const TeleopCmd&, const InternalState&)>> cmd_handlers_;
@@ -142,6 +147,7 @@ private:
   rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedPtr command_long_client_;
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
   rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedPtr takeoff_client_;
+  rclcpp::Client<mavros_msgs::srv::MessageInterval>::SharedPtr msg_interval_client_;
 
   // timers
   rclcpp::TimerBase::SharedPtr kill_switch_timer_;
