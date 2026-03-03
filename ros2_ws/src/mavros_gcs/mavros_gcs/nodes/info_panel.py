@@ -20,17 +20,16 @@ from mavros_msgs.msg import State
 from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import GPSRAW
 
 # console ui imports
+from rich import box
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
 from rich.columns import Columns
 from rich.text import Text
-from rich import box
 
 from mavros_gcs.panel_utils.views import (
     StateView,
@@ -38,7 +37,6 @@ from mavros_gcs.panel_utils.views import (
     ExtendedStateView,
     StatusTextView,
     OdometryView,
-    VelocityView,
     GPSView
 )
 
@@ -65,10 +63,10 @@ class InfoPanelNode(Node):
         self.queue_size = int(self.declare_parameter("queue_size", 10).value)
 
         # determines the thresholds in seconds for marking panels as stale since last update
-        self.stale_threshold_s = float(self.declare_parameter("stale_threshold_s", 2.0).value)
+        self.stale_threshold_s = float(self.declare_parameter("stale_threshold_s", 5.0).value)
 
         # determines how often to refresh terminal ui
-        self.refresh_hz = self.declare_parameter("refresh_hz", 2.0).value
+        self.refresh_hz = self.declare_parameter("refresh_hz", 4.0).value
         # --------------------------------------------------
 
         self._ui_lock = threading.Lock()
@@ -79,8 +77,6 @@ class InfoPanelNode(Node):
         self.ext_state = ExtendedStateView()
         self.statustext = StatusTextView(queue_size=self.queue_size)
         self.odom = OdometryView()
-        self.vel_body = VelocityView()
-        self.vel_local = VelocityView()
         self.gps1 = GPSView()
 
         reliable_qos = QoSProfile(
@@ -96,8 +92,6 @@ class InfoPanelNode(Node):
         self.create_subscription(BatteryState, "/mavros/battery", self._on_battery, qos_profile_sensor_data)
         self.create_subscription(State, "/mavros/state", self._on_state, reliable_qos)
         self.create_subscription(Odometry, "/mavros/local_position/odom", self._on_odom, qos_profile_sensor_data)
-        self.create_subscription(TwistStamped, "/mavros/local_position/velocity_body", self._on_vel_body, qos_profile_sensor_data)
-        self.create_subscription(TwistStamped, "/mavros/local_position/velocity_local", self._on_vel_local, qos_profile_sensor_data)
         self.create_subscription(GPSRAW, "/mavros/gpsstatus/gps1/raw", self._on_gps1_raw, qos_profile_sensor_data)
         
         # UI refresh rate
@@ -114,8 +108,6 @@ class InfoPanelNode(Node):
             "Extended State": self._render_extended_state_panel,
             "Battery": self._render_battery_panel,
             "Odometry": self._render_odom_panel,
-            "Velocity (Body)": self._render_vel_body_panel,
-            "Velocity (Origin)": self._render_vel_origin_panel,
             "StatusText": self._render_statustext_panel,
             "GPS1": self._render_gps1_panel,
         }
@@ -158,16 +150,6 @@ class InfoPanelNode(Node):
             self.odom.update_from_msg(msg)
             self._mark_dirty("Odometry")
 
-    def _on_vel_body(self, msg: TwistStamped):
-        with self._ui_lock:
-            self.vel_body.update_from_msg(msg)
-            self._mark_dirty("Velocity (Body)")
-
-    def _on_vel_local(self, msg: TwistStamped):
-        with self._ui_lock:
-            self.vel_local.update_from_msg(msg)
-            self._mark_dirty("Velocity (Origin)")
-
     def _on_statustext(self, msg: StatusText):
         with self._ui_lock:
             self.statustext.update_from_msg(msg)
@@ -204,15 +186,11 @@ class InfoPanelNode(Node):
 
     def _snapshot_odom(self):
         return {
-            "frame_id": self.odom.frame_id,
-            "child_frame_id": self.odom.child_frame_id,
             "x": self.odom.x, "y": self.odom.y, "z": self.odom.z,
+            "vx": self.odom.vx, "vy": self.odom.vy, "vz": self.odom.vz,
             "dist_lo": self.odom.dist_lo,
             "yaw": self.odom.yaw, "roll": self.odom.roll, "pitch": self.odom.pitch,
         }
-
-    def _snapshot_vel(self, vel: VelocityView):
-        return {"vx": vel.vx, "vy": vel.vy, "vz": vel.vz}
 
     def _snapshot_statustext(self):
         return [dict(item) for item in self.statustext.history]
@@ -295,16 +273,15 @@ class InfoPanelNode(Node):
         t.add_column(justify="left")
         t.add_column(justify="right")
 
-        formatted_frame_id = _format_str_to_str(data["frame_id"])
-        formatted_child_frame_id = _format_str_to_str(data["child_frame_id"])
-
-        t.add_row("Frame ID", formatted_frame_id)
-        t.add_row("Child Frame ID", formatted_child_frame_id, end_section=True)
-
-        t.add_row(f"Position (frame: {formatted_frame_id})")
+        t.add_row("Position")
         t.add_row("X (m)", _format_float_to_str(data["x"], 3))
         t.add_row("Y (m)", _format_float_to_str(data["y"], 3))
         t.add_row("Z (m)", _format_float_to_str(data["z"], 3), end_section=True)
+
+        t.add_row("Velocity (Body)")
+        t.add_row("X (m/s)", _format_float_to_str(data["vx"], 3))
+        t.add_row("Y (m/s)", _format_float_to_str(data["vy"], 3))
+        t.add_row("Z (m/s)", _format_float_to_str(data["vz"], 3), end_section=True)
 
         t.add_row("Local Origin Distance (m)", _format_float_to_str(data["dist_lo"]), end_section=True)
 
@@ -314,38 +291,6 @@ class InfoPanelNode(Node):
         t.add_row("Pitch (deg)", _format_float_to_str(data["pitch"], 3), end_section=True)
 
         return Panel(t, title="Odometry", border_style="yellow")
-    
-    def _render_vel_body_panel(self, data) -> Panel:
-        t = Table(
-            box=box.SIMPLE,
-            show_header=False,
-            show_edge=False,
-            pad_edge=False,
-        )
-        t.add_column(justify="left")
-        t.add_column(justify="right")
-
-        t.add_row("X (m/s)", _format_float_to_str(data["vx"], 3))
-        t.add_row("Y (m/s)", _format_float_to_str(data["vy"], 3))
-        t.add_row("Z (m/s)", _format_float_to_str(data["vz"], 3))
-
-        return Panel(t, title="Velocity (Body)", border_style="red")
-    
-    def _render_vel_origin_panel(self, data) -> Panel:
-        t = Table(
-            box=box.SIMPLE,
-            show_header=False,
-            show_edge=False,
-            pad_edge=False,
-        )
-        t.add_column(justify="left")
-        t.add_column(justify="right")
-
-        t.add_row("X (m/s)", _format_float_to_str(data["vx"], 3))
-        t.add_row("Y (m/s)", _format_float_to_str(data["vy"], 3))
-        t.add_row("Z (m/s)", _format_float_to_str(data["vz"], 3))
-
-        return Panel(t, title="Velocity (Origin)", border_style="white")
         
     def _render_statustext_panel(self, data) -> Panel:
         t = Table(
@@ -425,13 +370,11 @@ class InfoPanelNode(Node):
         panels.append(get("Extended State", lambda: self._render_extended_state_panel(snap["Extended State"])))
         panels.append(get("Battery", lambda: self._render_battery_panel(snap["Battery"])))
         panels.append(get("Odometry", lambda: self._render_odom_panel(snap["Odometry"])))
-        panels.append(get("Velocity (Body)", lambda: self._render_vel_body_panel(snap["Velocity (Body)"])))
-        panels.append(get("Velocity (Origin)", lambda: self._render_vel_origin_panel(snap["Velocity (Origin)"])))
         panels.append(get("StatusText", lambda: self._render_statustext_panel(snap["StatusText"])))
         panels.append(get("GPS1", lambda: self._render_gps1_panel(snap["GPS1"])))
 
-        body = Columns(panels, equal=False, expand=False)
-        return Panel.fit(body, title=header, border_style="green")
+        body = Columns(panels, equal=False, expand=True, padding=(0, 1))
+        return Panel(body, title=header, border_style="green", expand=True)
 
 
     # ---- ui timer callback ----
@@ -465,8 +408,6 @@ class InfoPanelNode(Node):
             snap["State"] = self._snapshot_state()
             snap["Extended State"] = self._snapshot_ext_state()
             snap["Odometry"] = self._snapshot_odom()
-            snap["Velocity (Body)"] = self._snapshot_vel(self.vel_body)
-            snap["Velocity (Origin)"] = self._snapshot_vel(self.vel_local)
             snap["StatusText"] = self._snapshot_statustext()
             snap["GPS1"] = self._snapshot_gps1()
 

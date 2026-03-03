@@ -82,22 +82,6 @@ class ExtendedStateView:
         if self.landed_state is None:
             return None
         return self.landed_map.get(self.landed_state, f"UNKNOWN({self.landed_state})")
-    
-
-
-@dataclass
-class VelocityView:
-    vx          : float | None = None
-    vy          : float | None = None
-    vz          : float | None = None
-    frame_id    : str | None = None
-
-    def update_from_msg(self, msg: TwistStamped):
-        v = msg.twist.linear
-        self.vx = float(v.x)
-        self.vy = float(v.y)
-        self.vz = float(v.z)
-        self.frame_id = msg.header.frame_id
 
 
 
@@ -108,6 +92,11 @@ class OdometryView:
     y: float | None = None
     z: float | None = None
 
+    # linear velocity (from Odometry.twist.twist.linear)
+    vx: float | None = None
+    vy: float | None = None
+    vz: float | None = None
+
     # x-y distance to local origin
     dist_lo : float | None = None
 
@@ -116,31 +105,21 @@ class OdometryView:
     roll    : float | None = None
     pitch   : float | None = None
 
-    frame_id        : str | None = None
-    child_frame_id  : str | None = None
-
     def update_from_msg(self, msg: Odometry):
         p = msg.pose.pose.position
-        self.x = float(p.x)
-        self.y = float(p.y)
-        self.z = float(p.z)
+        self.x = float(p.x); self.y = float(p.y); self.z = float(p.z)
 
-        # use euclidean distance for x-y distance to origin
+        v = msg.twist.twist.linear
+        self.vx = float(v.x); self.vy = float(v.y); self.vz = float(v.z)
+
         self.dist_lo = math.sqrt(self.x**2 + self.y**2)
 
-        # orientation
         q = msg.pose.pose.orientation
         roll, pitch, yaw_enu = euler_from_quaternion([q.x, q.y, q.z, q.w])
-
         heading_from_north = math.pi/2 - yaw_enu
-
         self.roll = _radians_to_degree(roll)
         self.pitch = _radians_to_degree(pitch)
         self.yaw = _wrap_degrees(_radians_to_degree(heading_from_north))
-
-        # references
-        self.frame_id = msg.header.frame_id
-        self.child_frame_id = msg.child_frame_id
 
 
 
