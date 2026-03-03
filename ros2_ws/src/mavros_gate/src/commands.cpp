@@ -303,25 +303,16 @@ ControlGateNode::executeGuided(const TeleopCmd&, const InternalState&) {
 }
 
 ControlGateNode::CommandResult
-ControlGateNode::executeTakeoff(const TeleopCmd& msg, const InternalState& int_state) {
+ControlGateNode::executeTakeoff(const TeleopCmd&, const InternalState&) {
   /*
-    Takeoff using MAVROS:
-      1) Set mode to GUIDED (via executeGuided)
-      2) Call /mavros/cmd/takeoff (mavros_msgs/srv/CommandTOL).
+    Takeoff using MAVROS: Call /mavros/cmd/takeoff (mavros_msgs/srv/CommandTOL).
   */
 
   if (!takeoff_client_) {
     return {false, "Takeoff client not initialized."};
   }
 
-  
-  // 1) Set GUIDED mode (separate command)
-  const auto guided_res = executeGuided(msg, int_state);
-  if (!guided_res.success) {
-    return guided_res;
-  }
-  
-  // 2) Send takeoff
+  // Send takeoff
   if (!takeoff_client_->service_is_ready()) {
     if (!takeoff_client_->wait_for_service(200ms)) {
       return {false, "Service /mavros/cmd/takeoff not available."};

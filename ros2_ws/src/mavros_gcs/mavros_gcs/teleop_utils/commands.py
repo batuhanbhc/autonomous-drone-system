@@ -437,7 +437,7 @@ class PressSafetySwitch(Command):
 class VelocityYaw(Command):
     """
     Sends desired Vx, Vy, Vz, Yaw Rate values to FCU.
-    Mavros direction assumption is FLU (x+: forward, y+: left, z+:up), positive yaw_rate: clock-wise
+    Mavros direction assumption is FLU (x+: forward, y+: left, z+:up), positive yaw_rate: ccw
     """
     name = "VEL_YAW"
 
@@ -495,7 +495,7 @@ class VelocityYaw(Command):
         vz = vv * z_dir
 
         # 3) Yaw rate
-        yaw_dir= (1.0 if "KEY_RIGHT" in state else 0.0) + (-1.0 if "KEY_LEFT" in state else 0.0)
+        yaw_dir= (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
         yaw_rate = yaw_dir * self._yaw_rate
 
         log_info(f"SETPOINT: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")

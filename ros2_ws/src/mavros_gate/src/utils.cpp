@@ -14,6 +14,7 @@ const char* ControlGateNode::commandName(int8_t id) {
     case Cmd::LAND:           return "LAND";
     case Cmd::RTL:            return "RTL";
     case Cmd::TAKEOFF:        return "TAKEOFF";
+    case Cmd::GUIDED:         return "GUIDED";
     case Cmd::SPEED_UP:       return "SPEED_UP";
     case Cmd::SPEED_DOWN:     return "SPEED_DOWN";
     case Cmd::PRESS_SAFETY_SWITCH:  return "PRESS_SAFETY_SWITCH";
@@ -120,6 +121,10 @@ void ControlGateNode::initCommandHandlers() {
 
   cmd_handlers_[TeleopCmd::TAKEOFF] = [this](const TeleopCmd& cmd, const InternalState& st) {
     return this->executeTakeoff(cmd, st);
+  };
+
+  cmd_handlers_[TeleopCmd::GUIDED] = [this](const TeleopCmd& cmd, const InternalState& st) {
+    return this->executeGuided(cmd, st);
   };
 
   cmd_handlers_[TeleopCmd::CONTROL_TOGGLE] = [this](const TeleopCmd& cmd, const InternalState& st) {
