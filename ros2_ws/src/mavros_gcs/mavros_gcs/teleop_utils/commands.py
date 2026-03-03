@@ -466,9 +466,9 @@ class VelocityYaw(Command):
             vx = 0.0
             vy = 0.0
 
-        # 2) Vertical velocity (NED: up is negative Vz)
-        z_dir= (-1.0 if "KEY_UP" in state else 0.0) + (1.0 if "KEY_DOWN" in state else 0.0)
-        vz = vv * z_dir  # already NED-signed
+        # 2) Vertical velocity
+        z_dir= (1.0 if "KEY_UP" in state else 0.0) + (-1.0 if "KEY_DOWN" in state else 0.0)
+        vz = vv * z_dir
 
         # 3) Yaw rate
         yaw_dir= (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
