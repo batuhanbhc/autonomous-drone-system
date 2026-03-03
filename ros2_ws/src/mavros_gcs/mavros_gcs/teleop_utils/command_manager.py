@@ -42,7 +42,7 @@ class CommandManager:
         self._hold: Optional[HoldSlot] = None
 
         # flag for accepting command inputs
-        self._console_active = True
+        self._keyboard_active = True
 
         # hover command to keep Hz > 2 requirement for ardupilot guided mode
         self._hover_command= VelocityYaw(
@@ -60,12 +60,12 @@ class CommandManager:
         # Time variable that stores when kill-switch window will close
         self._kill_pending_until: float | None = None
     
-    def toggle_console(self) -> bool:
+    def toggle_keyboard(self) -> bool:
         """
         Toggles teleop input on/off
         """
-        self._console_active = not self._console_active
-        return self._console_active
+        self._keyboard_active = not self._keyboard_active
+        return self._keyboard_active
     
     def get_velocity(self):
         """
@@ -99,7 +99,7 @@ class CommandManager:
         """
         Returns true if (teleop input is on) OR (command is allowed while teleop input is off) 
         """
-        return self._console_active or cmd.allow_when_console_inactive
+        return self._keyboard_active or cmd.allow_when_console_inactive
 
     def _select_candidate(self, state: Dict[str, bool]) -> Command:
         """

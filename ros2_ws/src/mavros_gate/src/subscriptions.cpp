@@ -1,56 +1,59 @@
-#include "mavros_gate/command_gate.hpp"
+#include "mavros_gate/control_gate.hpp"
 
 
-void CommandGateNode::onTeleopCommand(const teleop_msgs::msg::TeleopCommand::SharedPtr msg) {
+void ControlGateNode::onTeleopCommand(const teleop_msgs::msg::TeleopCommand::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
   // Take a snapshot of the current state 
   InternalState current_state = snapshotState();
   const char* command_name = commandName(msg->command_id);
 
+  // Check mavlink connection
   if (!current_state.connected) {
-    RCLCPP_WARN(get_logger(), "MAVROS not connected to FCU. Command rejected: id=%d (%s)", msg->command_id, command_name);
+    RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name);
     return;
   }
 
   // Find the handler from given command id
   auto it = cmd_handlers_.find(msg->command_id);
   if (it == cmd_handlers_.end()) {
-    RCLCPP_WARN(get_logger(), "No handler for command_id=%d (%s)", msg->command_id, command_name);
+    RCLCPP_WARN(get_logger(), "Requested (id=%d, %s): No handler found.", msg->command_id, command_name);
+    return;
+  }
+
+  // Check whether system is alive
+  if (current_state.system_killed) {
+    RCLCPP_ERROR(get_logger(), "System is killed, reboot is required.");
     return;
   }
 
   // execute command
-  CommandGateNode::CommandResult result = it->second(*msg, current_state);
+  ControlGateNode::CommandResult result = it->second(*msg, current_state);
   if (result.success) {
-    RCLCPP_INFO(get_logger(), "Command requested: {%s}", result.text.c_str());
+    RCLCPP_INFO(get_logger(), "Requested (id=%d, %s): %s", msg->command_id, command_name, result.text.c_str());
   } else {
-    RCLCPP_WARN(get_logger(), "Command failed: {%s}", result.text.c_str());
+    RCLCPP_WARN(get_logger(), "Failed (id=%d, %s): %s", msg->command_id, command_name, result.text.c_str());
   }
-
-  InternalStateUpdate update;
-  update.last_command_id = msg->command_id;
-  updateInternalStateAtomic(update);
 }
 
 
 // Sends incoming velocity command to FCU
-void CommandGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr msg) {
+void ControlGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr msg) {
     if (inInitializationPhase()) return;
 
-    bool hover_cmd = msg->hover;
+    const char* command_name = commandName(msg->command_id);
     
-    if (hover_cmd) {
-      //RCLCPP_INFO(get_logger(), "HOVER");
+    if (msg->command_id == teleop_msgs::msg::TeleopCommand::HOVER) {
+      return;
     }
 
     // Take a snapshot of current state
     InternalState current_state = snapshotState();
     if (current_state.connected == false) {
-      RCLCPP_WARN(get_logger(), "Action failed: Vehicle not connected to FCU.");
+      RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name);
       return;
     } else if (current_state.armed == false) {
-      //RCLCPP_WARN(get_logger(), "Action failed: Motors not armed.");
+      RCLCPP_WARN(get_logger(), "Action failed: Motors not armed.");
       return;
     }
 
@@ -78,7 +81,7 @@ void CommandGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::Share
 }
 
 // Updates internal state from /mavros/state
-void CommandGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg) {
+void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg) {
     if (inInitializationPhase()) return;
 
     InternalStateUpdate update;

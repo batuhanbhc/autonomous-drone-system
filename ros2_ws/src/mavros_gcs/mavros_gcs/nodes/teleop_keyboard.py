@@ -25,7 +25,7 @@ from evdev import InputDevice, ecodes
 from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP_CONFIG
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
-    ConsoleToggle, ControlToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
+    KeyboardToggle, ControlToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
     SpeedDown, SpeedUp, VelocityYaw)
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
 from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
@@ -133,11 +133,11 @@ class TeleopKeyboardNode(Node):
                 latch=cmd_params["CONTROL_TOGGLE"]["latch"],
                 activation_time_s=cmd_params["CONTROL_TOGGLE"]["activation_time_s"],
             ),
-            ConsoleToggle(
-                config=TELEOP_CONFIG["CONSOLE_TOGGLE"],
-                hook_fn=lambda: manager.toggle_console(),
-                latch=cmd_params["CONSOLE_TOGGLE"]["latch"],
-                activation_time_s=cmd_params["CONSOLE_TOGGLE"]["activation_time_s"],
+            KeyboardToggle(
+                config=TELEOP_CONFIG["KEYBOARD_TOGGLE"],
+                hook_fn=lambda: manager.toggle_keyboard(),
+                latch=cmd_params["KEYBOARD_TOGGLE"]["latch"],
+                activation_time_s=cmd_params["KEYBOARD_TOGGLE"]["activation_time_s"],
             ),
             ModeLand(
                 config=TELEOP_CONFIG["LAND"],
@@ -274,7 +274,7 @@ class TeleopKeyboardNode(Node):
         msg.bool_1 = bool_1
         self._pub_command.publish(msg)
 
-    def _publish_action_msg(self, vx: float, vy: float, vz: float, yaw_rate: float, hover: bool) -> None:
+    def _publish_action_msg(self, command_name: str, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
         msg = TeleopAction()
         msg.stamp = self.get_clock().now().to_msg()
         msg.source = self.get_name()
@@ -282,7 +282,13 @@ class TeleopKeyboardNode(Node):
         msg.vy = float(vy)
         msg.vz = float(vz)
         msg.yaw_rate = float(yaw_rate)
-        msg.hover = bool(hover)
+
+        # Map name->id
+        try:
+            msg.command_id = getattr(TeleopCommand, command_name)
+        except AttributeError:
+            raise ValueError(f"Unknown command name: {command_name}")
+        
         self._pub_action.publish(msg)
 
     # -------------------------

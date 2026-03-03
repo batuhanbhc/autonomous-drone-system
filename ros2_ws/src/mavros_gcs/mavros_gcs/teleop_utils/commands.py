@@ -211,7 +211,7 @@ class ControlToggle(Command):
     Toggle command.
     Toggles the control state of "command_gate" node between AUTO / MANUAL.
     """
-    name = "Control_TOGGLE"
+    name = "CONTROL_TOGGLE"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
         self._keys = tuple(config.key_list)
@@ -230,13 +230,13 @@ class ControlToggle(Command):
         log_info(f"Control Toggle")
         publish_command(command_name=self.name)
 
-class ConsoleToggle(Command):
+class KeyboardToggle(Command):
     """
     Toggle command.
     When enabled, allows all commands from "teleop_keyboard" node to be sent to "command_gate" node in mavros_gate package.
     When disabled, blocks all commands except the ones with "allow_when_console_inactive" set to "True".
     """
-    name = "CONSOLE_TOGGLE"
+    name = "KEYBOARD_TOGGLE"
     allow_when_console_inactive = True
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
@@ -337,7 +337,7 @@ class ModeLoiter(Command):
 
 class Takeoff(Command):
     """
-    Sends take-off task to copter to spesified altitude.
+    Sends take-off task to copter
     """
     name = "TAKEOFF"
 
@@ -346,7 +346,6 @@ class Takeoff(Command):
         self._config = config
         self.activation_time_s = activation_time_s
         self.latch = latch 
-        self.takeoff_m = 2.0
 
     def is_triggered(self, state):
         cfg = self._config
@@ -356,8 +355,8 @@ class Takeoff(Command):
         )
 
     def execute(self, state):
-        log_info(f"TAKEOFF ({self.takeoff_m} m)")
-        publish_command(self.name, float_1=self.takeoff_m)
+        log_info(f"TAKEOFF")
+        publish_command(self.name)
 
 
 class SpeedUp(Command):
@@ -448,7 +447,7 @@ class VelocityYaw(Command):
 
     def execute(self, state):
         if self._hover:
-            publish_action(0.0, 0.0, 0.0, 0.0, True)
+            publish_action("HOVER", 0.0, 0.0, 0.0, 0.0)
             return
 
         hv, vv, _ = self._hook_fn()  # hv: desired horizontal speed, vv: desired vertical speed
@@ -476,6 +475,6 @@ class VelocityYaw(Command):
         yaw_rate = yaw_dir * self._yaw_rate
 
         log_info(f"SETPOINT: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")
-        publish_action(vx, vy, vz, yaw_rate, False)
+        publish_action(self.name, vx, vy, vz, yaw_rate)
 
         

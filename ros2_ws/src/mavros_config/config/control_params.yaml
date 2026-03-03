@@ -3,6 +3,9 @@ topics:
   manual_action:  "/teleop/action"
   manual_command: "/teleop/command" 
 
+flight_params:
+  takeoff_m: 2.0
+  
 teleop:
   hz: 8.0
 
@@ -13,7 +16,7 @@ teleop:
       default_start_index: 0      # e.g. horizontal vel: horizontal[default_start_index] => 1 m/s
 
     yaw_rate: 1.0   # rad/s
-
+  
   commands:
     params:
       KILL_SWITCH:
@@ -26,7 +29,7 @@ teleop:
       CONTROL_TOGGLE:
         activation_time_s: 0.2
         latch: true
-      CONSOLE_TOGGLE:
+      KEYBOARD_TOGGLE:
         activation_time_s: 1.0
         latch: true
       ARM:

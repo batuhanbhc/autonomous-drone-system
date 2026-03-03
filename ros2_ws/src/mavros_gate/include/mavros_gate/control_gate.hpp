@@ -5,9 +5,11 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <sstream>
+#include <iomanip>
 #include <unordered_map>
 #include <functional>
-
+#include <cstdint>
 #include <rclcpp/rclcpp.hpp>
 
 #include <mavros_msgs/msg/state.hpp>
@@ -17,13 +19,16 @@
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
+#include <mavros_msgs/srv/command_tol.hpp>
+#include <mavros_msgs/srv/set_mode.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
 
-class CommandGateNode : public rclcpp::Node {
+
+class ControlGateNode : public rclcpp::Node {
 public:
-  CommandGateNode();
+  ControlGateNode();
 
   struct CommandResult {
     bool success{false};
@@ -31,6 +36,11 @@ public:
   };
 
 private:
+  enum class ControlMode : std::uint8_t {
+      Auto   = 0,
+      Manual = 1
+  };
+
   struct TopicPaths {
     std::string autonomous_action;
     std::string manual_action;
@@ -38,19 +48,21 @@ private:
   };
 
   struct InternalState {
+    ControlMode control_mode{ControlMode::Manual};
+    bool keyboard_on{false};
     bool connected{false};
     bool armed{false};
     bool guided{false};
-    int8_t last_command_id{-1};
     bool kill_switch_window{false};
     bool system_killed{false};
   };
 
   struct InternalStateUpdate {
+    std::optional<ControlMode> control_mode;
+    std::optional<bool> keyboard_on;
     std::optional<bool> connected;
     std::optional<bool> armed;
     std::optional<bool> guided;
-    std::optional<int8_t> last_command_id;
     std::optional<bool> kill_switch_window;
     std::optional<bool> system_killed;
   };
@@ -61,34 +73,44 @@ private:
   std::unordered_map<uint8_t, std::function<CommandResult(const TeleopCmd&, const InternalState&)>> cmd_handlers_;
 
   // map from command ID to command name
-  static const char* commandName(int8_t id);
+  static const char* commandName(int8_t);
 
   // command handlers
-  CommandResult executeArm(const TeleopCmd& msg, const InternalState&);
-  CommandResult executeDisarm(const TeleopCmd& msg, const InternalState&);
-  CommandResult executeKillSwitch(const TeleopCmd& msg, const InternalState&);
-  CommandResult executeKillConfirm(const TeleopCmd& msg, const InternalState&);
-  
+  CommandResult executeArm(const TeleopCmd&, const InternalState&);
+  CommandResult executeDisarm(const TeleopCmd&, const InternalState&);
+  CommandResult executeKillSwitch(const TeleopCmd&, const InternalState&);
+  CommandResult executeKillConfirm(const TeleopCmd&, const InternalState&);
+  CommandResult executeLand(const TeleopCmd&, const InternalState&);
+  CommandResult executeRTL(const TeleopCmd&, const InternalState&);
+  CommandResult executeLoiter(const TeleopCmd&, const InternalState&);
+  CommandResult executeGuided(const TeleopCmd&, const InternalState&);
+  CommandResult executeTakeoff(const TeleopCmd&, const InternalState&);
+  CommandResult executeControlToggle(const TeleopCmd&, const InternalState&);
+  CommandResult executeKeyboardToggle(const TeleopCmd&, const InternalState&);
+
   // function that initializes assigning command IDs to function pointers
   void initCommandHandlers();
 
   // helpers
-  void updateInternalStateAtomic(const InternalStateUpdate & update);
-  bool loadTopics();
+  void updateInternalStateAtomic(const InternalStateUpdate &);
+  bool loadConfig();
   bool initializationRoutine();
   bool inInitializationPhase() const;
+  float getTakeoffMeters() const;
   InternalState snapshotState() const;
 
   // callbacks
-  void onTeleopCommand(const teleop_msgs::msg::TeleopCommand::SharedPtr msg);
-  void onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr msg);
-  void onMavrosState(const mavros_msgs::msg::State::SharedPtr msg);
+  void onTeleopCommand(const teleop_msgs::msg::TeleopCommand::SharedPtr);
+  void onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr);
+  void onMavrosState(const mavros_msgs::msg::State::SharedPtr);
 
   // members
   TopicPaths topics_;
+  float takeoff_m_;
 
-  // mutex lock
+  // mutex & cvs
   mutable std::mutex state_mtx_;
+  std::condition_variable state_cv_;
 
   // internal state object
   InternalState state_;
@@ -107,6 +129,8 @@ private:
   // services
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;
   rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedPtr command_long_client_;
+  rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
+  rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedPtr takeoff_client_;
 
   // timers
   rclcpp::TimerBase::SharedPtr kill_switch_timer_;

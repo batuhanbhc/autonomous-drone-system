@@ -13,28 +13,28 @@ find_package(teleop_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
-add_executable(command_gate
-  src/command_gate.cpp
+add_executable(control_gate
+  src/control_gate.cpp
   src/utils.cpp
   src/subscriptions.cpp
   src/commands.cpp
 )
 
-target_include_directories(command_gate PUBLIC
+target_include_directories(control_gate PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(command_gate
+ament_target_dependencies(control_gate
   rclcpp
   mavros_msgs
   teleop_msgs
   ament_index_cpp
 )
 
-target_link_libraries(command_gate yaml-cpp)
+target_link_libraries(control_gate yaml-cpp)
 
-install(TARGETS command_gate
+install(TARGETS control_gate
   DESTINATION lib/${PROJECT_NAME}
 )
 

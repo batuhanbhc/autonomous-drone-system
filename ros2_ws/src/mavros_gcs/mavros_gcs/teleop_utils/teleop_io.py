@@ -20,10 +20,10 @@ def publish_command(command_name: str, float_1: float = 0.0, float_2: float = 0.
         raise RuntimeError("teleop_io not initialized: publish_command_fn is None")
     _publish_command_fn(command_name, float_1, float_2, bool_1)
 
-def publish_action(vx: float, vy: float, vz: float, yaw_rate: float, hover: bool) -> None:
+def publish_action(command_name: str, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
     if _publish_action_fn is None:
         raise RuntimeError("teleop_io not initialized: publish_action_fn is None")
-    _publish_action_fn(vx, vy, vz, yaw_rate, hover)
+    _publish_action_fn(command_name, vx, vy, vz, yaw_rate)
 
 def log_info(msg: str) -> None:
     if _logger is not None:
