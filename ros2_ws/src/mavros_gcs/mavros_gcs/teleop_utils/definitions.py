@@ -14,8 +14,8 @@ class COMMAND_CONFIG:
     press_type: Literal["ANY", "ALL"]
 
 
-MOVEMENT_SWITCH = "KEY_SPACE"
-MODE_SWITCH = "KEY_RIGHTALT"
+ACTION_SWITCH = "KEY_SPACE"
+COMMAND_SWITCH = "KEY_RIGHTALT"
 
 TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
     "ACTION": COMMAND_CONFIG(
@@ -30,31 +30,31 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
             "KEY_LEFT",
         ),
         activation_switch=True,
-        activation_switch_key=MOVEMENT_SWITCH,
+        activation_switch_key=ACTION_SWITCH,
         press_type="ANY",
     ),
     "LAND": COMMAND_CONFIG(
         key_list=("KEY_L",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "RTL": COMMAND_CONFIG(
         key_list=("KEY_R",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "LOITER": COMMAND_CONFIG(
         key_list=("KEY_H",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "TAKEOFF": COMMAND_CONFIG(
         key_list=("KEY_T",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "SPEED_UP": COMMAND_CONFIG(
@@ -72,37 +72,43 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
     "KILL_SWITCH": COMMAND_CONFIG(
         key_list=("KEY_K", "KEY_I", "KEY_L"),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "KILL_CONFIRM": COMMAND_CONFIG(
         key_list=("KEY_Y",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "ARM": COMMAND_CONFIG(
         key_list=("KEY_A",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "DISARM": COMMAND_CONFIG(
         key_list=("KEY_D",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "KEYBOARD_TOGGLE": COMMAND_CONFIG(
         key_list=("KEY_ESC",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
     "CONTROL_TOGGLE": COMMAND_CONFIG(
         key_list=("KEY_C",),
         activation_switch=True,
-        activation_switch_key=MODE_SWITCH,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
+    "PRESS_SAFETY_SWITCH": COMMAND_CONFIG(
+        key_list=("KEY_S",),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
 }

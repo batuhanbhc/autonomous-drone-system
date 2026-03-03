@@ -410,6 +410,29 @@ class SpeedDown(Command):
         log_info(f"Change speed (HV={hv} m/s, VV={vv} m/s)")
         publish_command(self.name, float_1=hv, float_2=vv)
 
+class PressSafetySwitch(Command):
+    """
+    Sends command to press hardware safety switch from software.
+    """
+    name = "PRESS_SAFETY_SWITCH"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(
+            state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
+        )
+
+    def execute(self, state):
+        log_info(f"Pressed safety switch")
+        publish_command(self.name)
+
 
 class VelocityYaw(Command):
     """
@@ -471,7 +494,7 @@ class VelocityYaw(Command):
         vz = vv * z_dir
 
         # 3) Yaw rate
-        yaw_dir= (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
+        yaw_dir= (1.0 if "KEY_RIGHT" in state else 0.0) + (-1.0 if "KEY_LEFT" in state else 0.0)
         yaw_rate = yaw_dir * self._yaw_rate
 
         log_info(f"SETPOINT: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")

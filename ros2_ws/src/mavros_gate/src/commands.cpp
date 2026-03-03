@@ -122,7 +122,7 @@ ControlGateNode::executeKillSwitch(const TeleopCmd&, const InternalState&) {
 
 
 ControlGateNode::CommandResult 
-ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& state) {
+ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& int_state) {
   /*
   This function sends asynchronous request to FCU via mavros to send "Flight Termination" command.
   This command immediately stops the motors, hence copter will fall if it is not landed.
@@ -133,7 +133,7 @@ ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& state
   }
 
   // gate on the "kill switch window"
-  if (!state.kill_switch_window) {
+  if (!int_state.kill_switch_window) {
     return {false, "Kill-switch window not active."};
   }
 
@@ -342,7 +342,7 @@ ControlGateNode::executeGuided(const TeleopCmd&, const InternalState&) {
 }
 
 ControlGateNode::CommandResult
-ControlGateNode::executeTakeoff(const TeleopCmd& msg, const InternalState& state) {
+ControlGateNode::executeTakeoff(const TeleopCmd& msg, const InternalState& int_state) {
   /*
     Takeoff using MAVROS:
       1) Set mode to GUIDED (via executeGuided)
@@ -355,7 +355,7 @@ ControlGateNode::executeTakeoff(const TeleopCmd& msg, const InternalState& state
 
   
   // 1) Set GUIDED mode (separate command)
-  const auto guided_res = executeGuided(msg, state);
+  const auto guided_res = executeGuided(msg, int_state);
   if (!guided_res.success) {
     return guided_res;
   }
@@ -400,13 +400,13 @@ ControlGateNode::executeTakeoff(const TeleopCmd& msg, const InternalState& state
 
 
 ControlGateNode::CommandResult
-ControlGateNode::executeControlToggle(const TeleopCmd&, const InternalState& state) {
+ControlGateNode::executeControlToggle(const TeleopCmd&, const InternalState& int_state) {
   /*
     Toggles control mode between ControlGateNode::ControlMode::Auto/Manual
   */
 
   bool tmp_flag = 0; // ControlMode::Auto
-  if (state.control_mode == ControlMode::Manual) {
+  if (int_state.control_mode == ControlMode::Manual) {
     tmp_flag = 1;
   }
 
@@ -452,4 +452,61 @@ ControlGateNode::executeChangeSpeed(const TeleopCmd& msg, const InternalState&) 
   oss << "Velocity levels: (Horizontal: " << std::fixed << std::setprecision(2) << hv << " m/s, " \
       << "Vertical: " << std::fixed << std::setprecision(2) << vv << " m/s).";
   return {true, oss.str()};
+}
+
+
+ControlGateNode::CommandResult
+ControlGateNode::executePressSafetySwitch(const TeleopCmd&, const InternalState& int_state)
+{
+  // MAV_CMD_DO_SET_SAFETY_SWITCH_STATE (5300)
+  // param1: 0 = SAFE, 1 = UNSAFE (safety OFF / outputs enabled)
+
+  if (!command_long_client_) {
+    return {false, "CommandLong client not initialized."};
+  }
+
+  if (!command_long_client_->service_is_ready()) {
+    if (!command_long_client_->wait_for_service(200ms)) {
+      return {false, "Service /mavros/cmd/command not available."};
+    }
+  }
+
+  const bool currently_safe = int_state.safety_switch_on; 
+  const float target = currently_safe ? 1.0f : 0.0f;      // 1->UNSAFE, 0->SAFE
+
+  const std::string old_state = currently_safe ? "SAFE" : "UNSAFE";
+  const std::string new_state = currently_safe ? "UNSAFE" : "SAFE";
+  const bool new_safe_bool = (new_state == "SAFE");
+
+  auto req = std::make_shared<mavros_msgs::srv::CommandLong::Request>();
+  req->broadcast = false;
+  req->command = 5300;
+  req->confirmation = 0;
+  req->param1 = target;
+  req->param2 = 0.0f;
+  req->param3 = 0.0f;
+  req->param4 = 0.0f;
+  req->param5 = 0.0f;
+  req->param6 = 0.0f;
+  req->param7 = 0.0f;
+
+  (void)command_long_client_->async_send_request(
+    req,
+    [this, old_state, new_state, new_safe_bool]
+    (rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedFuture fut) {
+      const auto resp = fut.get();
+      if (resp->success) {
+        RCLCPP_INFO(get_logger(), "Safety switch pressed: %s -> %s.", old_state.c_str(), new_state.c_str());
+
+        InternalStateUpdate upt;
+        upt.safety_switch_on = new_safe_bool;
+        updateInternalStateAtomic(upt);
+
+      } else {
+        RCLCPP_WARN(get_logger(), "Safety switch command rejected by FCU (result=%u).", resp->result);
+      }
+    }
+  );
+
+  return {true, "Safety switch command request sent."};
 }

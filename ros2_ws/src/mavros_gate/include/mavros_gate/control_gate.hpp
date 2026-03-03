@@ -56,6 +56,7 @@ private:
     ControlMode control_mode{ControlMode::Manual};
     VelocityLevel vel{0.0, 0.0};
     bool keyboard_on{false};
+    bool safety_switch_on{true};
     bool connected{false};
     bool armed{false};
     bool guided{false};
@@ -67,6 +68,7 @@ private:
     std::optional<ControlMode> control_mode;
     std::optional<VelocityLevel> vel;
     std::optional<bool> keyboard_on;
+    std::optional<bool> safety_switch_on;
     std::optional<bool> connected;
     std::optional<bool> armed;
     std::optional<bool> guided;
@@ -96,6 +98,7 @@ private:
   CommandResult executeControlToggle(const TeleopCmd&, const InternalState&);
   CommandResult executeKeyboardToggle(const TeleopCmd&, const InternalState&);
   CommandResult executeChangeSpeed(const TeleopCmd&, const InternalState&);
+  CommandResult executePressSafetySwitch(const TeleopCmd&, const InternalState&);
 
   // function that initializes assigning command IDs to function pointers
   void initCommandHandlers();

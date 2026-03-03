@@ -17,6 +17,7 @@ const char* ControlGateNode::commandName(int8_t id) {
     case Cmd::TAKEOFF:        return "TAKEOFF";
     case Cmd::SPEED_UP:       return "SPEED_UP";
     case Cmd::SPEED_DOWN:     return "SPEED_DOWN";
+    case Cmd::PRESS_SAFETY_SWITCH:  return "PRESS_SAFETY_SWITCH";
     case Cmd::VEL_YAW:        return "VEL_YAW";
     case Cmd::HOVER:          return "HOVER";
     default:                  return "<unknown>";
@@ -31,6 +32,7 @@ void ControlGateNode::updateInternalStateAtomic(const InternalStateUpdate & upda
   if (update.control_mode)    state_.control_mode = *update.control_mode;
   if (update.vel)             state_.vel = *update.vel;
   if (update.keyboard_on)     state_.keyboard_on = *update.keyboard_on;
+  if (update.safety_switch_on)  state_.safety_switch_on = *update.safety_switch_on;
   if (update.connected)       state_.connected = *update.connected;
   if (update.armed)           state_.armed = *update.armed;
   if (update.guided)          state_.guided = *update.guided;
@@ -137,6 +139,10 @@ void ControlGateNode::initCommandHandlers() {
   cmd_handlers_[TeleopCmd::SPEED_DOWN] = [this](const TeleopCmd& cmd, const InternalState& st) {
     return this->executeChangeSpeed(cmd, st);
   };
+
+  cmd_handlers_[TeleopCmd::PRESS_SAFETY_SWITCH] = [this](const TeleopCmd& cmd, const InternalState& st) {
+    return this->executePressSafetySwitch(cmd, st);
+  };
 }
 
 
@@ -145,6 +151,9 @@ bool ControlGateNode::initializationRoutine() {
   // Initialize internal state
   InternalStateUpdate st;
   st.control_mode = ControlMode::Manual;
+  st.vel = VelocityLevel{0.0, 0.0};
+  st.keyboard_on = false;
+  st.safety_switch_on = true;
   st.connected = false;
   st.armed = false;
   st.guided = false;

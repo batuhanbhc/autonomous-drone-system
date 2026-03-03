@@ -26,7 +26,7 @@ from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
     KeyboardToggle, ControlToggle, ModeLand, ModeLoiter, ModeRTL, Takeoff,
-    SpeedDown, SpeedUp, VelocityYaw)
+    SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch)
 from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
 from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
 from mavros_gcs.teleop_utils.command_manager import CommandManager
@@ -181,6 +181,12 @@ class TeleopKeyboardNode(Node):
                 latch=cmd_params["VEL_YAW"]["latch"],
                 activation_time_s=cmd_params["VEL_YAW"]["activation_time_s"],
                 yaw_rate=yaw_rate,
+            ),
+            PressSafetySwitch(
+                config=TELEOP_CONFIG["PRESS_SAFETY_SWITCH"],
+                hook_fn=None,
+                latch=cmd_params["PRESS_SAFETY_SWITCH"]["latch"],
+                activation_time_s=cmd_params["PRESS_SAFETY_SWITCH"]["activation_time_s"],
             ),
         ]
 
