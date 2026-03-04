@@ -1,5 +1,7 @@
 #include "mavros_gate/control_gate.hpp"
 
+using DroneInfo = drone_msgs::msg::DroneInfo;
+
 
 void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::SharedPtr msg) {
   if (inInitializationPhase()) return;
@@ -10,10 +12,12 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
 
 
   if (!current_state.connected) {
-    RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name);
+    //RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name);
+    publishInfo(DroneInfo::LEVEL_WARN, stringf("Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name));
     return;
   } else if (current_state.system_killed) {
-    RCLCPP_ERROR(get_logger(), "System is killed, power cycle is required.");
+    //RCLCPP_ERROR(get_logger(), "System is killed, power cycle is required.");
+    publishInfo(DroneInfo::LEVEL_ERROR, "System killed, power cycle required.");
     return;
   }
 
@@ -22,11 +26,13 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
 
       if (current_state.control_mode == ControlMode::Auto) {
         // Current mode is autonomous, discard command
-        RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Command not permitted in AUTO mode.", msg->command_id, command_name);
+        //RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Command not permitted in AUTO mode.", msg->command_id, command_name);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Rejected (id=%d, %s): Command not permitted in AUTO mode.", msg->command_id, command_name));
         return;
       } else if (current_state.keyboard_on == false) {
         // Keyboard is off, control state cannot accept this command
-        RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Keyboard is off.", msg->command_id, command_name);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Rejected (id=%d, %s): Keyboard off.", msg->command_id, command_name));
+        //RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Keyboard is off.", msg->command_id, command_name);
         return;
       }
   }
@@ -53,32 +59,13 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
     if (inInitializationPhase()) return;
 
     // Take a snapshot of current state
-    InternalState current_state = snapshotState();
-    bool send_action = true;
+    const InternalState current_state = snapshotState();
 
-    // The only difference below is that for hover command, we do not print logs unnecessarily
-    if (msg->command_id == drone_msgs::msg::TeleopCommand::HOVER) {
-      if (current_state.connected == false || current_state.system_killed || 
-            current_state.armed == false || current_state.control_mode == ControlMode::Auto) {
-          send_action = false;
-      }
-    } else {
-      if (current_state.connected == false) {
-          RCLCPP_WARN(get_logger(), "Rejected (id=%d, VEL_YAW): Mavlink connection failed.", msg->command_id);
-          send_action = false;
-      } else if (current_state.control_mode == ControlMode::Auto) {
-          RCLCPP_WARN(get_logger(), "Control is in AUTONOMOUS mode, velocity setpoint ignored.");
-          send_action = false;
-      } else if (current_state.system_killed) {
-          RCLCPP_ERROR(get_logger(), "System is killed, power cycle is required.");
-          send_action = false;
-      } else if (current_state.armed == false) {
-          RCLCPP_WARN(get_logger(), "Action failed: Motors not armed.");
-          send_action = false;
-      }
-    }
+    // Update transition state (publishes only when blocked/enabled flips)
+    const bool blocked = isSetpointBlocked(current_state);
+    updateSetpointBlockStateAndMaybePublish(blocked, false);
 
-    if (send_action == false) return;
+    if (blocked) return;
     
     mavros_msgs::msg::PositionTarget sp;
     sp.header.stamp = msg->stamp;

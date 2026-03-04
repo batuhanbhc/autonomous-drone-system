@@ -47,3 +47,16 @@ void ControlGateNode::onPublishStateTimer() {
 
   pub_control_state_->publish(msg);
 }
+
+
+
+void ControlGateNode::publishInfo(uint8_t level, const std::string& text) {
+  if (!pub_drone_info_) return;
+
+  drone_msgs::msg::DroneInfo msg;
+  msg.stamp = this->now();
+  msg.level = level;
+  msg.text = text;
+
+  pub_drone_info_->publish(msg);
+}

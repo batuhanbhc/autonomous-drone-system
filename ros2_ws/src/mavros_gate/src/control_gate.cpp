@@ -4,7 +4,11 @@
 #include <functional>
 #include <stdexcept>
 
+
 ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
+  using DroneInfo = drone_msgs::msg::DroneInfo;
+
+  
   RCLCPP_INFO(get_logger(), "control_gate started");
   initialization_phase_ = true;
 
@@ -30,19 +34,10 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   // QoS profiles
   const auto qos_command = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
   const auto qos_action = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  const auto qos_state = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
   auto qos_setpoint_local = rclcpp::SensorDataQoS();
+  const auto qos_state_pub = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
 
-  // --- Publishers (state/info) ---
-  const auto qos_state_pub =
-    rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
 
-  pub_control_state_ = this->create_publisher<drone_msgs::msg::ControlState>(
-    base_ns + "/state", qos_state_pub);
-
-  // pub_drone_info_ = this->create_publisher<drone_msgs::msg::DroneInfo>(
-  //   base_ns + "/info", qos_state_pub);
-  
   // --- Subscriptions ---
   sub_teleop_command_ = this->create_subscription<drone_msgs::msg::TeleopCommand>(
     topics_.manual_command, qos_command,
@@ -53,27 +48,39 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     std::bind(&ControlGateNode::onTeleopAction, this, std::placeholders::_1));
 
   sub_mavros_state_ = this->create_subscription<mavros_msgs::msg::State>(
-    "/mavros/state", qos_state,
+    "/mavros/state", qos_command,
     std::bind(&ControlGateNode::onMavrosState, this, std::placeholders::_1));
 
   // --- Publishers ---
   pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
     "/mavros/setpoint_raw/local", qos_setpoint_local);
 
+  pub_control_state_ = this->create_publisher<drone_msgs::msg::ControlState>(
+    base_ns + "/state", qos_state_pub);
+
+  pub_drone_info_ = this->create_publisher<drone_msgs::msg::DroneInfo>(
+    base_ns + "/info", qos_command);
+
+    
   if (!initializationRoutine()) {
+    publishInfo(DroneInfo::LEVEL_ERROR, "Non-fixable error occured during initialization routine.");
     RCLCPP_FATAL(get_logger(), "Non-fixable error occured during initialization routine.");
     rclcpp::shutdown();
     throw std::runtime_error("control_gate init failed");
-
   } 
 
+  // called mainly for logging whether setpoint commands can be sent or not
+  const InternalState st0 = snapshotState();
+  updateSetpointBlockStateAndMaybePublish(isSetpointBlocked(st0), true);
+
   // 1 Hz state publisher timer (best-effort)
-    state_pub_timer_ = this->create_wall_timer(
-      std::chrono::seconds(1),
-      std::bind(&ControlGateNode::onPublishStateTimer, this));
+  state_pub_timer_ = this->create_wall_timer(
+    std::chrono::seconds(1),
+    std::bind(&ControlGateNode::onPublishStateTimer, this));
       
   // update initialization phase flag to false, so that workflow starts
-  RCLCPP_INFO(get_logger(), "Initialization complete");
+  RCLCPP_INFO(get_logger(), "Initialization complete.");
+  publishInfo(DroneInfo::LEVEL_INFO, "Initialization complete.");
   initialization_phase_ = false;
 }
 

@@ -11,7 +11,10 @@
 #include <functional>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <chrono>
+#include <vector>
+#include <utility>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -20,6 +23,7 @@
 #include <drone_msgs/msg/teleop_action.hpp>
 #include <drone_msgs/msg/teleop_command.hpp>
 #include <drone_msgs/msg/control_state.hpp>
+#include <drone_msgs/msg/drone_info.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
@@ -43,7 +47,9 @@ public:
 private:
   using TeleopCmd = drone_msgs::msg::TeleopCommand;
   using TeleopAct = drone_msgs::msg::TeleopAction;
+
   using MonotonicTime = std::chrono::steady_clock::time_point;
+
   
   enum class ControlMode : std::uint8_t {
       Auto   = 0,
@@ -87,6 +93,19 @@ private:
     std::optional<MonotonicTime> last_action_t;
   };
 
+  template <typename... Args>
+  static std::string stringf(const char* fmt, Args&&... args) {
+    if (fmt == nullptr) return {};
+
+    const int n = std::snprintf(nullptr, 0, fmt, std::forward<Args>(args)...);
+    if (n <= 0) return {};
+
+    std::string out;
+    out.resize(static_cast<size_t>(n));
+    std::snprintf(out.data(), static_cast<size_t>(n) + 1, fmt, std::forward<Args>(args)...);
+    return out;
+  }
+
   // map from command ID to function pointers
   std::unordered_map<uint8_t, std::function<CommandResult(const TeleopCmd&, const InternalState&)>> cmd_handlers_;
 
@@ -113,6 +132,13 @@ private:
   // function that initializes assigning command IDs to function pointers
   void initCommandHandlers();
 
+  // setpoint enable/disable transition tracking
+  bool setpoint_blocked_{true};
+  bool setpoint_blocked_initialized_{false};
+
+  bool isSetpointBlocked(const InternalState& st) const;
+  void updateSetpointBlockStateAndMaybePublish(bool blocked, bool initial_publish);
+
   // helpers
   void updateInternalStateAtomic(const InternalStateUpdate &);
   bool loadConfig();
@@ -126,6 +152,7 @@ private:
   void onTeleopAction(const TeleopAct::SharedPtr);
   void onMavrosState(const mavros_msgs::msg::State::SharedPtr);
   void onPublishStateTimer();
+  void publishInfo(uint8_t level, const std::string& text);
 
   // members
   TopicPaths topics_;
@@ -149,7 +176,7 @@ private:
   // publishers
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_local_;
   rclcpp::Publisher<drone_msgs::msg::ControlState>::SharedPtr pub_control_state_;
-  // rclcpp::Publisher<drone_msgs::msg::DroneInfo>::SharedPtr pub_drone_info_;  // TODO: message not ready yet
+  rclcpp::Publisher<drone_msgs::msg::DroneInfo>::SharedPtr pub_drone_info_;
 
   // services
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;

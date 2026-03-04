@@ -24,6 +24,7 @@ from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import ControlState
+from drone_msgs.msg import DroneInfo
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -43,7 +44,8 @@ from mavros_gcs.panel_utils.views import (
     StatusTextView,
     OdometryView,
     GPSView,
-    ControlStateView
+    ControlStateView,
+    DroneInfoView,
 )
 
 from mavros_gcs.panel_utils.helpers import (
@@ -115,6 +117,7 @@ class InfoPanelNode(Node):
                 drone_id = 0
 
         t_control_state = f"/drone_{drone_id}/state"
+        t_drone_info = f"/drone_{drone_id}/info"
         # --------------------------------------------------
 
         self._ui_lock = threading.Lock()
@@ -127,6 +130,7 @@ class InfoPanelNode(Node):
         self.odom = OdometryView()
         self.gps1 = GPSView()
         self.control_state = ControlStateView()
+        self.drone_info = DroneInfoView(queue_size=self.queue_size)
 
         reliable_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -143,6 +147,7 @@ class InfoPanelNode(Node):
         self.create_subscription(Odometry, t_odom, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(GPSRAW, t_gps1_raw, self._on_gps1_raw, qos_profile_sensor_data)
         self.create_subscription(ControlState, t_control_state, self._on_control_state, qos_profile_sensor_data)
+        self.create_subscription(DroneInfo, t_drone_info, self._on_drone_info, reliable_qos)
 
         # UI refresh rate
         period = 1.0 / float(self.refresh_hz)
@@ -161,6 +166,7 @@ class InfoPanelNode(Node):
             "StatusText": self._render_statustext_panel,
             "GPS1": self._render_gps1_panel,
             "Control Gate": self._render_control_state_panel,
+            "Drone Info": self._render_drone_info_panel,
         }
 
         # boolean dict to mark sections as dirty when they get an update
@@ -215,6 +221,11 @@ class InfoPanelNode(Node):
         with self._ui_lock:
             self.control_state.update_from_msg(msg)
             self._mark_dirty("Control Gate")
+    
+    def _on_drone_info(self, msg: DroneInfo):
+        with self._ui_lock:
+            self.drone_info.update_from_msg(msg)
+            self._mark_dirty("Drone Info")
 
 
     # ---- Snapshot Functions (for copying) ----
@@ -276,6 +287,9 @@ class InfoPanelNode(Node):
             "time_since_action_s": self.control_state.time_since_action_s,
         }
 
+    def _snapshot_drone_info(self):
+        return [dict(item) for item in self.drone_info.history]
+    
     # ------------------- rendering -------------------
     def _render_state_panel(self, data) -> Panel:
         t = Table(
@@ -434,7 +448,7 @@ class InfoPanelNode(Node):
         t.add_row("Vel H (m/s)", _format_float_to_str(data["velocity_h"], 2))
         t.add_row("Vel V (m/s)", _format_float_to_str(data["velocity_v"], 2))
         t.add_row("Keyboard", _format_bool_to_str(data["keyboard_on"]))
-        t.add_row("Safety Switch", _format_bool_to_str(data["safety_switch_on"]))
+        t.add_row("Safe", _format_bool_to_str(data["safety_switch_on"]))
         t.add_row("System Killed", _format_bool_to_str(data["system_killed"]))
 
         tsa = data["time_since_action_s"]
@@ -442,6 +456,27 @@ class InfoPanelNode(Node):
         t.add_row("Since Action (s)", _format_str_to_str(tsa_str))
 
         return Panel(t, title="Control Gate", border_style="red")
+    
+    def _render_drone_info_panel(self, data) -> Panel:
+        t = Table(
+            box=box.SIMPLE,
+            show_header=True,
+            show_edge=False,
+            pad_edge=False,
+            expand=True,
+        )
+        t.add_column("Time", no_wrap=True)
+        t.add_column("Level", no_wrap=True)
+        t.add_column("Text", overflow="fold")
+
+        if not data:
+            t.add_row("[dim]—[/dim]", "[dim]—[/dim]", "[dim]No message yet[/dim]")
+        else:
+            for item in reversed(data):
+                ts = _stamp_to_clock_str(item["sec"], item["nanosec"])
+                t.add_row(ts, item["level_str"], item["text"])
+
+        return Panel(t, title=f"Drone Info (last {self.queue_size})", border_style="red", expand=True)
     
     # ---- build console ui layout ----
 
@@ -466,13 +501,15 @@ class InfoPanelNode(Node):
 
             return p
 
+        panels.append(get("Odometry", lambda: self._render_odom_panel(snap["Odometry"])))
         panels.append(get("State", lambda: self._render_state_panel(snap["State"])))
         panels.append(get("Extended State", lambda: self._render_extended_state_panel(snap["Extended State"])))
-        panels.append(get("Battery", lambda: self._render_battery_panel(snap["Battery"])))
-        panels.append(get("Odometry", lambda: self._render_odom_panel(snap["Odometry"])))
-        panels.append(get("StatusText", lambda: self._render_statustext_panel(snap["StatusText"])))
-        panels.append(get("GPS1", lambda: self._render_gps1_panel(snap["GPS1"])))
         panels.append(get("Control Gate", lambda: self._render_control_state_panel(snap["Control Gate"])))
+        panels.append(get("Battery", lambda: self._render_battery_panel(snap["Battery"])))
+        panels.append(get("StatusText", lambda: self._render_statustext_panel(snap["StatusText"])))
+        panels.append(get("Drone Info", lambda: self._render_drone_info_panel(snap["Drone Info"])))
+        panels.append(get("GPS1", lambda: self._render_gps1_panel(snap["GPS1"])))
+        
 
         body = Columns(panels, equal=False, expand=True, padding=(0, 1))
         return Panel(body, title=header, border_style="green", expand=True)
@@ -512,6 +549,7 @@ class InfoPanelNode(Node):
             snap["StatusText"] = self._snapshot_statustext()
             snap["GPS1"] = self._snapshot_gps1()
             snap["Control Gate"] = self._snapshot_control_state()
+            snap["Drone Info"] = self._snapshot_drone_info()
 
         # render outside lock using 'snap'
         layout = self._build_layout_from_snapshot(snap, dirty)

@@ -2,6 +2,7 @@
 
 
 using Cmd = drone_msgs::msg::TeleopCommand;
+using DroneInfo = drone_msgs::msg::DroneInfo;
 
 const char* ControlGateNode::commandName(int8_t id) {
   switch (id) {
@@ -186,7 +187,7 @@ bool ControlGateNode::initializationRoutine() {
   msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>("/mavros/set_message_interval");
 
   //  Request /mavros/extended_state to start publishing
-  if (msg_interval_client_->wait_for_service(std::chrono::seconds(2))) {
+  if (msg_interval_client_->wait_for_service(std::chrono::seconds(3))) {
     auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
     req->message_id = 245;     // MAVLink EXTENDED_SYS_STATE
     req->message_rate = 2.0f;  // Hz
@@ -194,7 +195,7 @@ bool ControlGateNode::initializationRoutine() {
     auto fut = msg_interval_client_->async_send_request(req);
     // block briefly to log success
     if (rclcpp::spin_until_future_complete(
-          this->get_node_base_interface(), fut, std::chrono::seconds(2)) ==
+          this->get_node_base_interface(), fut, std::chrono::seconds(3)) ==
         rclcpp::FutureReturnCode::SUCCESS) {
       RCLCPP_INFO(this->get_logger(), "Requested EXTENDED_SYS_STATE stream: success=%s",
                   fut.get()->success ? "true" : "false");
@@ -212,4 +213,46 @@ bool ControlGateNode::initializationRoutine() {
   initCommandHandlers();
 
   return true;
+}
+
+
+bool ControlGateNode::isSetpointBlocked(const InternalState& st) const {
+  // "Enabled" means: connected, manual, armed, not killed, keyboard on
+  const bool enabled =
+      st.connected &&
+      !st.system_killed &&
+      st.armed &&
+      (st.control_mode == ControlMode::Manual) &&
+      st.keyboard_on;
+
+  return !enabled;
+}
+
+
+void ControlGateNode::updateSetpointBlockStateAndMaybePublish(bool blocked, bool initial_publish) {
+  // First time initialization message
+  if (!setpoint_blocked_initialized_) {
+    setpoint_blocked_ = blocked;
+    setpoint_blocked_initialized_ = true;
+
+    if (initial_publish) {
+      if (blocked) {
+        publishInfo(DroneInfo::LEVEL_WARN, "Setpoint commands are blocked.");
+      } else {
+        publishInfo(DroneInfo::LEVEL_INFO, "Setpoint commands are enabled.");
+      }
+    }
+    return;
+  }
+
+  // Transition message
+  if (blocked != setpoint_blocked_) {
+    setpoint_blocked_ = blocked;
+
+    if (blocked) {
+      publishInfo(DroneInfo::LEVEL_WARN, "Setpoint commands are now blocked.");
+    } else {
+      publishInfo(DroneInfo::LEVEL_INFO, "Setpoint commands are now enabled.");
+    }
+  }
 }

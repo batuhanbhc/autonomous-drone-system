@@ -5,6 +5,7 @@ from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import ControlState
+from drone_msgs.msg import DroneInfo
 
 from pymavlink import mavutil
 from tf_transformations import euler_from_quaternion
@@ -70,7 +71,35 @@ class ControlStateView:
         nsec = int(msg.time_since_action.nanosec)
         self.time_since_action_s = float(sec) + float(nsec) * 1e-9
 
-        
+
+@dataclass
+class DroneInfoView:
+    queue_size: int | None = None
+
+    def __post_init__(self):
+        self.history = deque(maxlen=self.queue_size)
+
+        self.level_map = {
+            DroneInfo.LEVEL_INFO:  "[green]INFO[/green]",
+            DroneInfo.LEVEL_WARN:  "[yellow]WARN[/yellow]",
+            DroneInfo.LEVEL_ERROR: "[red]ERROR[/red]",
+        }
+
+    def update_from_msg(self, m: DroneInfo):
+        sec = int(m.stamp.sec)
+        nanosec = int(m.stamp.nanosec)
+        lvl_int = int(m.level)
+        lvl_str = self.level_map.get(lvl_int, f"UNKNOWN({lvl_int})")
+        text = str(m.text)
+
+        self.history.append({
+            "sec": sec,
+            "nanosec": nanosec,
+            "level_int": lvl_int,
+            "level_str": lvl_str,
+            "text": text,
+        })
+
 @dataclass
 class ExtendedStateView:
     vtol_state      : int | None = None

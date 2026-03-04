@@ -2,6 +2,7 @@
 #include <chrono>
 
 using namespace std::chrono_literals;
+using DroneInfo = drone_msgs::msg::DroneInfo;
 
 ControlGateNode::CommandResult 
 ControlGateNode::executeArm(const TeleopCmd&, const InternalState&) {
@@ -27,13 +28,15 @@ ControlGateNode::executeArm(const TeleopCmd&, const InternalState&) {
     [this](rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->success) {
-        RCLCPP_INFO(get_logger(), "Arm accepted by FCU.");
+        publishInfo(DroneInfo::LEVEL_INFO, "Arm accepted by FCU.");
+        //RCLCPP_INFO(get_logger(), "Arm accepted by FCU.");
 
         InternalStateUpdate update;
         update.armed = true;
         updateInternalStateAtomic(update);
       } else {
-        RCLCPP_WARN(get_logger(), "Arm rejected by FCU (result=%u).", resp->result);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Arm rejected by FCU (result=%u).", resp->result));
+        //RCLCPP_WARN(get_logger(), "Arm rejected by FCU (result=%u).", resp->result);
       }
     }
   );
@@ -65,14 +68,16 @@ ControlGateNode::executeDisarm(const TeleopCmd&, const InternalState&) {
     [this](rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->success) {
-        RCLCPP_INFO(get_logger(), "Disarm accepted by FCU");
+        publishInfo(DroneInfo::LEVEL_INFO, "Disarm accepted by FCU.");
+        //RCLCPP_INFO(get_logger(), "Disarm accepted by FCU");
 
         InternalStateUpdate update;
         update.armed = false;
         updateInternalStateAtomic(update);
         
       } else {
-        RCLCPP_WARN(get_logger(), "Disarm rejected by FCU (result=%u).", resp->result);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Disarm rejected by FCU (result=%u).", resp->result));
+        //RCLCPP_WARN(get_logger(), "Disarm rejected by FCU (result=%u).", resp->result);
       }
     }
   );
@@ -86,16 +91,19 @@ ControlGateNode::executeKillSwitch(const TeleopCmd&, const InternalState&) {
   /*
   This function starts a timer that enables Kill Confirm (a.k.a flight termination) command to be executed within a limited window
   */
-  RCLCPP_WARN(get_logger(), "-----------------------------------------------");
-  RCLCPP_WARN(get_logger(), "-----     ENABLING KILL-SWITCH WINDOW     -----");
-  RCLCPP_WARN(get_logger(), "-----------------------------------------------");
+  // RCLCPP_WARN(get_logger(), "-----------------------------------------------");
+  // RCLCPP_WARN(get_logger(), "-----     ENABLING KILL-SWITCH WINDOW     -----");
+  // RCLCPP_WARN(get_logger(), "-----------------------------------------------");
+
+  publishInfo(DroneInfo::LEVEL_WARN, "--- ENABLING KILL-SWITCH WINDOW ---");
 
   auto new_timer = this->create_wall_timer(2s, [this]() {
     std::lock_guard<std::mutex> lk(state_mtx_);
 
     if (state_.kill_switch_window) {
       state_.kill_switch_window = false;
-      RCLCPP_INFO(get_logger(), "Kill-switch window ended.");
+      // RCLCPP_INFO(get_logger(), "Kill-switch window ended.");
+      publishInfo(DroneInfo::LEVEL_WARN, "Kill-switch window ended.");
     }
     
     // one-shot: stop future firings
@@ -162,10 +170,12 @@ ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& int_s
     [this](rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->success) {
-        RCLCPP_ERROR(get_logger(), "-------------------------------------------------------");
-        RCLCPP_ERROR(get_logger(), "-----     Flight termination accepted by FCU.     -----");
-        RCLCPP_ERROR(get_logger(), "-----    System is killed, power cycle is required.    -----");
-        RCLCPP_ERROR(get_logger(), "-------------------------------------------------------");
+        // RCLCPP_ERROR(get_logger(), "-------------------------------------------------------");
+        // RCLCPP_ERROR(get_logger(), "---       Flight termination accepted by FCU.       ---");
+        // RCLCPP_ERROR(get_logger(), "---   System is killed, power cycle is required.    ---");
+        // RCLCPP_ERROR(get_logger(), "-------------------------------------------------------");
+
+        publishInfo(DroneInfo::LEVEL_ERROR, "! FLIGHT TERMINATION ! ");
 
         // update state to close kill switch window, and set system as killed
         InternalStateUpdate update;
@@ -174,7 +184,8 @@ ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& int_s
         updateInternalStateAtomic(update);
 
       } else {
-        RCLCPP_ERROR(get_logger(), "Flight termination rejected by FCU (result=%u).", resp->result);
+        // RCLCPP_WARN(get_logger(), "Flight termination rejected by FCU (result=%u).", resp->result);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Flight termination rejected by FCU (result=%u).", resp->result));
       }
     }
   );  
@@ -211,9 +222,11 @@ ControlGateNode::executeLand(const TeleopCmd&, const InternalState&)
     [this](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->mode_sent) {
-        RCLCPP_INFO(get_logger(), "Land mode request reached FCU.");
+        publishInfo(DroneInfo::LEVEL_INFO, "Land mode request reached FCU.");
+        // RCLCPP_INFO(get_logger(), "Land mode request reached FCU.");
       } else {
-        RCLCPP_WARN(get_logger(), "Land mode request could not reach FCU.");
+        publishInfo(DroneInfo::LEVEL_WARN, "Land mode request could not reach FCU.");
+        // RCLCPP_WARN(get_logger(), "Land mode request could not reach FCU.");
       }
     }
   );
@@ -256,9 +269,11 @@ ControlGateNode::executeRTL(const TeleopCmd&, const InternalState&)
     [this](rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->success) {
-        RCLCPP_INFO(get_logger(), "RTL accepted by FCU.");
+        publishInfo(DroneInfo::LEVEL_INFO, "RTL accepted by FCU.");
+        // RCLCPP_INFO(get_logger(), "RTL accepted by FCU.");
       } else {
-        RCLCPP_WARN(get_logger(), "RTL rejected by FCU (result=%u).", resp->result);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("RTL rejected by FCU (result=%u).", resp->result));
+        // RCLCPP_WARN(get_logger(), "RTL rejected by FCU (result=%u).", resp->result);
       }
     }
   );
@@ -292,9 +307,11 @@ ControlGateNode::executeGuided(const TeleopCmd&, const InternalState&) {
     [this](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->mode_sent) {
-        RCLCPP_INFO(get_logger(), "Guided mode request reached FCU.");
+        publishInfo(DroneInfo::LEVEL_INFO, "Guided mode request reached FCU.");
+        // RCLCPP_INFO(get_logger(), "Guided mode request reached FCU.");
       } else {
-        RCLCPP_WARN(get_logger(), "Guided mode request could not reach FCU.");
+        publishInfo(DroneInfo::LEVEL_WARN, "Guided mode request could not reach FCU.");
+        // RCLCPP_WARN(get_logger(), "Guided mode request could not reach FCU.");
       }
     }
   );
@@ -338,9 +355,11 @@ ControlGateNode::executeTakeoff(const TeleopCmd&, const InternalState&) {
     [this](rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->success) {
-        RCLCPP_INFO(get_logger(), "Takeoff accepted by FCU.");
+        publishInfo(DroneInfo::LEVEL_INFO, "Takeoff accepted by FCU.");
+        // RCLCPP_INFO(get_logger(), "Takeoff accepted by FCU.");
       } else {
-        RCLCPP_WARN(get_logger(), "Takeoff rejected by FCU (result=%u).", resp->result);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Takeoff rejected by FCU (result=%u).", resp->result));
+        // RCLCPP_WARN(get_logger(), "Takeoff rejected by FCU (result=%u).", resp->result);
       }
     }
   );
@@ -368,7 +387,9 @@ ControlGateNode::executeControlToggle(const TeleopCmd&, const InternalState& int
 
   const char* mode_old = tmp_flag ? "MANUAL" : "AUTO";
   const char* mode_new = tmp_flag ? "AUTO" : "MANUAL";
-  return {true, std::string("Control mode changed: ") + mode_old + " -> " + mode_new + "."};
+  std::string tmp = std::string("Control mode changed: ") + mode_old + " -> " + mode_new + ".";
+  publishInfo(DroneInfo::LEVEL_INFO, tmp);
+  return {true, tmp};
 }
 
 
@@ -385,6 +406,7 @@ ControlGateNode::executeKeyboardToggle(const TeleopCmd&, const InternalState& st
   
   std::string keyboard_state = keyboard_on_old ? "OFF": "ON";
   std::string out_msg = std::string("Keyboard state: ") + keyboard_state;
+  publishInfo(DroneInfo::LEVEL_INFO, out_msg);
   return {true, out_msg};
 }
 
@@ -404,6 +426,7 @@ ControlGateNode::executeChangeSpeed(const TeleopCmd& msg, const InternalState&) 
   std::ostringstream oss;
   oss << "Velocity levels: (Horizontal: " << std::fixed << std::setprecision(2) << hv << " m/s, " \
       << "Vertical: " << std::fixed << std::setprecision(2) << vv << " m/s).";
+  publishInfo(DroneInfo::LEVEL_INFO, oss.str());
   return {true, oss.str()};
 }
 
@@ -449,14 +472,16 @@ ControlGateNode::executePressSafetySwitch(const TeleopCmd&, const InternalState&
     (rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedFuture fut) {
       const auto resp = fut.get();
       if (resp->success) {
-        RCLCPP_INFO(get_logger(), "Safety switch pressed: %s -> %s.", old_state.c_str(), new_state.c_str());
+        publishInfo(DroneInfo::LEVEL_INFO, stringf("Safety switch pressed: %s -> %s.", old_state.c_str(), new_state.c_str()));
+        // RCLCPP_INFO(get_logger(), "Safety switch pressed: %s -> %s.", old_state.c_str(), new_state.c_str());
 
         InternalStateUpdate upt;
         upt.safety_switch_on = new_safe_bool;
         updateInternalStateAtomic(upt);
 
       } else {
-        RCLCPP_WARN(get_logger(), "Safety switch command rejected by FCU (result=%u).", resp->result);
+        publishInfo(DroneInfo::LEVEL_WARN, stringf("Safety switch command rejected by FCU (result=%u).", resp->result));
+        // RCLCPP_WARN(get_logger(), "Safety switch command rejected by FCU (result=%u).", resp->result);
       }
     }
   );
