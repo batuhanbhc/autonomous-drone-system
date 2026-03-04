@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TeleopAction.msg"
   "msg/ControlState.msg"
   "msg/DroneInfo.msg"
+  "msg/GcsHeartbeat.msg"
   DEPENDENCIES builtin_interfaces
 )
 
