@@ -104,13 +104,13 @@ class TeleopKeyboardNode(Node):
         # QoS profiles 
         self._qos_command = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=20,
+            depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
         self._qos_action = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=20,
+            depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )

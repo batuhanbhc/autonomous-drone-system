@@ -15,10 +15,11 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   }
 
   // QoS profiles
-  const auto qos_command = rclcpp::QoS(rclcpp::KeepLast(20)).reliable().durability_volatile();
-  const auto qos_action = rclcpp::QoS(rclcpp::KeepLast(20)).best_effort().durability_volatile();
+  const auto qos_command = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+  const auto qos_action = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto qos_state = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
-
+  auto qos_setpoint_local = rclcpp::SensorDataQoS();
+  
   // --- Subscriptions ---
   sub_teleop_command_ = this->create_subscription<drone_msgs::msg::TeleopCommand>(
     topics_.manual_command, qos_command,
@@ -34,7 +35,7 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
 
   // --- Publishers ---
   pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
-    "/mavros/setpoint_raw/local", qos_command);
+    "/mavros/setpoint_raw/local", qos_setpoint_local);
 
   if (!initializationRoutine()) {
     RCLCPP_FATAL(get_logger(), "Non-fixable error occured during initialization routine.");
