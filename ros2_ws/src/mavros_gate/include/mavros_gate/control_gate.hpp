@@ -10,19 +10,22 @@
 #include <unordered_map>
 #include <functional>
 #include <cstdint>
-#include <rclcpp/rclcpp.hpp>
+#include <cstdlib>
 #include <chrono>
+
+#include <rclcpp/rclcpp.hpp>
 
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/msg/position_target.hpp>
 #include <drone_msgs/msg/teleop_action.hpp>
 #include <drone_msgs/msg/teleop_command.hpp>
+#include <drone_msgs/msg/control_state.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
 #include <mavros_msgs/srv/set_mode.hpp>
-#include "mavros_msgs/srv/message_interval.hpp"
+#include <mavros_msgs/srv/message_interval.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
@@ -90,6 +93,9 @@ private:
   // map from command ID to command name
   static const char* commandName(int8_t);
 
+  // function that returns true if command can always be executed, independent of current ControlMode
+  bool isCommandAlwaysEnabled(int8_t);
+
   // command handlers
   CommandResult executeArm(const TeleopCmd&, const InternalState&);
   CommandResult executeDisarm(const TeleopCmd&, const InternalState&);
@@ -119,6 +125,7 @@ private:
   void onTeleopCommand(const TeleopCmd::SharedPtr);
   void onTeleopAction(const TeleopAct::SharedPtr);
   void onMavrosState(const mavros_msgs::msg::State::SharedPtr);
+  void onPublishStateTimer();
 
   // members
   TopicPaths topics_;
@@ -141,6 +148,8 @@ private:
 
   // publishers
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_local_;
+  rclcpp::Publisher<drone_msgs::msg::ControlState>::SharedPtr pub_control_state_;
+  // rclcpp::Publisher<drone_msgs::msg::DroneInfo>::SharedPtr pub_drone_info_;  // TODO: message not ready yet
 
   // services
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;
@@ -151,6 +160,7 @@ private:
 
   // timers
   rclcpp::TimerBase::SharedPtr kill_switch_timer_;
+  rclcpp::TimerBase::SharedPtr state_pub_timer_;
 };
 
 #endif  // MAVROS_GATE__COMMAND_GATE_HPP_

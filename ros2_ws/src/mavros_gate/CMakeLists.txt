@@ -18,6 +18,7 @@ add_executable(control_gate
   src/utils.cpp
   src/subscriptions.cpp
   src/commands.cpp
+  src/publishers.cpp
 )
 
 target_include_directories(control_gate PUBLIC

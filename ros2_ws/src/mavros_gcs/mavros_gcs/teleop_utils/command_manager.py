@@ -115,12 +115,6 @@ class CommandManager:
             self.execute_hover()
         # else: send nothing
 
-    def _is_allowed_now(self, cmd: Command):
-        """
-        Returns true if (teleop input is on) OR (command is allowed while teleop input is off) 
-        """
-        return self._keyboard_active or cmd.allow_when_console_inactive
-
     def _select_candidate(self, state: Dict[str, bool]) -> Command:
         """
         Iterate priority list; return first triggered command.
@@ -129,8 +123,7 @@ class CommandManager:
         for cmd in self.commands:
             if not cmd.is_triggered(state):
                 continue
-            if self._is_allowed_now(cmd):
-                return cmd
+            return cmd
 
         return None
 

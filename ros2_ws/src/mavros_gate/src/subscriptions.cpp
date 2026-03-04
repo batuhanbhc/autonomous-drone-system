@@ -8,22 +8,33 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
   InternalState current_state = snapshotState();
   const char* command_name = commandName(msg->command_id);
 
-  // Check mavlink connection
+
   if (!current_state.connected) {
     RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Mavlink connection failed.", msg->command_id, command_name);
     return;
+  } else if (current_state.system_killed) {
+    RCLCPP_ERROR(get_logger(), "System is killed, power cycle is required.");
+    return;
+  }
+
+  if (isCommandAlwaysEnabled(msg->command_id) == false) {
+      // Command is not always enabled. Check other criteria to decide whether it should be executed.
+
+      if (current_state.control_mode == ControlMode::Auto) {
+        // Current mode is autonomous, discard command
+        RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Command not permitted in AUTO mode.", msg->command_id, command_name);
+        return;
+      } else if (current_state.keyboard_on == false) {
+        // Keyboard is off, control state cannot accept this command
+        RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Keyboard is off.", msg->command_id, command_name);
+        return;
+      }
   }
 
   // Find the handler from given command id
   auto it = cmd_handlers_.find(msg->command_id);
   if (it == cmd_handlers_.end()) {
     RCLCPP_WARN(get_logger(), "Requested (id=%d, %s): No handler found.", msg->command_id, command_name);
-    return;
-  }
-
-  // Check whether system is alive
-  if (current_state.system_killed) {
-    RCLCPP_ERROR(get_logger(), "System is killed, reboot is required.");
     return;
   }
 
@@ -52,14 +63,14 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
           send_action = false;
       }
     } else {
-      if (current_state.control_mode == ControlMode::Auto) {
-          RCLCPP_WARN(get_logger(), "Control is in AUTONOMOUS mode, velocity setpoint ignored.");
-          send_action = false;
-      } else if (current_state.connected == false) {
+      if (current_state.connected == false) {
           RCLCPP_WARN(get_logger(), "Rejected (id=%d, VEL_YAW): Mavlink connection failed.", msg->command_id);
           send_action = false;
+      } else if (current_state.control_mode == ControlMode::Auto) {
+          RCLCPP_WARN(get_logger(), "Control is in AUTONOMOUS mode, velocity setpoint ignored.");
+          send_action = false;
       } else if (current_state.system_killed) {
-          RCLCPP_ERROR(get_logger(), "System is killed, reboot is required.");
+          RCLCPP_ERROR(get_logger(), "System is killed, power cycle is required.");
           send_action = false;
       } else if (current_state.armed == false) {
           RCLCPP_WARN(get_logger(), "Action failed: Motors not armed.");
@@ -99,7 +110,6 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
 // Updates internal state from /mavros/state
 void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg) {
     if (inInitializationPhase()) return;
-
     InternalStateUpdate update;
     update.connected = msg->connected;
     update.armed = msg->armed;

@@ -14,11 +14,34 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     throw std::runtime_error("control_gate init failed");
   }
 
+  // --- Drone ID (env) ---
+  int drone_id = 0;
+  if (const char* env = std::getenv("DRONE_ID")) {
+    try {
+      drone_id = std::stoi(env);
+    } catch (...) {
+      RCLCPP_WARN(get_logger(), "Invalid DRONE_ID='%s', defaulting to 0.", env);
+      drone_id = 0;
+    }
+  }
+
+  const std::string base_ns = "/drone_" + std::to_string(drone_id);
+
   // QoS profiles
   const auto qos_command = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
   const auto qos_action = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto qos_state = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
   auto qos_setpoint_local = rclcpp::SensorDataQoS();
+
+  // --- Publishers (state/info) ---
+  const auto qos_state_pub =
+    rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+
+  pub_control_state_ = this->create_publisher<drone_msgs::msg::ControlState>(
+    base_ns + "/state", qos_state_pub);
+
+  // pub_drone_info_ = this->create_publisher<drone_msgs::msg::DroneInfo>(
+  //   base_ns + "/info", qos_state_pub);
   
   // --- Subscriptions ---
   sub_teleop_command_ = this->create_subscription<drone_msgs::msg::TeleopCommand>(
@@ -42,11 +65,16 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     rclcpp::shutdown();
     throw std::runtime_error("control_gate init failed");
 
-  } else {
-    // update initialization phase flag to false, so that workflow starts
-    RCLCPP_INFO(get_logger(), "Initialization complete");
-    initialization_phase_ = false;
-  }
+  } 
+
+  // 1 Hz state publisher timer (best-effort)
+    state_pub_timer_ = this->create_wall_timer(
+      std::chrono::seconds(1),
+      std::bind(&ControlGateNode::onPublishStateTimer, this));
+      
+  // update initialization phase flag to false, so that workflow starts
+  RCLCPP_INFO(get_logger(), "Initialization complete");
+  initialization_phase_ = false;
 }
 
 int main(int argc, char ** argv) {

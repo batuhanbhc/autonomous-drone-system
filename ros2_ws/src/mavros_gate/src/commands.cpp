@@ -164,7 +164,7 @@ ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& int_s
       if (resp->success) {
         RCLCPP_ERROR(get_logger(), "-------------------------------------------------------");
         RCLCPP_ERROR(get_logger(), "-----     Flight termination accepted by FCU.     -----");
-        RCLCPP_ERROR(get_logger(), "-----    System is killed, reboot is required.    -----");
+        RCLCPP_ERROR(get_logger(), "-----    System is killed, power cycle is required.    -----");
         RCLCPP_ERROR(get_logger(), "-------------------------------------------------------");
 
         // update state to close kill switch window, and set system as killed
@@ -373,16 +373,17 @@ ControlGateNode::executeControlToggle(const TeleopCmd&, const InternalState& int
 
 
 ControlGateNode::CommandResult
-ControlGateNode::executeKeyboardToggle(const TeleopCmd& msg, const InternalState&) {
+ControlGateNode::executeKeyboardToggle(const TeleopCmd&, const InternalState& state) {
   /*
     Updates internal state according the incoming keyboard state
   */
-  
+  bool keyboard_on_old = state.keyboard_on;
+
   InternalStateUpdate upt;
-  upt.keyboard_on = msg.bool_1;
+  upt.keyboard_on = keyboard_on_old ? false: true;
   updateInternalStateAtomic(upt);
   
-  std::string keyboard_state = msg.bool_1 ? "ON": "OFF";
+  std::string keyboard_state = keyboard_on_old ? "OFF": "ON";
   std::string out_msg = std::string("Keyboard state: ") + keyboard_state;
   return {true, out_msg};
 }

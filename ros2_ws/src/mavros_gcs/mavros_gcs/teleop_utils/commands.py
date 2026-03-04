@@ -34,9 +34,7 @@ class Command:
         If `latch` is True, once executed the command will not execute again until it is released
         (i.e., it stops being triggered). This prevents repeated firing while a key is held.
         If `latch` is False, the command may execute repeatedly as long as it remains selected.
-    - Console gating:
-        If teleop input is disabled, commands are normally blocked unless
-        `allow_when_console_inactive` is True (e.g., an emergency kill switch).
+
 
     Notes:
     - `_required_ticks` is computed once by the manager from `activation_time_s` and the manager’s
@@ -48,7 +46,6 @@ class Command:
     activation_time_s: float = 0.0
     required_ticks: int = 0
     latch: bool = True
-    allow_when_console_inactive: bool = False
 
     def __init__(self, activation_time_s: float = 0.0):
         self.activation_time_s = float(activation_time_s)
@@ -99,7 +96,6 @@ class KillSwitch(Command):
     After sent, starts X second period that enables the activation of "KillConfirm" command.
     """
     name = "KILL_SWITCH"
-    allow_when_console_inactive = True
 
     def __init__(self, config, hook_fn, latch, activation_time_s=2.0):
         self._keys = tuple(config.key_list)
@@ -123,7 +119,6 @@ class KillConfirm(Command):
     Sends command request to open kill window for pre-determined seconds
     """
     name = "KILL_CONFIRM"
-    allow_when_console_inactive = True
     priority = 9999          # ensure it's always selected when triggered
 
     def __init__(self, config, latch, hook_fn, activation_time_s):
@@ -215,17 +210,13 @@ class ControlToggle(Command):
 
 class KeyboardToggle(Command):
     """
-    Toggle command.
-    When enabled, allows all commands from "teleop_keyboard" node to be sent to "command_gate" node in mavros_gate package.
-    When disabled, blocks all commands except the ones with "allow_when_console_inactive" set to "True".
+    Toggle command for enabling keyboard commands.
     """
     name = "KEYBOARD_TOGGLE"
-    allow_when_console_inactive = True
 
     def __init__(self, config, hook_fn, latch, activation_time_s=1.0):
         self._keys = tuple(config.key_list)
         self._config = config
-        self._hook_fn = hook_fn
         self.activation_time_s = activation_time_s
         self.latch = latch
 
@@ -237,8 +228,7 @@ class KeyboardToggle(Command):
         )
 
     def execute(self, state):
-        active = self._hook_fn()
-        publish_command(command_name=self.name, bool_1=active)
+        publish_command(command_name=self.name)
 
 
 class Land(Command):

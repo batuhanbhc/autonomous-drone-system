@@ -1,9 +1,9 @@
 #include "mavros_gate/control_gate.hpp"
 
 
+using Cmd = drone_msgs::msg::TeleopCommand;
 
 const char* ControlGateNode::commandName(int8_t id) {
-  using Cmd = drone_msgs::msg::TeleopCommand;
   switch (id) {
     case Cmd::KILL_SWITCH:    return "KILL_SWITCH";
     case Cmd::KILL_CONFIRM:   return "KILL_CONFIRM";
@@ -24,6 +24,18 @@ const char* ControlGateNode::commandName(int8_t id) {
   }
 }
 
+
+bool ControlGateNode::isCommandAlwaysEnabled(int8_t id) {
+  switch (id) {
+    case Cmd::KILL_SWITCH:
+    case Cmd::KILL_CONFIRM:
+    case Cmd::CONTROL_TOGGLE:
+    case Cmd::KEYBOARD_TOGGLE:
+      return true;
+    default:
+      return false;
+  }
+}
 
 // Updates the internal state in thread-safe manner, where multiple different subscription callbacks
 // may want to update the internal state
