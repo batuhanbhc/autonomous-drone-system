@@ -5,7 +5,6 @@ from dataclasses import dataclass
 
 from mavros_gcs.teleop_utils.commands import Command, VelocityYaw
 from mavros_gcs.teleop_utils.definitions import TELEOP_CONFIG, ClampedIndex
-from mavros_gcs.teleop_utils.teleop_io import log_info, log_warn, log_error
 
 @dataclass
 class HoldSlot:

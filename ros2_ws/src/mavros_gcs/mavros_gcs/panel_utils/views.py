@@ -3,7 +3,6 @@ from mavros_msgs.msg import State
 from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TwistStamped
 from mavros_msgs.msg import GPSRAW
 
 from pymavlink import mavutil

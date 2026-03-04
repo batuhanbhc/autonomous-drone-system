@@ -107,9 +107,6 @@ class KillSwitch(Command):
         self.activation_time_s = activation_time_s
         self.latch = latch
 
-    def on_hold_hook(self):
-        log_warn("ARMING KILL WINDOW")
-
     def is_triggered(self, state):
         cfg = self._config
         return command_triggered(
@@ -118,13 +115,6 @@ class KillSwitch(Command):
         )
 
     def execute(self, state):
-        log_warn("")
-        log_warn("----------------------------------------")
-        log_warn("")
-        log_warn(f"KILL WINDOW ARMED")
-        log_warn("PRESS {RIGHTALT} + {Y} TO CONFIRM ACTION")
-        log_warn("")
-        log_warn("----------------------------------------")
         publish_command(command_name=self.name)
 
 
@@ -151,7 +141,6 @@ class KillConfirm(Command):
         )
 
     def execute(self, state):
-        log_warn("KILL CONFIRM")
         publish_command(command_name=self.name)
 
 
@@ -175,7 +164,6 @@ class Arm(Command):
         )
 
     def execute(self, state):
-        log_info("ARM")
         publish_command(command_name=self.name)
 
 
@@ -197,12 +185,8 @@ class Disarm(Command):
             state, self._keys,
             cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
         )
-    
-    def on_hold_hook(self):
-        log_warn("Disarming vehicle")
 
     def execute(self, state):
-        log_warn("DISARM")
         publish_command(command_name=self.name)
 
 
@@ -227,7 +211,6 @@ class ControlToggle(Command):
         )
 
     def execute(self, state):
-        log_info(f"Control Toggle")
         publish_command(command_name=self.name)
 
 class KeyboardToggle(Command):
@@ -255,13 +238,6 @@ class KeyboardToggle(Command):
 
     def execute(self, state):
         active = self._hook_fn()
-        if active:
-            cmd_msg = "Console ENABLED"
-        else:
-            cmd_msg = "Console DISABLED"
-        
-        log_info(f"{cmd_msg}")
-
         publish_command(command_name=self.name, bool_1=active)
 
 
@@ -285,7 +261,6 @@ class Land(Command):
         )
 
     def execute(self, state):
-        log_info("LAND")
         publish_command(self.name)
 
 
@@ -309,7 +284,6 @@ class RTL(Command):
         )
 
     def execute(self, state):
-        log_info("RTL")
         publish_command(self.name)
 
 
@@ -333,7 +307,6 @@ class Takeoff(Command):
         )
 
     def execute(self, state):
-        log_info(f"TAKEOFF")
         publish_command(self.name)
 
 class Guided(Command):
@@ -356,7 +329,6 @@ class Guided(Command):
         )
 
     def execute(self, state):
-        log_info(f"GUIDED")
         publish_command(self.name)
 
 class SpeedUp(Command):
@@ -381,7 +353,6 @@ class SpeedUp(Command):
 
     def execute(self, state):
         hv, vv, _ = self._hook_fn()
-        log_info(f"Change speed (HV={hv} m/s, VV={vv} m/s)")
         publish_command(self.name, float_1=hv, float_2=vv)
 
 
@@ -407,7 +378,6 @@ class SpeedDown(Command):
 
     def execute(self, state):
         hv, vv, _ = self._hook_fn()
-        log_info(f"Change speed (HV={hv} m/s, VV={vv} m/s)")
         publish_command(self.name, float_1=hv, float_2=vv)
 
 class PressSafetySwitch(Command):
@@ -430,7 +400,6 @@ class PressSafetySwitch(Command):
         )
 
     def execute(self, state):
-        log_info(f"Pressed safety switch")
         publish_command(self.name)
 
 
@@ -498,7 +467,6 @@ class VelocityYaw(Command):
         yaw_dir= (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
         yaw_rate = yaw_dir * self._yaw_rate
 
-        log_info(f"SETPOINT: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}, yaw_rate={yaw_rate:.2f}")
         publish_action(self.name, vx, vy, vz, yaw_rate)
 
         

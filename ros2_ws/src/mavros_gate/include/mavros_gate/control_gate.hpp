@@ -15,8 +15,8 @@
 
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/msg/position_target.hpp>
-#include <teleop_msgs/msg/teleop_action.hpp>
-#include <teleop_msgs/msg/teleop_command.hpp>
+#include <drone_msgs/msg/teleop_action.hpp>
+#include <drone_msgs/msg/teleop_command.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
@@ -38,8 +38,8 @@ public:
   };
 
 private:
-  using TeleopCmd = teleop_msgs::msg::TeleopCommand;
-  using TeleopAct = teleop_msgs::msg::TeleopAction;
+  using TeleopCmd = drone_msgs::msg::TeleopCommand;
+  using TeleopAct = drone_msgs::msg::TeleopAction;
   using MonotonicTime = std::chrono::steady_clock::time_point;
   
   enum class ControlMode : std::uint8_t {

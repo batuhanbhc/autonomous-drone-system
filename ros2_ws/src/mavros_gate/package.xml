@@ -11,7 +11,7 @@
 
   <depend>rclcpp</depend>
   <depend>mavros_msgs</depend>
-  <depend>teleop_msgs</depend>
+  <depend>drone_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>
   

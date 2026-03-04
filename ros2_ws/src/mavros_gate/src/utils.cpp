@@ -3,7 +3,7 @@
 
 
 const char* ControlGateNode::commandName(int8_t id) {
-  using Cmd = teleop_msgs::msg::TeleopCommand;
+  using Cmd = drone_msgs::msg::TeleopCommand;
   switch (id) {
     case Cmd::KILL_SWITCH:    return "KILL_SWITCH";
     case Cmd::KILL_CONFIRM:   return "KILL_CONFIRM";
@@ -50,7 +50,7 @@ bool ControlGateNode::loadConfig() {
 
   YAML::Node root = YAML::LoadFile(yaml_path);
 
-  YAML::Node t = root["topics"];
+  YAML::Node t = root["custom_topics"];
   if (!t || !t.IsMap()) {
     RCLCPP_WARN(get_logger(), "YAML missing/invalid 'topics'");
     return false;

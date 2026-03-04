@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'info_panel = mavros_gcs.nodes.info_panel:main',
             'teleop_keyboard = mavros_gcs.nodes.teleop_keyboard:main',
+            'master_node = mavros_gcs.nodes.master_node:main'
         ],
     },
 )

@@ -1,19 +1,34 @@
-topics:
-  autonomous_action: "/auto/action"
+custom_topics:
+  autonomous_action: "/autonomous/action"
   manual_action:  "/teleop/action"
   manual_command: "/teleop/command" 
+
+mavros_topics:
+    state: "/mavros/state"
+    battery: "/mavros/battery"
+    extended_state: "/mavros/extended_state"
+    statustext: "/mavros/statustext/recv"
+    odom: "/mavros/local_position/odom"
+    gps1_raw: "/mavros/gpsstatus/gps1/raw"
+
+panel:
+  refresh_hz: 4.0
+  queue_size: 10
+  stale_threshold_s: 5.0
 
 flight_params:
   takeoff_m: 2.0
   
 teleop:
   hz: 8.0
+  keyboard_devices: ["/dev/input/by-id/usb-Razer_Razer_Ornata_V3-event-kbd",
+                     "/dev/input/by-id/usb-ASUSTek_Computer_Inc._N-KEY_Device-event-mouse"]
 
   velocity:
     categories:
-      horizontal: [1, 2, 3, 5, 10]
-      vertical: [0.25, 0.5, 1, 2, 5]
-      default_start_index: 0      # e.g. horizontal vel: horizontal[default_start_index] => 1 m/s
+      horizontal: [1.0, 2.0, 3.0, 5.0, 10.0]
+      vertical:   [0.25, 0.5, 1.0, 2.0, 5.0]
+      default_start_index: 1      # e.g. horizontal vel: horizontal[default_start_index]
 
     yaw_rate: 0.5   # rad/s
   

@@ -1,7 +1,7 @@
 #include "mavros_gate/control_gate.hpp"
 
 
-void ControlGateNode::onTeleopCommand(const teleop_msgs::msg::TeleopCommand::SharedPtr msg) {
+void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
   // Take a snapshot of the current state 
@@ -38,7 +38,7 @@ void ControlGateNode::onTeleopCommand(const teleop_msgs::msg::TeleopCommand::Sha
 
 
 // Sends incoming velocity command to FCU
-void ControlGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::SharedPtr msg) {
+void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::SharedPtr msg) {
     if (inInitializationPhase()) return;
 
     // Take a snapshot of current state
@@ -46,7 +46,7 @@ void ControlGateNode::onTeleopAction(const teleop_msgs::msg::TeleopAction::Share
     bool send_action = true;
 
     // The only difference below is that for hover command, we do not print logs unnecessarily
-    if (msg->command_id == teleop_msgs::msg::TeleopCommand::HOVER) {
+    if (msg->command_id == drone_msgs::msg::TeleopCommand::HOVER) {
       if (current_state.connected == false || current_state.system_killed || 
             current_state.armed == false || current_state.control_mode == ControlMode::Auto) {
           send_action = false;

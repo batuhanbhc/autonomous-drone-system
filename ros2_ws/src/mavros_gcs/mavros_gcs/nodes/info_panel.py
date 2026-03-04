@@ -2,6 +2,8 @@
 from __future__ import annotations
 import threading 
 import time
+import os
+import yaml
 
 # rclpy imports
 import rclpy
@@ -21,6 +23,8 @@ from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
+
+from ament_index_python.packages import get_package_share_directory
 
 # console ui imports
 from rich import box
@@ -47,26 +51,55 @@ from mavros_gcs.panel_utils.helpers import (
     _stamp_to_clock_str
 )
 
-class InfoPanelNode(Node):
-    """
-    - Each topic has a small "view model" (dataclass) holding latest values.
-    - Callbacks only update the cached values.
-    - A timer refreshes the terminal UI at a fixed rate independent of topic rates.
-    """
 
+def load_yaml_from_pkg(pkg: str, rel: str):
+    """
+    Loads a YAML file from a ROS2 package share directory and returns the FULL root dict.
+    """
+    yaml_path = os.path.join(get_package_share_directory(pkg), rel)
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"YAML root must be a dict: {yaml_path}")
+
+    return data
+
+
+class InfoPanelNode(Node):
     def __init__(self):
-        super().__init__("mavros_info_panel")
+        super().__init__("info_panel")
         
         # --------------------------------------------------
         # node parameters
         # determines the size of history for StatusText topic panel
-        self.queue_size = int(self.declare_parameter("queue_size", 10).value)
+        self.declare_parameter("config_pkg", "mavros_config")
+        self.declare_parameter("config_rel", "config/control_params.yaml")
+        config_pkg = self.get_parameter("config_pkg").value
+        config_rel = self.get_parameter("config_rel").value
 
-        # determines the thresholds in seconds for marking panels as stale since last update
-        self.stale_threshold_s = float(self.declare_parameter("stale_threshold_s", 5.0).value)
+        root_cfg = load_yaml_from_pkg(config_pkg, config_rel)
 
-        # determines how often to refresh terminal ui
-        self.refresh_hz = self.declare_parameter("refresh_hz", 4.0).value
+        panel_cfg = root_cfg.get("panel", {})
+        mavros_topics = root_cfg.get("mavros_topics", {})
+
+        if not isinstance(panel_cfg, dict):
+            raise RuntimeError("YAML key 'panel' must be a dict")
+        if not isinstance(mavros_topics, dict):
+            raise RuntimeError("YAML key 'mavros_topics' must be a dict")
+
+        # panel settings (from YAML)
+        self.queue_size = int(panel_cfg.get("queue_size", 10))
+        self.stale_threshold_s = float(panel_cfg.get("stale_threshold_s", 5.0))
+        self.refresh_hz = float(panel_cfg.get("refresh_hz", 4.0))
+
+        # MAVROS topics (from YAML)
+        t_state = str(mavros_topics.get("state", "/mavros/state"))
+        t_battery = str(mavros_topics.get("battery", "/mavros/battery"))
+        t_extended_state = str(mavros_topics.get("extended_state", "/mavros/extended_state"))
+        t_statustext = str(mavros_topics.get("statustext", "/mavros/statustext/recv"))
+        t_odom = str(mavros_topics.get("odom", "/mavros/local_position/odom"))
+        t_gps1_raw = str(mavros_topics.get("gps1_raw", "/mavros/gpsstatus/gps1/raw"))
         # --------------------------------------------------
 
         self._ui_lock = threading.Lock()
@@ -87,15 +120,15 @@ class InfoPanelNode(Node):
         )
 
         # subscriptions
-        self.create_subscription(ExtendedState, "/mavros/extended_state", self._on_extended_state, reliable_qos)
-        self.create_subscription(StatusText, "/mavros/statustext/recv", self._on_statustext, qos_profile_sensor_data)
-        self.create_subscription(BatteryState, "/mavros/battery", self._on_battery, qos_profile_sensor_data)
-        self.create_subscription(State, "/mavros/state", self._on_state, reliable_qos)
-        self.create_subscription(Odometry, "/mavros/local_position/odom", self._on_odom, qos_profile_sensor_data)
-        self.create_subscription(GPSRAW, "/mavros/gpsstatus/gps1/raw", self._on_gps1_raw, qos_profile_sensor_data)
-        
+        self.create_subscription(ExtendedState, t_extended_state, self._on_extended_state, reliable_qos)
+        self.create_subscription(StatusText, t_statustext, self._on_statustext, qos_profile_sensor_data)
+        self.create_subscription(BatteryState, t_battery, self._on_battery, qos_profile_sensor_data)
+        self.create_subscription(State, t_state, self._on_state, reliable_qos)
+        self.create_subscription(Odometry, t_odom, self._on_odom, qos_profile_sensor_data)
+        self.create_subscription(GPSRAW, t_gps1_raw, self._on_gps1_raw, qos_profile_sensor_data)
+
         # UI refresh rate
-        period = 1.0 / float(self.refresh_hz) 
+        period = 1.0 / float(self.refresh_hz)
         self.create_timer(period, self._on_refresh_tick)
 
         # rich live UI

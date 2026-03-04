@@ -20,11 +20,11 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   const auto qos_state = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
 
   // --- Subscriptions ---
-  sub_teleop_command_ = this->create_subscription<teleop_msgs::msg::TeleopCommand>(
+  sub_teleop_command_ = this->create_subscription<drone_msgs::msg::TeleopCommand>(
     topics_.manual_command, qos_command,
     std::bind(&ControlGateNode::onTeleopCommand, this, std::placeholders::_1));
 
-  sub_teleop_action_ = this->create_subscription<teleop_msgs::msg::TeleopAction>(
+  sub_teleop_action_ = this->create_subscription<drone_msgs::msg::TeleopAction>(
     topics_.manual_action, qos_action,
     std::bind(&ControlGateNode::onTeleopAction, this, std::placeholders::_1));
 

@@ -7,44 +7,98 @@ ROS 2 teleop keyboard node.
 - Publishes:
     * /teleop/command (Reliable)
     * /teleop/action  (BestEffort)
-
-CLI examples:
-  ros2 run <your_pkg> teleop_keyboard --ros-args -p keyboard_device:=/dev/input/event3 -p teleop_yaml:=/path/to/teleop.yaml
 """
 
+import os
 import sys
+import time
+import yaml
 import threading
 from typing import List, Optional
+from evdev import InputDevice, ecodes
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
-from evdev import InputDevice, ecodes
-
 from mavros_gcs.teleop_utils.definitions import NoEchoTerminal, KeyState, TELEOP_CONFIG
+from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
+from mavros_gcs.teleop_utils.command_manager import CommandManager
+from mavros_gcs.teleop_utils.teleop_io import init_teleop_io
+from mavros_gcs.teleop_utils.print_manual import teleop_manual_text
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
     KeyboardToggle, ControlToggle, Land, RTL, Takeoff, Guided,
-    SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch)
-from mavros_gcs.teleop_utils.command_helpers import assign_priorities_from_list_order
-from mavros_gcs.teleop_utils.params import load_teleop_yaml_from_pkg
-from mavros_gcs.teleop_utils.command_manager import CommandManager
+    SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch
+)
 
-from mavros_gcs.teleop_utils.teleop_io import init_teleop_io
+from drone_msgs.msg import TeleopCommand, TeleopAction
 
-from teleop_msgs.msg import TeleopCommand, TeleopAction
+from ament_index_python.packages import get_package_share_directory
+
+# -------------------------
+# Teleop key "manual" printer
+
+def load_yaml_from_pkg(pkg: str, rel: str):
+    """
+    Loads a YAML file from a ROS2 package share directory and returns the FULL root dict.
+    """
+    yaml_path = os.path.join(get_package_share_directory(pkg), rel)
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"YAML root must be a dict: {yaml_path}")
+
+    return data
+
 
 
 class TeleopKeyboardNode(Node):
     def __init__(self):
         super().__init__("teleop_keyboard")
+        
+        # -------------------------
+        # Load config YAML
+        self.declare_parameter("config_pkg", "mavros_config")
+        self.declare_parameter("config_rel", "config/control_params.yaml")
 
-        self.declare_parameter("keyboard_device", "")
-        self._keyboard_device = self.get_parameter("keyboard_device").value
+        config_pkg = self.get_parameter("config_pkg").value
+        config_rel = self.get_parameter("config_rel").value
 
-        if not self._keyboard_device:
-            raise RuntimeError("Set params: keyboard_device")
+        root_cfg = load_yaml_from_pkg(config_pkg, config_rel)
+
+        teleop_cfg = root_cfg.get("teleop", {})
+        topics_cfg = root_cfg.get("custom_topics", {})
+
+        if not isinstance(teleop_cfg, dict):
+            raise RuntimeError("YAML key 'teleop' must be a dict")
+        if not isinstance(topics_cfg, dict):
+            raise RuntimeError("YAML key 'custom_topics' must be a dict")
+
+        self.teleop_cfg = teleop_cfg
+
+        # keyboard devices from YAML (try first then second)
+        devices = teleop_cfg.get("keyboard_devices", [])
+        if not isinstance(devices, list):
+            devices = []
+        self._keyboard_devices = [str(x) for x in devices if str(x)]
+        if len(self._keyboard_devices) < 2:
+            raise RuntimeError("YAML must provide teleop.keyboard_devices: [path1, path2]")
+
+        # topics from YAML
+        topic_command = str(topics_cfg.get("manual_command", "/teleop/command"))
+        topic_action = str(topics_cfg.get("manual_action", "/teleop/action"))
+
+        # hz from YAML
+        self._hz = float(teleop_cfg.get("hz", 8.0))
+
+        # teleop command parameters from YAML
+        vel_categories = teleop_cfg["velocity"]["categories"]
+        vel_start_index = int(teleop_cfg["velocity"]["categories"].get("default_start_index", 0))
+        yaw_rate = float(teleop_cfg["velocity"].get("yaw_rate", 1.0))
+        cmd_params = teleop_cfg["commands"]["params"]
+        self.cmd_params = cmd_params
 
         # -------------------------
         # QoS profiles 
@@ -61,26 +115,8 @@ class TeleopKeyboardNode(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
 
-        self._pub_command = self.create_publisher(TeleopCommand, "/teleop/command", self._qos_command)
-        self._pub_action = self.create_publisher(TeleopAction, "/teleop/action", self._qos_action)
-
-        # -------------------------
-        # Load teleop yaml
-        self.declare_parameter("teleop_pkg", "mavros_config")
-        self.declare_parameter("teleop_rel", "config/control_params.yaml")
-
-        teleop_pkg = self.get_parameter("teleop_pkg").value
-        teleop_rel = self.get_parameter("teleop_rel").value
-
-        teleop_cfg = load_teleop_yaml_from_pkg(teleop_pkg, teleop_rel)
-        self.teleop_cfg = teleop_cfg
-
-        self._hz = float(teleop_cfg.get("hz", 8.0))
-        vel_categories = teleop_cfg["velocity"]["categories"]
-        vel_start_index = int(teleop_cfg["velocity"]["categories"].get("default_start_index", 0))
-        yaw_rate = float(teleop_cfg["velocity"].get("yaw_rate", 1.0))
-        cmd_params = teleop_cfg["commands"]["params"]
-        self.cmd_params = cmd_params
+        self._pub_command = self.create_publisher(TeleopCommand, topic_command, self._qos_command)
+        self._pub_action = self.create_publisher(TeleopAction, topic_action, self._qos_action)
 
         # -------------------------
         # Key handling
@@ -212,8 +248,12 @@ class TeleopKeyboardNode(Node):
         self._kbd_thread.start()
 
         self.get_logger().info(
-            f"TeleopKeyboardNode started: device={self._keyboard_device}, hz={self._hz}"
+            f"TeleopKeyboardNode started: devices={self._keyboard_devices}, hz={self._hz}"
         )
+
+        # Print a qmanual once at startup (to stdout).
+        time.sleep(0.5)
+        print(teleop_manual_text(), flush=True)
 
     # -------------------------
     # ROS timer tick -> manager.tick()
@@ -227,11 +267,23 @@ class TeleopKeyboardNode(Node):
     # -------------------------
     # Keyboard event loop
     def _keyboard_read_loop(self) -> None:
-        try:
-            dev = InputDevice(self._keyboard_device)
-            self._dev = dev
-        except Exception as e:
-            self.get_logger().fatal(f"Failed to open input device '{self._keyboard_device}': {e}")
+        dev = None
+        last_err = None
+
+        for path in self._keyboard_devices[:2]:
+            try:
+                dev = InputDevice(path)
+                self._dev = dev
+                self.get_logger().info(f"Keyboard opened: {path}")
+                break
+            except Exception as e:
+                last_err = e
+                self.get_logger().warning(f"Failed to open input device '{path}': {e}")
+
+        if dev is None:
+            self.get_logger().fatal(
+                f"Failed to open any keyboard device (tried {self._keyboard_devices[:2]}): {last_err}"
+            )
             rclpy.shutdown()
             return
 
@@ -244,19 +296,14 @@ class TeleopKeyboardNode(Node):
                         continue
 
                     key_name = ecodes.KEY.get(event.code, f"UNKNOWN_{event.code}")
-                    # event.value: 1=press, 0=release, 2=autorepeat
                     if event.value == 1:
                         self._key_state.add_key(key_name)
                     elif event.value == 0:
                         self._key_state.remove_key(key_name)
-                    else:
-                        # ignore autorepeat at evdev level
-                        pass
             except Exception as e:
                 if not self._stop.is_set():
                     self.get_logger().error(f"Keyboard loop error: {e}")
             finally:
-                # ensure device closes; if ECHO was disabled, leaving the 'with' normally restores it
                 try:
                     dev.close()
                 except Exception:
@@ -317,6 +364,7 @@ class TeleopKeyboardNode(Node):
 
 
 
+
 def main(argv=None):
     rclpy.init(args=argv)
     node = TeleopKeyboardNode()
@@ -327,6 +375,3 @@ def main(argv=None):
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
-
-if __name__ == "__main__":
-    main()

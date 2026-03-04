@@ -9,7 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(mavros_msgs REQUIRED)
-find_package(teleop_msgs REQUIRED)
+find_package(drone_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -28,7 +28,7 @@ target_include_directories(control_gate PUBLIC
 ament_target_dependencies(control_gate
   rclcpp
   mavros_msgs
-  teleop_msgs
+  drone_msgs
   ament_index_cpp
 )
 
