@@ -22,7 +22,7 @@
 #include <mavros_msgs/msg/position_target.hpp>
 #include <drone_msgs/msg/teleop_action.hpp>
 #include <drone_msgs/msg/teleop_command.hpp>
-#include <drone_msgs/msg/control_state.hpp>
+#include <drone_msgs/msg/drone_state.hpp>
 #include <drone_msgs/msg/drone_info.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
@@ -47,10 +47,11 @@ public:
 private:
   using TeleopCmd = drone_msgs::msg::TeleopCommand;
   using TeleopAct = drone_msgs::msg::TeleopAction;
+  using DroneInfo = drone_msgs::msg::DroneInfo;
+  using DroneState = drone_msgs::msg::DroneState;
 
   using MonotonicTime = std::chrono::steady_clock::time_point;
 
-  
   enum class ControlMode : std::uint8_t {
       Auto   = 0,
       Manual = 1
@@ -156,6 +157,7 @@ private:
 
   // members
   TopicPaths topics_;
+  std::string base_ns_;
   float takeoff_m_;
 
   // mutex & cvs
@@ -175,8 +177,8 @@ private:
 
   // publishers
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_local_;
-  rclcpp::Publisher<drone_msgs::msg::ControlState>::SharedPtr pub_control_state_;
-  rclcpp::Publisher<drone_msgs::msg::DroneInfo>::SharedPtr pub_drone_info_;
+  rclcpp::Publisher<DroneState>::SharedPtr pub_control_state_;
+  rclcpp::Publisher<DroneInfo>::SharedPtr pub_drone_info_;
 
   // services
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;

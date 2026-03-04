@@ -58,6 +58,12 @@ class TeleopKeyboardNode(Node):
     def __init__(self):
         super().__init__("teleop_keyboard")
         
+        self.declare_parameter("drone_id", 0)
+        drone_id = int(self.get_parameter("drone_id").value)
+
+        # ... after reading YAML topic_command/topic_action ...
+        base = f"/drone_{drone_id}"
+
         # -------------------------
         # Load config YAML
         self.declare_parameter("config_pkg", "mavros_config")
@@ -70,14 +76,17 @@ class TeleopKeyboardNode(Node):
 
         teleop_cfg = root_cfg.get("teleop", {})
         topics_cfg = root_cfg.get("custom_topics", {})
-
+        
         if not isinstance(teleop_cfg, dict):
             raise RuntimeError("YAML key 'teleop' must be a dict")
         if not isinstance(topics_cfg, dict):
             raise RuntimeError("YAML key 'custom_topics' must be a dict")
+        
+        # -------------------------
+        # hz from YAML
+        self._hz = float(teleop_cfg.get("hz", 8.0))
 
-        self.teleop_cfg = teleop_cfg
-
+        # -------------------------
         # keyboard devices from YAML (try first then second)
         devices = teleop_cfg.get("keyboard_devices", [])
         if not isinstance(devices, list):
@@ -85,14 +94,16 @@ class TeleopKeyboardNode(Node):
         self._keyboard_devices = [str(x) for x in devices if str(x)]
         if len(self._keyboard_devices) < 2:
             raise RuntimeError("YAML must provide teleop.keyboard_devices: [path1, path2]")
-
-        # topics from YAML
+        
+        # -------------------------
+        # topic paths from YAML
         topic_command = str(topics_cfg.get("manual_command", "/teleop/command"))
         topic_action = str(topics_cfg.get("manual_action", "/teleop/action"))
 
-        # hz from YAML
-        self._hz = float(teleop_cfg.get("hz", 8.0))
+        topic_command = base + topic_command
+        topic_action = base + topic_action
 
+        # -------------------------
         # teleop command parameters from YAML
         vel_categories = teleop_cfg["velocity"]["categories"]
         vel_start_index = int(teleop_cfg["velocity"]["categories"].get("default_start_index", 0))
@@ -251,8 +262,8 @@ class TeleopKeyboardNode(Node):
             f"TeleopKeyboardNode started: devices={self._keyboard_devices}, hz={self._hz}"
         )
 
-        # Print a qmanual once at startup (to stdout).
-        time.sleep(0.5)
+        # Print manual once at startup (to stdout).
+        time.sleep(0.2)
         print(teleop_manual_text(), flush=True)
 
     # -------------------------

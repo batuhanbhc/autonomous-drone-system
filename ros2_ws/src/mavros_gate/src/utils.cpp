@@ -180,11 +180,17 @@ bool ControlGateNode::initializationRoutine() {
 
 
   // Initialize clients
-  arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
-  command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>("/mavros/cmd/command");
-  set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
-  takeoff_client_ = this->create_client<mavros_msgs::srv::CommandTOL>("/mavros/cmd/takeoff");
-  msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>("/mavros/set_message_interval");
+  std::string arming_path = base_ns_ + "/mavros/cmd/arming";
+  std::string command_long_path = base_ns_ + "/mavros/cmd/command";
+  std::string set_mode_path = base_ns_ + "/mavros/set_mode";
+  std::string takeoff_path = base_ns_ + "/mavros/cmd/takeoff";
+  std::string msg_interval_path = base_ns_ + "/mavros/set_message_interval";
+  
+  arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
+  command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>(command_long_path);
+  set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>(set_mode_path);
+  takeoff_client_ = this->create_client<mavros_msgs::srv::CommandTOL>(takeoff_path);
+  msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>(msg_interval_path);
 
   //  Request /mavros/extended_state to start publishing
   if (msg_interval_client_->wait_for_service(std::chrono::seconds(3))) {
@@ -218,12 +224,8 @@ bool ControlGateNode::initializationRoutine() {
 
 bool ControlGateNode::isSetpointBlocked(const InternalState& st) const {
   // "Enabled" means: connected, manual, armed, not killed, keyboard on
-  const bool enabled =
-      st.connected &&
-      !st.system_killed &&
-      st.armed &&
-      (st.control_mode == ControlMode::Manual) &&
-      st.keyboard_on;
+  const bool enabled = st.connected && !st.system_killed && st.armed &&
+      (st.control_mode == ControlMode::Manual) && st.keyboard_on;
 
   return !enabled;
 }

@@ -9,7 +9,7 @@ find_package(builtin_interfaces REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TeleopCommand.msg"
   "msg/TeleopAction.msg"
-  "msg/ControlState.msg"
+  "msg/DroneState.msg"
   "msg/DroneInfo.msg"
   "msg/GcsHeartbeat.msg"
   DEPENDENCIES builtin_interfaces

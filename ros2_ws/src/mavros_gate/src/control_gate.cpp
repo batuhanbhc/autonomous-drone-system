@@ -6,9 +6,6 @@
 
 
 ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
-  using DroneInfo = drone_msgs::msg::DroneInfo;
-
-  
   RCLCPP_INFO(get_logger(), "control_gate started");
   initialization_phase_ = true;
 
@@ -18,48 +15,56 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     throw std::runtime_error("control_gate init failed");
   }
 
-  // --- Drone ID (env) ---
+  // -----------------------------------
+  // --- Drone ID (ros param) ---
   int drone_id = 0;
-  if (const char* env = std::getenv("DRONE_ID")) {
-    try {
-      drone_id = std::stoi(env);
-    } catch (...) {
-      RCLCPP_WARN(get_logger(), "Invalid DRONE_ID='%s', defaulting to 0.", env);
-      drone_id = 0;
-    }
+
+  // declare + read
+  this->declare_parameter<int>("drone_id", 0);
+  this->get_parameter("drone_id", drone_id);
+
+  // Optional: sanity clamp
+  if (drone_id < 0) {
+    RCLCPP_WARN(get_logger(), "drone_id=%d is invalid, defaulting to 0.", drone_id);
+    drone_id = 0;
   }
 
   const std::string base_ns = "/drone_" + std::to_string(drone_id);
+  base_ns_ = base_ns;
 
+  topics_.manual_command = base_ns + topics_.manual_command;
+  topics_.manual_action = base_ns + topics_.manual_action;
+  topics_.autonomous_action = base_ns + topics_.autonomous_action;
+  std::string topic_mavros_state = base_ns + std::string("/mavros/state");
+  std::string topic_setpoint_local = base_ns + std::string("/mavros/setpoint_raw/local");
+  std::string topic_cmd_gate_state = base_ns + std::string("/cmd_gate/state");
+  std::string topic_cmd_gate_info = base_ns + std::string("/cmd_gate/info");
+
+  // -----------------------------------
   // QoS profiles
   const auto qos_command = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
   const auto qos_action = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  auto qos_setpoint_local = rclcpp::SensorDataQoS();
+  auto qos_sensor_data = rclcpp::SensorDataQoS();
   const auto qos_state_pub = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-
+  const auto qos_info_latched =rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
 
   // --- Subscriptions ---
-  sub_teleop_command_ = this->create_subscription<drone_msgs::msg::TeleopCommand>(
+  sub_teleop_command_ = this->create_subscription<TeleopCmd>(
     topics_.manual_command, qos_command,
     std::bind(&ControlGateNode::onTeleopCommand, this, std::placeholders::_1));
 
-  sub_teleop_action_ = this->create_subscription<drone_msgs::msg::TeleopAction>(
+  sub_teleop_action_ = this->create_subscription<TeleopAct>(
     topics_.manual_action, qos_action,
     std::bind(&ControlGateNode::onTeleopAction, this, std::placeholders::_1));
 
   sub_mavros_state_ = this->create_subscription<mavros_msgs::msg::State>(
-    "/mavros/state", qos_command,
+    topic_mavros_state, qos_command,
     std::bind(&ControlGateNode::onMavrosState, this, std::placeholders::_1));
 
   // --- Publishers ---
-  pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
-    "/mavros/setpoint_raw/local", qos_setpoint_local);
-
-  pub_control_state_ = this->create_publisher<drone_msgs::msg::ControlState>(
-    base_ns + "/state", qos_state_pub);
-
-  pub_drone_info_ = this->create_publisher<drone_msgs::msg::DroneInfo>(
-    base_ns + "/info", qos_command);
+  pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(topic_setpoint_local, qos_sensor_data);
+  pub_control_state_ = this->create_publisher<DroneState>(topic_cmd_gate_state, qos_state_pub);
+  pub_drone_info_ = this->create_publisher<DroneInfo>(topic_cmd_gate_info, qos_info_latched);
 
     
   if (!initializationRoutine()) {

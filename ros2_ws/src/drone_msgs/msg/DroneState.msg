@@ -1,4 +1,4 @@
-# ControlState.msg
+# DroneState.msg
 # Node self-state summary (subset of internal fields)
 
 # Control mode enum

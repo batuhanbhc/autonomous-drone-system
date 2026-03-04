@@ -4,7 +4,7 @@ from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
-from drone_msgs.msg import ControlState
+from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
 
 from pymavlink import mavutil
@@ -49,7 +49,7 @@ class StateView:
 
 
 @dataclass
-class ControlStateView:
+class DroneStateView:
     control_mode    : int | None = None
     velocity_h      : float | None = None
     velocity_v      : float | None = None
@@ -58,7 +58,7 @@ class ControlStateView:
     system_killed   : bool | None = None
     time_since_action_s: float | None = None  # display-friendly (seconds)
 
-    def update_from_msg(self, msg: ControlState):
+    def update_from_msg(self, msg: DroneState):
         self.control_mode = int(msg.control_mode)
         self.velocity_h = float(msg.velocity_h)
         self.velocity_v = float(msg.velocity_v)

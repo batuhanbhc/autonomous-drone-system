@@ -9,7 +9,6 @@ Single-terminal master that runs BOTH:
 
 from __future__ import annotations
 
-import os
 import signal
 import time
 from typing import Optional
@@ -29,7 +28,13 @@ class HeartbeatNode(Node):
     def __init__(self) -> None:
         super().__init__("gcs_heartbeat_node")
 
-        self._gcs_id: int = self._read_gcs_id_uint8()
+        # Allow setting via CLI:
+        #   --ros-args -p gcs_id:=1 -p drone_id:=7
+        self.declare_parameter("gcs_id", 0)
+        self.declare_parameter("drone_id", 0)
+
+        self._gcs_id: int = self._read_uint8_param("gcs_id", default=0)
+        self._drone_id: int = self._read_nonneg_int_param("drone_id", default=0)
 
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -38,23 +43,39 @@ class HeartbeatNode(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
 
-        self._pub = self.create_publisher(GcsHeartbeat, f"/gcs_{self._gcs_id}/heartbeat", qos)
+        topic = f"/drone_{self._drone_id}/gcs/heartbeat"
+        self._pub = self.create_publisher(GcsHeartbeat, topic, qos)
         self._timer = self.create_timer(1.0, self._tick)
 
-    def _read_gcs_id_uint8(self) -> int:
-        raw = os.environ.get("GCS_ID")
-        if raw is None or raw.strip() == "":
-            return 0
+        self.get_logger().info(
+            f"Publishing GCS heartbeat on '{topic}' (gcs_id={self._gcs_id}, drone_id={self._drone_id})"
+        )
 
+    def _read_uint8_param(self, name: str, default: int = 0) -> int:
+        p = self.get_parameter(name).value
         try:
-            val = int(raw, 0)  # allows "42", "0x2A", etc.
-        except ValueError:
-            self.get_logger().warn(f"GCS_ID='{raw}' is not an integer; defaulting to 0")
-            return 0
+            val = int(p)
+        except (TypeError, ValueError):
+            self.get_logger().warn(f"{name}='{p}' is not an integer; defaulting to {default}")
+            return default
 
         if not (0 <= val <= 255):
-            self.get_logger().warn(f"GCS_ID={val} out of range [0..255]; defaulting to 0")
-            return 0
+            self.get_logger().warn(f"{name}={val} out of range [0..255]; defaulting to {default}")
+            return default
+
+        return val
+
+    def _read_nonneg_int_param(self, name: str, default: int = 0) -> int:
+        p = self.get_parameter(name).value
+        try:
+            val = int(p)
+        except (TypeError, ValueError):
+            self.get_logger().warn(f"{name}='{p}' is not an integer; defaulting to {default}")
+            return default
+
+        if val < 0:
+            self.get_logger().warn(f"{name}={val} must be >= 0; defaulting to {default}")
+            return default
 
         return val
 
@@ -66,9 +87,6 @@ class HeartbeatNode(Node):
 
 
 class MasterNode:
-    """
-    Not a ROS node itself—just a small orchestration wrapper.
-    """
     def __init__(self) -> None:
         self._executor: Optional[MultiThreadedExecutor] = None
         self._teleop: Optional[TeleopKeyboardNode] = None
@@ -83,7 +101,7 @@ class MasterNode:
 
         self._executor = MultiThreadedExecutor(num_threads=4)
         self._executor.add_node(self._teleop)
-        time.sleep(0.5)  # Give teleop a bit time to initialize itself
+        time.sleep(0.2)  # Give teleop a bit time to initialize itself
         self._executor.add_node(self._panel)
         self._executor.add_node(self._heartbeat)
 
@@ -150,5 +168,5 @@ class MasterNode:
 
 
 def main(argv=None) -> None:
-    rclpy.init(args=[] if argv is None else argv)
+    rclpy.init(args=argv)
     MasterNode().start()

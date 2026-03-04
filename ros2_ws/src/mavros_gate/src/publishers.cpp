@@ -6,13 +6,13 @@ void ControlGateNode::onPublishStateTimer() {
 
   const InternalState st = snapshotState();
 
-  drone_msgs::msg::ControlState msg;
+  DroneState msg;
 
   // control_mode enum mapping
   msg.control_mode =
     (st.control_mode == ControlMode::Auto)
-      ? drone_msgs::msg::ControlState::CONTROL_MODE_AUTO
-      : drone_msgs::msg::ControlState::CONTROL_MODE_MANUAL;
+      ? DroneState::CONTROL_MODE_AUTO
+      : DroneState::CONTROL_MODE_MANUAL;
 
   msg.velocity_h = st.vel.hv;
   msg.velocity_v = st.vel.vv;

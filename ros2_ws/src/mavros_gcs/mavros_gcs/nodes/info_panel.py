@@ -8,9 +8,9 @@ import yaml
 # rclpy imports
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import (
-    QoSProfile,
     QoSHistoryPolicy,
     QoSReliabilityPolicy,
     QoSDurabilityPolicy,
@@ -23,7 +23,7 @@ from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
-from drone_msgs.msg import ControlState
+from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
 
 from ament_index_python.packages import get_package_share_directory
@@ -44,7 +44,7 @@ from mavros_gcs.panel_utils.views import (
     StatusTextView,
     OdometryView,
     GPSView,
-    ControlStateView,
+    DroneStateView,
     DroneInfoView,
 )
 
@@ -76,12 +76,18 @@ class InfoPanelNode(Node):
         
         # --------------------------------------------------
         # node parameters
-        # determines the size of history for StatusText topic panel
+        self.declare_parameter("drone_id", 0)
+        drone_id = int(self.get_parameter("drone_id").value)
+
+        # ... after reading YAML topic_command/topic_action ...
+        base = f"/drone_{drone_id}"
+
+        # ------------------------
+        # read yaml config file
         self.declare_parameter("config_pkg", "mavros_config")
         self.declare_parameter("config_rel", "config/control_params.yaml")
         config_pkg = self.get_parameter("config_pkg").value
         config_rel = self.get_parameter("config_rel").value
-
         root_cfg = load_yaml_from_pkg(config_pkg, config_rel)
 
         panel_cfg = root_cfg.get("panel", {})
@@ -91,35 +97,26 @@ class InfoPanelNode(Node):
             raise RuntimeError("YAML key 'panel' must be a dict")
         if not isinstance(mavros_topics, dict):
             raise RuntimeError("YAML key 'mavros_topics' must be a dict")
-
-        # panel settings (from YAML)
+        
+        # ------------------------
+        # panel setting
         self.queue_size = int(panel_cfg.get("queue_size", 10))
         self.stale_threshold_s = float(panel_cfg.get("stale_threshold_s", 5.0))
         self.refresh_hz = float(panel_cfg.get("refresh_hz", 4.0))
 
-        # MAVROS topics (from YAML)
-        t_state = str(mavros_topics.get("state", "/mavros/state"))
-        t_battery = str(mavros_topics.get("battery", "/mavros/battery"))
-        t_extended_state = str(mavros_topics.get("extended_state", "/mavros/extended_state"))
-        t_statustext = str(mavros_topics.get("statustext", "/mavros/statustext/recv"))
-        t_odom = str(mavros_topics.get("odom", "/mavros/local_position/odom"))
-        t_gps1_raw = str(mavros_topics.get("gps1_raw", "/mavros/gpsstatus/gps1/raw"))
+        # MAVROS topics
+        t_state = base + mavros_topics["state"]
+        t_battery = base + mavros_topics["battery"]
+        t_extended_state = base + mavros_topics["extended_state"]
+        t_statustext = base + mavros_topics["statustext"]
+        t_odom = base + mavros_topics["odom"]
+        t_gps1_raw = base + mavros_topics["gps1_raw"]
+        
+        # control_gate topics
+        t_control_state = f"/drone_{drone_id}/cmd_gate/state"
+        t_drone_info = f"/drone_{drone_id}/cmd_gate/info"
 
         # --------------------------------------------------
-        # control_gate state topic (DRONE_ID env, default 0)
-        drone_id = 0
-        env_id = os.environ.get("DRONE_ID", None)
-        if env_id is not None:
-            try:
-                drone_id = int(env_id)
-            except Exception:
-                self.get_logger().warn(f"Invalid DRONE_ID='{env_id}', defaulting to 0")
-                drone_id = 0
-
-        t_control_state = f"/drone_{drone_id}/state"
-        t_drone_info = f"/drone_{drone_id}/info"
-        # --------------------------------------------------
-
         self._ui_lock = threading.Lock()
 
         # cached views
@@ -129,7 +126,7 @@ class InfoPanelNode(Node):
         self.statustext = StatusTextView(queue_size=self.queue_size)
         self.odom = OdometryView()
         self.gps1 = GPSView()
-        self.control_state = ControlStateView()
+        self.control_state = DroneStateView()
         self.drone_info = DroneInfoView(queue_size=self.queue_size)
 
         reliable_qos = QoSProfile(
@@ -137,6 +134,12 @@ class InfoPanelNode(Node):
             depth=10,
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        qos_latched = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
 
         # subscriptions
@@ -146,8 +149,8 @@ class InfoPanelNode(Node):
         self.create_subscription(State, t_state, self._on_state, reliable_qos)
         self.create_subscription(Odometry, t_odom, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(GPSRAW, t_gps1_raw, self._on_gps1_raw, qos_profile_sensor_data)
-        self.create_subscription(ControlState, t_control_state, self._on_control_state, qos_profile_sensor_data)
-        self.create_subscription(DroneInfo, t_drone_info, self._on_drone_info, reliable_qos)
+        self.create_subscription(DroneState, t_control_state, self._on_control_state, qos_profile_sensor_data)
+        self.create_subscription(DroneInfo, t_drone_info, self._on_drone_info, qos_latched)
 
         # UI refresh rate
         period = 1.0 / float(self.refresh_hz)
@@ -217,7 +220,7 @@ class InfoPanelNode(Node):
             self.gps1.update_from_msg(msg)
             self._mark_dirty("GPS1")
     
-    def _on_control_state(self, msg: ControlState):
+    def _on_control_state(self, msg: DroneState):
         with self._ui_lock:
             self.control_state.update_from_msg(msg)
             self._mark_dirty("Control Gate")

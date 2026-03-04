@@ -26,11 +26,11 @@ teleop:
 
   velocity:
     categories:
-      horizontal: [1.0, 2.0, 3.0, 5.0, 10.0]
-      vertical:   [0.25, 0.5, 1.0, 2.0, 5.0]
-      default_start_index: 1      # e.g. horizontal vel: horizontal[default_start_index]
+      horizontal: [2.0, 3.0, 5.0, 10.0]
+      vertical:   [0.5, 1.0, 2.0, 5.0]
+      default_start_index: 0     # e.g. horizontal vel: horizontal[default_start_index]
 
-    yaw_rate: 0.5   # rad/s
+    yaw_rate: 0.3   # rad/s
   
   commands:
     params:
@@ -42,10 +42,10 @@ teleop:
         activation_time_s: 0.0
         latch: true
       CONTROL_TOGGLE:
-        activation_time_s: 0.2
+        activation_time_s: 0.25
         latch: true
       KEYBOARD_TOGGLE:
-        activation_time_s: 1.0
+        activation_time_s: 0.25
         latch: true
       ARM:
         activation_time_s: 1.0
@@ -57,7 +57,7 @@ teleop:
         activation_time_s: 0.5
         latch: true
       RTL:
-        activation_time_s: 1.0
+        activation_time_s: 0.5
         latch: true
       TAKEOFF:
         activation_time_s: 1.0
@@ -75,5 +75,5 @@ teleop:
         activation_time_s: 0.0
         latch: false
       PRESS_SAFETY_SWITCH:
-        activation_time_s: 2.0
+        activation_time_s: 1.0
         latch: true
