@@ -1,5 +1,7 @@
 #include "mavros_gate/control_gate.hpp"
 
+#include <builtin_interfaces/msg/time.hpp>
+
 using DroneInfo = drone_msgs::msg::DroneInfo;
 
 
@@ -89,9 +91,7 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
     pub_setpoint_raw_local_->publish(sp);
 
     // update last action time
-    InternalStateUpdate update;
-    update.last_action_t = std::chrono::steady_clock::now();
-    updateInternalStateAtomic(update);
+    writeLastAct(std::chrono::steady_clock::now());
 }
 
 // Updates internal state from /mavros/state
@@ -102,4 +102,19 @@ void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg
     update.armed = msg->armed;
     update.guided = msg->guided;
     updateInternalStateAtomic(update);
+
+    landed_state_.store(msg->system_status, std::memory_order_relaxed);
+}
+
+void ControlGateNode::onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg) {
+  const auto now_ns   = this->now().nanoseconds();
+  const auto stamp_ns = rclcpp::Time(msg->stamp).nanoseconds();  // simple ctor
+
+  const int64_t diff_ns = (now_ns > stamp_ns) ? (now_ns - stamp_ns) : (stamp_ns - now_ns);
+
+  if (diff_ns > 3'000'000'000LL) {  // 3 seconds in ns
+    return;
+  }
+
+  time_since_heartbeat_ = this->now();
 }

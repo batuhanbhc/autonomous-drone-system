@@ -32,6 +32,7 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   const std::string base_ns = "/drone_" + std::to_string(drone_id);
   base_ns_ = base_ns;
 
+  // topic paths
   topics_.manual_command = base_ns + topics_.manual_command;
   topics_.manual_action = base_ns + topics_.manual_action;
   topics_.autonomous_action = base_ns + topics_.autonomous_action;
@@ -39,6 +40,8 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   std::string topic_setpoint_local = base_ns + std::string("/mavros/setpoint_raw/local");
   std::string topic_cmd_gate_state = base_ns + std::string("/cmd_gate/state");
   std::string topic_cmd_gate_info = base_ns + std::string("/cmd_gate/info");
+  std::string topic_gcs_heartbeat = base_ns + std::string("/gcs/heartbeat");
+  std::string topic_mavros_extended_state = base_ns + std::string("/mavros/extended_state");
 
   // -----------------------------------
   // QoS profiles
@@ -61,6 +64,11 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     topic_mavros_state, qos_command,
     std::bind(&ControlGateNode::onMavrosState, this, std::placeholders::_1));
 
+  sub_gcs_heartbeat_ = this->create_subscription<GcsHeartbeat>(
+    topic_gcs_heartbeat,
+    qos_sensor_data,
+    std::bind(&ControlGateNode::onGcsHeartbeat, this, std::placeholders::_1));
+
   // --- Publishers ---
   pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(topic_setpoint_local, qos_sensor_data);
   pub_control_state_ = this->create_publisher<DroneState>(topic_cmd_gate_state, qos_state_pub);
@@ -73,6 +81,12 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     rclcpp::shutdown();
     throw std::runtime_error("control_gate init failed");
   } 
+
+  // extended state starts publishing after initialization routine calls mavros service
+  sub_mavros_extended_state_ = this->create_subscription<mavros_msgs::msg::ExtendedState>(
+    topic_mavros_extended_state,
+    qos_sensor_data,
+    std::bind(&ControlGateNode::onMavrosExtendedState, this, std::placeholders::_1));
 
   // called mainly for logging whether setpoint commands can be sent or not
   const InternalState st0 = snapshotState();

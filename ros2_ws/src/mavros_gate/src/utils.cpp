@@ -3,6 +3,7 @@
 
 using Cmd = drone_msgs::msg::TeleopCommand;
 using DroneInfo = drone_msgs::msg::DroneInfo;
+using MonotonicTime = std::chrono::steady_clock::time_point;
 
 const char* ControlGateNode::commandName(int8_t id) {
   switch (id) {
@@ -44,7 +45,6 @@ void ControlGateNode::updateInternalStateAtomic(const InternalStateUpdate & upda
   std::lock_guard<std::mutex> lk(state_mtx_);
   if (update.control_mode)    state_.control_mode = *update.control_mode;
   if (update.vel)             state_.vel = *update.vel;
-  if (update.last_action_t) state_.last_action_t = *update.last_action_t;
   if (update.keyboard_on)     state_.keyboard_on = *update.keyboard_on;
   if (update.safety_switch_on)  state_.safety_switch_on = *update.safety_switch_on;
   if (update.connected)       state_.connected = *update.connected;
@@ -175,8 +175,8 @@ bool ControlGateNode::initializationRoutine() {
   st.guided = false;
   st.kill_switch_window = false;
   st.system_killed = false;
-  st.last_action_t = std::chrono::steady_clock::now();
   updateInternalStateAtomic(st);
+  writeLastAct(std::chrono::steady_clock::now());
 
 
   // Initialize clients
@@ -257,4 +257,15 @@ void ControlGateNode::updateSetpointBlockStateAndMaybePublish(bool blocked, bool
       publishInfo(DroneInfo::LEVEL_INFO, "Setpoint commands are now enabled.");
     }
   }
+}
+
+
+void ControlGateNode::writeLastAct(const MonotonicTime& t) {
+    std::lock_guard<std::mutex> lk(last_act_mtx_);
+    last_action_t_ = t;
+}
+
+MonotonicTime ControlGateNode::readLastAct(void) const {
+    std::lock_guard<std::mutex> lk(last_act_mtx_);
+    return last_action_t_;
 }

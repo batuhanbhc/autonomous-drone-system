@@ -5,6 +5,7 @@ void ControlGateNode::onPublishStateTimer() {
   if (inInitializationPhase()) return;
 
   const InternalState st = snapshotState();
+  MonotonicTime last_act_t = readLastAct();
 
   DroneState msg;
 
@@ -21,15 +22,15 @@ void ControlGateNode::onPublishStateTimer() {
   msg.safety_switch_on = st.safety_switch_on;
   msg.system_killed = st.system_killed;
 
-  // time_since_action = now - last_action_t (steady clock)
+  // time_since_action = now - last_act_t (steady clock)
   const auto now = std::chrono::steady_clock::now();
 
   // If last_action_t was never set, publish 0 duration
-  if (st.last_action_t.time_since_epoch().count() == 0) {
+  if (last_act_t.time_since_epoch().count() == 0) {
     msg.time_since_action.sec = 0;
     msg.time_since_action.nanosec = 0;
   } else {
-    auto dt = now - st.last_action_t;
+    auto dt = now - last_act_t;
 
     // Clamp negative just in case (shouldn't happen with steady_clock)
     if (dt < std::chrono::steady_clock::duration::zero()) {
@@ -59,4 +60,9 @@ void ControlGateNode::publishInfo(uint8_t level, const std::string& text) {
   msg.text = text;
 
   pub_drone_info_->publish(msg);
+}
+
+
+void ControlGateNode::onMavrosExtendedState(const MavrosExtendedState::SharedPtr msg){
+  landed_state_.store(msg->landed_state, std::memory_order_relaxed);
 }

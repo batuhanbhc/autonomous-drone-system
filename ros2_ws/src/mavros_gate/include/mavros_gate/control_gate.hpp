@@ -24,6 +24,8 @@
 #include <drone_msgs/msg/teleop_command.hpp>
 #include <drone_msgs/msg/drone_state.hpp>
 #include <drone_msgs/msg/drone_info.hpp>
+#include <drone_msgs/msg/gcs_heartbeat.hpp>
+#include <mavros_msgs/msg/extended_state.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
@@ -49,6 +51,8 @@ private:
   using TeleopAct = drone_msgs::msg::TeleopAction;
   using DroneInfo = drone_msgs::msg::DroneInfo;
   using DroneState = drone_msgs::msg::DroneState;
+  using GcsHeartbeat = drone_msgs::msg::GcsHeartbeat;
+  using MavrosExtendedState = mavros_msgs::msg::ExtendedState;
 
   using MonotonicTime = std::chrono::steady_clock::time_point;
 
@@ -78,7 +82,6 @@ private:
     bool guided{false};
     bool kill_switch_window{false};
     bool system_killed{false};
-    MonotonicTime last_action_t{};
   };
 
   struct InternalStateUpdate {
@@ -91,7 +94,6 @@ private:
     std::optional<bool> guided;
     std::optional<bool> kill_switch_window;
     std::optional<bool> system_killed;
-    std::optional<MonotonicTime> last_action_t;
   };
 
   template <typename... Args>
@@ -112,9 +114,7 @@ private:
 
   // map from command ID to command name
   static const char* commandName(int8_t);
-
-  // function that returns true if command can always be executed, independent of current ControlMode
-  bool isCommandAlwaysEnabled(int8_t);
+  
 
   // command handlers
   CommandResult executeArm(const TeleopCmd&, const InternalState&);
@@ -133,13 +133,18 @@ private:
   // function that initializes assigning command IDs to function pointers
   void initCommandHandlers();
 
-  // setpoint enable/disable transition tracking
+  // members
+  TopicPaths topics_;
+  std::string base_ns_;
+  float takeoff_m_;
   bool setpoint_blocked_{true};
-  bool setpoint_blocked_initialized_{false};
-
-  bool isSetpointBlocked(const InternalState& st) const;
-  void updateSetpointBlockStateAndMaybePublish(bool blocked, bool initial_publish);
-
+  bool setpoint_blocked_initialized_{false};  
+  bool initialization_phase_{true};
+  MonotonicTime last_action_t_;
+  rclcpp::Time time_since_heartbeat_{0, 0, RCL_ROS_TIME};
+  std::atomic<uint8_t> landed_state_{mavros_msgs::msg::ExtendedState::LANDED_STATE_UNDEFINED};
+  std::atomic<uint8_t> fcu_state_{0};
+  
   // helpers
   void updateInternalStateAtomic(const InternalStateUpdate &);
   bool loadConfig();
@@ -147,33 +152,36 @@ private:
   bool inInitializationPhase() const;
   float getTakeoffMeters() const;
   InternalState snapshotState() const;
+  bool isCommandAlwaysEnabled(int8_t);
+  MonotonicTime readLastAct() const;
+  void writeLastAct(const MonotonicTime&);
+  bool isSetpointBlocked(const InternalState& st) const;
 
-  // callbacks
+  // subscriber callbacks
   void onTeleopCommand(const TeleopCmd::SharedPtr);
   void onTeleopAction(const TeleopAct::SharedPtr);
   void onMavrosState(const mavros_msgs::msg::State::SharedPtr);
   void onPublishStateTimer();
+  void onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg);
+  void onMavrosExtendedState(const MavrosExtendedState::SharedPtr msg);
+
+  // publisher helpers
   void publishInfo(uint8_t level, const std::string& text);
+  void updateSetpointBlockStateAndMaybePublish(bool blocked, bool initial_publish);
 
-  // members
-  TopicPaths topics_;
-  std::string base_ns_;
-  float takeoff_m_;
-
-  // mutex & cvs
+  // mutexes
   mutable std::mutex state_mtx_;
-  std::condition_variable state_cv_;
+  mutable std::mutex last_act_mtx_;
 
   // internal state object
-  InternalState state_;
-
-  // flag variable set to "true" during initialization
-  bool initialization_phase_{true};
+  InternalState state_;  
 
   // subscriptions
   rclcpp::Subscription<TeleopCmd>::SharedPtr sub_teleop_command_;
   rclcpp::Subscription<TeleopAct>::SharedPtr sub_teleop_action_;
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr sub_mavros_state_;
+  rclcpp::Subscription<GcsHeartbeat>::SharedPtr sub_gcs_heartbeat_;
+  rclcpp::Subscription<MavrosExtendedState>::SharedPtr sub_mavros_extended_state_;
 
   // publishers
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_local_;
