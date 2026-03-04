@@ -23,6 +23,7 @@ from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
+from drone_msgs.msg import ControlState
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -41,7 +42,8 @@ from mavros_gcs.panel_utils.views import (
     ExtendedStateView,
     StatusTextView,
     OdometryView,
-    GPSView
+    GPSView,
+    ControlStateView
 )
 
 from mavros_gcs.panel_utils.helpers import (
@@ -100,6 +102,19 @@ class InfoPanelNode(Node):
         t_statustext = str(mavros_topics.get("statustext", "/mavros/statustext/recv"))
         t_odom = str(mavros_topics.get("odom", "/mavros/local_position/odom"))
         t_gps1_raw = str(mavros_topics.get("gps1_raw", "/mavros/gpsstatus/gps1/raw"))
+
+        # --------------------------------------------------
+        # control_gate state topic (DRONE_ID env, default 0)
+        drone_id = 0
+        env_id = os.environ.get("DRONE_ID", None)
+        if env_id is not None:
+            try:
+                drone_id = int(env_id)
+            except Exception:
+                self.get_logger().warn(f"Invalid DRONE_ID='{env_id}', defaulting to 0")
+                drone_id = 0
+
+        t_control_state = f"/drone_{drone_id}/state"
         # --------------------------------------------------
 
         self._ui_lock = threading.Lock()
@@ -111,6 +126,7 @@ class InfoPanelNode(Node):
         self.statustext = StatusTextView(queue_size=self.queue_size)
         self.odom = OdometryView()
         self.gps1 = GPSView()
+        self.control_state = ControlStateView()
 
         reliable_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -126,6 +142,7 @@ class InfoPanelNode(Node):
         self.create_subscription(State, t_state, self._on_state, reliable_qos)
         self.create_subscription(Odometry, t_odom, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(GPSRAW, t_gps1_raw, self._on_gps1_raw, qos_profile_sensor_data)
+        self.create_subscription(ControlState, t_control_state, self._on_control_state, qos_profile_sensor_data)
 
         # UI refresh rate
         period = 1.0 / float(self.refresh_hz)
@@ -143,6 +160,7 @@ class InfoPanelNode(Node):
             "Odometry": self._render_odom_panel,
             "StatusText": self._render_statustext_panel,
             "GPS1": self._render_gps1_panel,
+            "Control Gate": self._render_control_state_panel,
         }
 
         # boolean dict to mark sections as dirty when they get an update
@@ -192,6 +210,11 @@ class InfoPanelNode(Node):
         with self._ui_lock:
             self.gps1.update_from_msg(msg)
             self._mark_dirty("GPS1")
+    
+    def _on_control_state(self, msg: ControlState):
+        with self._ui_lock:
+            self.control_state.update_from_msg(msg)
+            self._mark_dirty("Control Gate")
 
 
     # ---- Snapshot Functions (for copying) ----
@@ -242,6 +265,16 @@ class InfoPanelNode(Node):
             "vacc": self.gps1.v_acc_m,
         }
     
+    def _snapshot_control_state(self):
+        return {
+            "control_mode": self.control_state.control_mode,
+            "velocity_h": self.control_state.velocity_h,
+            "velocity_v": self.control_state.velocity_v,
+            "keyboard_on": self.control_state.keyboard_on,
+            "safety_switch_on": self.control_state.safety_switch_on,
+            "system_killed": self.control_state.system_killed,
+            "time_since_action_s": self.control_state.time_since_action_s,
+        }
 
     # ------------------- rendering -------------------
     def _render_state_panel(self, data) -> Panel:
@@ -376,6 +409,40 @@ class InfoPanelNode(Node):
 
         return Panel(t, title="GPS1", border_style="cyan")
 
+    def _render_control_state_panel(self, data) -> Panel:
+        t = Table(
+            box=box.SIMPLE,
+            show_header=False,
+            show_edge=False,
+            pad_edge=False,
+            expand=True,
+        )
+        t.add_column(justify="left")
+        t.add_column(justify="right")
+
+        # map enum -> text
+        mode = None
+        if data["control_mode"] is not None:
+            if data["control_mode"] == 0:
+                mode = "AUTO"
+            elif data["control_mode"] == 1:
+                mode = "MANUAL"
+            else:
+                mode = f"UNKNOWN({data['control_mode']})"
+
+        t.add_row("Control Mode", _format_str_to_str(mode))
+        t.add_row("Vel H (m/s)", _format_float_to_str(data["velocity_h"], 2))
+        t.add_row("Vel V (m/s)", _format_float_to_str(data["velocity_v"], 2))
+        t.add_row("Keyboard", _format_bool_to_str(data["keyboard_on"]))
+        t.add_row("Safety Switch", _format_bool_to_str(data["safety_switch_on"]))
+        t.add_row("System Killed", _format_bool_to_str(data["system_killed"]))
+
+        tsa = data["time_since_action_s"]
+        tsa_str = None if tsa is None else f"{tsa:.2f}"
+        t.add_row("Since Action (s)", _format_str_to_str(tsa_str))
+
+        return Panel(t, title="Control Gate", border_style="red")
+    
     # ---- build console ui layout ----
 
     def _build_layout_from_snapshot(self, snap, dirty):
@@ -405,6 +472,7 @@ class InfoPanelNode(Node):
         panels.append(get("Odometry", lambda: self._render_odom_panel(snap["Odometry"])))
         panels.append(get("StatusText", lambda: self._render_statustext_panel(snap["StatusText"])))
         panels.append(get("GPS1", lambda: self._render_gps1_panel(snap["GPS1"])))
+        panels.append(get("Control Gate", lambda: self._render_control_state_panel(snap["Control Gate"])))
 
         body = Columns(panels, equal=False, expand=True, padding=(0, 1))
         return Panel(body, title=header, border_style="green", expand=True)
@@ -443,6 +511,7 @@ class InfoPanelNode(Node):
             snap["Odometry"] = self._snapshot_odom()
             snap["StatusText"] = self._snapshot_statustext()
             snap["GPS1"] = self._snapshot_gps1()
+            snap["Control Gate"] = self._snapshot_control_state()
 
         # render outside lock using 'snap'
         layout = self._build_layout_from_snapshot(snap, dirty)

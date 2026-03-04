@@ -4,6 +4,7 @@ from mavros_msgs.msg import ExtendedState
 from mavros_msgs.msg import StatusText
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
+from drone_msgs.msg import ControlState
 
 from pymavlink import mavutil
 from tf_transformations import euler_from_quaternion
@@ -46,7 +47,30 @@ class StateView:
         self.sys_status = mavutil.mavlink.enums['MAV_STATE'][int(msg.system_status)].name
 
 
+@dataclass
+class ControlStateView:
+    control_mode    : int | None = None
+    velocity_h      : float | None = None
+    velocity_v      : float | None = None
+    keyboard_on     : bool | None = None
+    safety_switch_on: bool | None = None
+    system_killed   : bool | None = None
+    time_since_action_s: float | None = None  # display-friendly (seconds)
 
+    def update_from_msg(self, msg: ControlState):
+        self.control_mode = int(msg.control_mode)
+        self.velocity_h = float(msg.velocity_h)
+        self.velocity_v = float(msg.velocity_v)
+        self.keyboard_on = bool(msg.keyboard_on)
+        self.safety_switch_on = bool(msg.safety_switch_on)
+        self.system_killed = bool(msg.system_killed)
+
+        # builtin_interfaces/Duration -> seconds float for display
+        sec = int(msg.time_since_action.sec)
+        nsec = int(msg.time_since_action.nanosec)
+        self.time_since_action_s = float(sec) + float(nsec) * 1e-9
+
+        
 @dataclass
 class ExtendedStateView:
     vtol_state      : int | None = None
