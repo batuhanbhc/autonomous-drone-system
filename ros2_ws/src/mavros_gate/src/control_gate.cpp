@@ -23,12 +23,6 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   this->declare_parameter<int>("drone_id", 0);
   this->get_parameter("drone_id", drone_id);
 
-  // Optional: sanity clamp
-  if (drone_id < 0) {
-    RCLCPP_WARN(get_logger(), "drone_id=%d is invalid, defaulting to 0.", drone_id);
-    drone_id = 0;
-  }
-
   const std::string base_ns = "/drone_" + std::to_string(drone_id);
   base_ns_ = base_ns;
 
@@ -51,6 +45,7 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   const auto qos_state_pub = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto qos_info_latched =rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
 
+  // -----------------------------------
   // --- Subscriptions ---
   sub_teleop_command_ = this->create_subscription<TeleopCmd>(
     topics_.manual_command, qos_command,
@@ -69,25 +64,21 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     qos_sensor_data,
     std::bind(&ControlGateNode::onGcsHeartbeat, this, std::placeholders::_1));
 
+  // -----------------------------------
   // --- Publishers ---
   pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(topic_setpoint_local, qos_sensor_data);
   pub_control_state_ = this->create_publisher<DroneState>(topic_cmd_gate_state, qos_state_pub);
   pub_drone_info_ = this->create_publisher<DroneInfo>(topic_cmd_gate_info, qos_info_latched);
 
-    
+  // -----------------------------------
   if (!initializationRoutine()) {
     publishInfo(DroneInfo::LEVEL_ERROR, "Non-fixable error occured during initialization routine.");
     RCLCPP_FATAL(get_logger(), "Non-fixable error occured during initialization routine.");
     rclcpp::shutdown();
     throw std::runtime_error("control_gate init failed");
   } 
-
-  // extended state starts publishing after initialization routine calls mavros service
-  sub_mavros_extended_state_ = this->create_subscription<mavros_msgs::msg::ExtendedState>(
-    topic_mavros_extended_state,
-    qos_sensor_data,
-    std::bind(&ControlGateNode::onMavrosExtendedState, this, std::placeholders::_1));
-
+  
+  // -----------------------------------
   // called mainly for logging whether setpoint commands can be sent or not
   const InternalState st0 = snapshotState();
   updateSetpointBlockStateAndMaybePublish(isSetpointBlocked(st0), true);
@@ -96,6 +87,11 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   state_pub_timer_ = this->create_wall_timer(
     std::chrono::seconds(1),
     std::bind(&ControlGateNode::onPublishStateTimer, this));
+
+  // 0.5 Hz GCS watchdog timer
+  gcs_watchdog_timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(static_cast<int64_t>((1.0 / failsafe_watchdog_hz_) * 1000)),
+    std::bind(&ControlGateNode::onFailsafeWatchdog, this));
       
   // update initialization phase flag to false, so that workflow starts
   RCLCPP_INFO(get_logger(), "Initialization complete.");

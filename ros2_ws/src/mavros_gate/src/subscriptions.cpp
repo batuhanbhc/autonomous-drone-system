@@ -1,9 +1,8 @@
 #include "mavros_gate/control_gate.hpp"
 
-#include <builtin_interfaces/msg/time.hpp>
 
 using DroneInfo = drone_msgs::msg::DroneInfo;
-
+using MavrosExtendedState = mavros_msgs::msg::ExtendedState;
 
 void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::SharedPtr msg) {
   if (inInitializationPhase()) return;
@@ -34,6 +33,11 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
       } else if (current_state.keyboard_on == false) {
         // Keyboard is off, control state cannot accept this command
         publishInfo(DroneInfo::LEVEL_WARN, stringf("Rejected (id=%d, %s): Keyboard off.", msg->command_id, command_name));
+        //RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Keyboard is off.", msg->command_id, command_name);
+        return;
+      } else if (critical_state_.load(std::memory_order_relaxed)) {
+        // Keyboard is off, control state cannot accept this command
+        publishInfo(DroneInfo::LEVEL_ERROR, stringf("Rejected (id=%d, %s): System in critical state.", msg->command_id, command_name));
         //RCLCPP_WARN(get_logger(), "Rejected (id=%d, %s): Keyboard is off.", msg->command_id, command_name);
         return;
       }
@@ -91,7 +95,7 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
     pub_setpoint_raw_local_->publish(sp);
 
     // update last action time
-    writeLastAct(std::chrono::steady_clock::now());
+    updateLastAct(std::chrono::steady_clock::now());
 }
 
 // Updates internal state from /mavros/state
@@ -103,7 +107,7 @@ void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg
     update.guided = msg->guided;
     updateInternalStateAtomic(update);
 
-    landed_state_.store(msg->system_status, std::memory_order_relaxed);
+    fcu_state_.store(msg->system_status, std::memory_order_relaxed);
 }
 
 void ControlGateNode::onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg) {
@@ -116,5 +120,48 @@ void ControlGateNode::onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg) {
     return;
   }
 
-  time_since_heartbeat_ = this->now();
+  time_since_heartbeat_ns_.store(this->now().nanoseconds(), std::memory_order_relaxed);
+}
+
+
+void ControlGateNode::onFailsafeWatchdog() {
+  // --- 1. Critical state check  ---
+  const uint8_t fcu = fcu_state_.load(std::memory_order_relaxed);
+  if (fcu >= 5u) {  // MAV_STATE_CRITICAL and above
+    if (!critical_state_.load(std::memory_order_relaxed)) {
+      critical_state_.store(true, std::memory_order_relaxed);
+      RCLCPP_ERROR(get_logger(),
+        "FCU entered critical state (system_status=%u).", fcu);
+      publishInfo(DroneInfo::LEVEL_ERROR,
+        stringf("FCU critical state (system_status=%u).", fcu));
+    }
+  }
+
+  // --- 2. GCS failsafe scope ---
+  const int64_t last_ns = time_since_heartbeat_ns_.load(std::memory_order_relaxed);
+  const rclcpp::Time last_heartbeat(last_ns, RCL_ROS_TIME);
+  const double elapsed_s = (this->now() - last_heartbeat).seconds();
+  if (last_ns == -1) return;  // no GCS ever connected, don't trigger failsafe
+
+  if (elapsed_s > gcs_failsafe_s_) {
+    if (!gcs_failsafe_.load(std::memory_order_relaxed)) {
+      gcs_failsafe_.store(true, std::memory_order_relaxed);
+      RCLCPP_ERROR(get_logger(),
+        "GCS heartbeat lost for %.1f s (threshold=%.1f s). GCS failsafe triggered.", elapsed_s, gcs_failsafe_s_);
+      publishInfo(DroneInfo::LEVEL_ERROR,
+        stringf("GCS failsafe: no heartbeat for %.1f s.", elapsed_s));
+      publishInfo(DroneInfo::LEVEL_ERROR, "Sending LAND.");
+
+      // send land
+      drone_msgs::msg::TeleopCommand dummy_cmd{};
+      executeRTL(dummy_cmd, snapshotState());
+    }
+  } else {
+    if (gcs_failsafe_.load(std::memory_order_relaxed)) {
+      gcs_failsafe_.store(false, std::memory_order_relaxed);
+      RCLCPP_WARN(get_logger(),
+        "GCS heartbeat recovered (%.1f s gap). GCS failsafe cleared.", elapsed_s);
+      publishInfo(DroneInfo::LEVEL_WARN, "GCS failsafe cleared: heartbeat recovered.");
+    }
+  }
 }

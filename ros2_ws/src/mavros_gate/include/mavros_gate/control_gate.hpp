@@ -26,6 +26,7 @@
 #include <drone_msgs/msg/drone_info.hpp>
 #include <drone_msgs/msg/gcs_heartbeat.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
+#include <builtin_interfaces/msg/time.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
@@ -75,7 +76,7 @@ private:
   struct InternalState {
     ControlMode control_mode{ControlMode::Manual};
     VelocityLevel vel{0.0, 0.0};
-    bool keyboard_on{false};
+    bool keyboard_on{true};
     bool safety_switch_on{true};
     bool connected{false};
     bool armed{false};
@@ -137,14 +138,17 @@ private:
   TopicPaths topics_;
   std::string base_ns_;
   float takeoff_m_;
+  double gcs_failsafe_s_{5.0};
+  float failsafe_watchdog_hz_{1.0};
   bool setpoint_blocked_{true};
   bool setpoint_blocked_initialized_{false};  
   bool initialization_phase_{true};
   MonotonicTime last_action_t_;
-  rclcpp::Time time_since_heartbeat_{0, 0, RCL_ROS_TIME};
-  std::atomic<uint8_t> landed_state_{mavros_msgs::msg::ExtendedState::LANDED_STATE_UNDEFINED};
+  std::atomic<int64_t> time_since_heartbeat_ns_{-1};
   std::atomic<uint8_t> fcu_state_{0};
-  
+  std::atomic<bool> critical_state_{false};
+  std::atomic<bool> gcs_failsafe_{false};
+
   // helpers
   void updateInternalStateAtomic(const InternalStateUpdate &);
   bool loadConfig();
@@ -154,7 +158,7 @@ private:
   InternalState snapshotState() const;
   bool isCommandAlwaysEnabled(int8_t);
   MonotonicTime readLastAct() const;
-  void writeLastAct(const MonotonicTime&);
+  void updateLastAct(const MonotonicTime&);
   bool isSetpointBlocked(const InternalState& st) const;
 
   // subscriber callbacks
@@ -163,7 +167,7 @@ private:
   void onMavrosState(const mavros_msgs::msg::State::SharedPtr);
   void onPublishStateTimer();
   void onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg);
-  void onMavrosExtendedState(const MavrosExtendedState::SharedPtr msg);
+  void onFailsafeWatchdog();
 
   // publisher helpers
   void publishInfo(uint8_t level, const std::string& text);
@@ -181,7 +185,6 @@ private:
   rclcpp::Subscription<TeleopAct>::SharedPtr sub_teleop_action_;
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr sub_mavros_state_;
   rclcpp::Subscription<GcsHeartbeat>::SharedPtr sub_gcs_heartbeat_;
-  rclcpp::Subscription<MavrosExtendedState>::SharedPtr sub_mavros_extended_state_;
 
   // publishers
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_local_;
@@ -198,6 +201,7 @@ private:
   // timers
   rclcpp::TimerBase::SharedPtr kill_switch_timer_;
   rclcpp::TimerBase::SharedPtr state_pub_timer_;
+  rclcpp::TimerBase::SharedPtr gcs_watchdog_timer_;
 };
 
 #endif  // MAVROS_GATE__COMMAND_GATE_HPP_

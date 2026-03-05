@@ -33,6 +33,8 @@ bool ControlGateNode::isCommandAlwaysEnabled(int8_t id) {
     case Cmd::KILL_CONFIRM:
     case Cmd::CONTROL_TOGGLE:
     case Cmd::KEYBOARD_TOGGLE:
+    case Cmd::LAND:
+    case Cmd::RTL:
       return true;
     default:
       return false;
@@ -84,6 +86,10 @@ bool ControlGateNode::loadConfig() {
   ok &= get_str("manual_action", topics_.manual_action);
   ok &= get_str("manual_command", topics_.manual_command);
   try { takeoff_m_ = root["flight_params"]["takeoff_m"].as<float>(); }
+  catch (const YAML::Exception&) { ok = false; }
+  try { gcs_failsafe_s_ = root["flight_params"]["gcs_failsafe_s"].as<double>(); }
+  catch (const YAML::Exception&) { ok = false; }
+  try { failsafe_watchdog_hz_ = root["flight_params"]["failsafe_watchdog_hz"].as<float>(); }
   catch (const YAML::Exception&) { ok = false; }
   return ok;
 }
@@ -164,20 +170,7 @@ void ControlGateNode::initCommandHandlers() {
 
 // Calls all necessary ros2 services/topics to initialize command_gate properly
 bool ControlGateNode::initializationRoutine() {
-  // Initialize internal state
-  InternalStateUpdate st;
-  st.control_mode = ControlMode::Manual;
-  st.vel = VelocityLevel{0.0, 0.0};
-  st.keyboard_on = false;
-  st.safety_switch_on = true;
-  st.connected = false;
-  st.armed = false;
-  st.guided = false;
-  st.kill_switch_window = false;
-  st.system_killed = false;
-  updateInternalStateAtomic(st);
-  writeLastAct(std::chrono::steady_clock::now());
-
+  updateLastAct(std::chrono::steady_clock::now());
 
   // Initialize clients
   std::string arming_path = base_ns_ + "/mavros/cmd/arming";
@@ -223,9 +216,10 @@ bool ControlGateNode::initializationRoutine() {
 
 
 bool ControlGateNode::isSetpointBlocked(const InternalState& st) const {
-  // "Enabled" means: connected, manual, armed, not killed, keyboard on
+  // "Enabled" means: connected, manual, armed, not killed, keyboard on, not in critical state
   const bool enabled = st.connected && !st.system_killed && st.armed &&
-      (st.control_mode == ControlMode::Manual) && st.keyboard_on;
+      (st.control_mode == ControlMode::Manual) && st.keyboard_on &&
+      !critical_state_.load(std::memory_order_relaxed) && !gcs_failsafe_.load(std::memory_order_relaxed);
 
   return !enabled;
 }
@@ -260,7 +254,7 @@ void ControlGateNode::updateSetpointBlockStateAndMaybePublish(bool blocked, bool
 }
 
 
-void ControlGateNode::writeLastAct(const MonotonicTime& t) {
+void ControlGateNode::updateLastAct(const MonotonicTime& t) {
     std::lock_guard<std::mutex> lk(last_act_mtx_);
     last_action_t_ = t;
 }

@@ -61,8 +61,3 @@ void ControlGateNode::publishInfo(uint8_t level, const std::string& text) {
 
   pub_drone_info_->publish(msg);
 }
-
-
-void ControlGateNode::onMavrosExtendedState(const MavrosExtendedState::SharedPtr msg){
-  landed_state_.store(msg->landed_state, std::memory_order_relaxed);
-}
