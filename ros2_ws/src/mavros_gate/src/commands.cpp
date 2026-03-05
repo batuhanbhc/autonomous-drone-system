@@ -14,10 +14,7 @@ ControlGateNode::executeArm(const TeleopCmd&, const InternalState&) {
   }
 
   if (!arming_client_->service_is_ready()) {
-    // Avoid blocking a callback thread for long; just fail fast (or short wait).
-    if (!arming_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/cmd/arming not available."};
-    }
+    return {false, "Service /mavros/cmd/arming not available."};
   }
 
   auto req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
@@ -55,9 +52,7 @@ ControlGateNode::executeDisarm(const TeleopCmd&, const InternalState&) {
   }
 
   if (!arming_client_->service_is_ready()) {
-    if (!arming_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/cmd/arming not available."};
-    }
+    return {false, "Service /mavros/cmd/arming not available."};
   }
 
   auto req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
@@ -146,9 +141,7 @@ ControlGateNode::executeKillConfirm(const TeleopCmd&, const InternalState& int_s
   }
 
   if (!command_long_client_->service_is_ready()) {
-    if (!command_long_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/cmd/command not available."};
-    }
+    return {false, "Service /mavros/cmd/command not available."};
   }
 
   // Build MAVLink COMMAND_LONG: MAV_CMD_DO_FLIGHTTERMINATION (185)
@@ -207,9 +200,7 @@ ControlGateNode::executeLand(const TeleopCmd&, const InternalState&)
   }
 
   if (!set_mode_client_->service_is_ready()) {
-    if (!set_mode_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/set_mode not available."};
-    }
+    return {false, "Service /mavros/set_mode not available."};
   }
 
   auto req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
@@ -247,9 +238,7 @@ ControlGateNode::executeRTL(const TeleopCmd&, const InternalState&)
   }
 
   if (!command_long_client_->service_is_ready()) {
-    if (!command_long_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/cmd/command not available."};
-    }
+    return {false, "Service /mavros/cmd/command not available."};
   }
 
   auto req = std::make_shared<mavros_msgs::srv::CommandLong::Request>();
@@ -293,9 +282,7 @@ ControlGateNode::executeGuided(const TeleopCmd&, const InternalState&) {
   }
 
   if (!set_mode_client_->service_is_ready()) {
-    if (!set_mode_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/set_mode not available."};
-    }
+    return {false, "Service /mavros/set_mode not available."};
   }
 
   auto mode_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
@@ -331,9 +318,7 @@ ControlGateNode::executeTakeoff(const TeleopCmd&, const InternalState&) {
 
   // Send takeoff
   if (!takeoff_client_->service_is_ready()) {
-    if (!takeoff_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/cmd/takeoff not available."};
-    }
+    return {false, "Service /mavros/cmd/takeoff not available."};
   }
 
   auto to_req = std::make_shared<mavros_msgs::srv::CommandTOL::Request>();
@@ -442,9 +427,7 @@ ControlGateNode::executePressSafetySwitch(const TeleopCmd&, const InternalState&
   }
 
   if (!command_long_client_->service_is_ready()) {
-    if (!command_long_client_->wait_for_service(200ms)) {
-      return {false, "Service /mavros/cmd/command not available."};
-    }
+    return {false, "Service /mavros/cmd/command not available."};
   }
 
   // safety switch should not be pressed if copter is armed. Else, it may fall if in mid-air
