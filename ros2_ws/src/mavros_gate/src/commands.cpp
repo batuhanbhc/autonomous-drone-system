@@ -447,6 +447,12 @@ ControlGateNode::executePressSafetySwitch(const TeleopCmd&, const InternalState&
     }
   }
 
+  // safety switch should not be pressed if copter is armed. Else, it may fall if in mid-air
+  if (int_state.armed ) {
+    publishInfo(DroneInfo::LEVEL_ERROR, "Safety switch rejected: Vehicle currently ARMED.");
+    return {false, "Safety switch rejected: Vehicle currently ARMED."};
+  }
+
   const bool currently_safe = int_state.safety_switch_on; 
   const float target = currently_safe ? 1.0f : 0.0f;      // 1->UNSAFE, 0->SAFE
 

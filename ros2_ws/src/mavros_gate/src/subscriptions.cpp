@@ -206,8 +206,8 @@ void ControlGateNode::onFailsafeWatchdog() {
     // Clear GCS failsafe state if it is on
     if (is_there_failsafe) {
       gcs_failsafe_.store(false, std::memory_order_relaxed);
-      RCLCPP_WARN(get_logger(), "GCS failsafe cleared.");
-      publishInfo(DroneInfo::LEVEL_WARN, "GCS failsafe cleared: Heartbeat received.");
+      RCLCPP_INFO(get_logger(), "GCS failsafe cleared.");
+      publishInfo(DroneInfo::LEVEL_INFO, "GCS failsafe cleared: Heartbeat received.");
     }
   }
 }
