@@ -138,16 +138,21 @@ private:
   TopicPaths topics_;
   std::string base_ns_;
   float takeoff_m_;
-  double gcs_failsafe_s_{5.0};
   float failsafe_watchdog_hz_{1.0};
   bool setpoint_blocked_{true};
   bool setpoint_blocked_initialized_{false};  
   bool initialization_phase_{true};
   MonotonicTime last_action_t_;
-  std::atomic<int64_t> time_since_heartbeat_ns_{-1};
+
   std::atomic<uint8_t> fcu_state_{0};
   std::atomic<bool> critical_state_{false};
+
+  double gcs_failsafe_s_{5.0};
+  std::atomic<int64_t> time_since_heartbeat_ns_{-1};
+  std::atomic<int16_t> gcs_id_{-1};
+  std::atomic<bool> gcs_connected_{false};
   std::atomic<bool> gcs_failsafe_{false};
+
 
   // helpers
   void updateInternalStateAtomic(const InternalStateUpdate &);
