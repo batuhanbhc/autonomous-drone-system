@@ -172,13 +172,29 @@ void ControlGateNode::initCommandHandlers() {
 bool ControlGateNode::initializationRoutine() {
   updateLastAct(std::chrono::steady_clock::now());
 
-  // Initialize clients
+  // Initialize client paths
   std::string arming_path = base_ns_ + "/mavros/cmd/arming";
   std::string command_long_path = base_ns_ + "/mavros/cmd/command";
   std::string set_mode_path = base_ns_ + "/mavros/set_mode";
   std::string takeoff_path = base_ns_ + "/mavros/cmd/takeoff";
   std::string msg_interval_path = base_ns_ + "/mavros/set_message_interval";
+
+  // -----------------------------------
+  // Wait for mavros to come online before doing anything else
+  // Use arming service as a proxy for mavros being ready
+  RCLCPP_INFO(get_logger(), "Waiting for mavros to come online...");
   
+  auto arming_probe = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
+  
+  if (!arming_probe->wait_for_service(std::chrono::seconds(60))) {
+    RCLCPP_FATAL(get_logger(), "mavros arming service not available after 60s — is mavros running?");
+    return false;
+  }
+  RCLCPP_INFO(get_logger(), "mavros is online.");
+  arming_probe.reset(); // discard probe client; real one is created below
+  // -----------------------------------
+  
+  // Create clients
   arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
   command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>(command_long_path);
   set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>(set_mode_path);
