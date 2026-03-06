@@ -185,28 +185,32 @@ bool ControlGateNode::initializationRoutine() {
   takeoff_client_ = this->create_client<mavros_msgs::srv::CommandTOL>(takeoff_path);
   msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>(msg_interval_path);
 
-  //  Request /mavros/extended_state to start publishing
-  if (msg_interval_client_->wait_for_service(std::chrono::seconds(3))) {
-    auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
-    req->message_id = 245;     // MAVLink EXTENDED_SYS_STATE
-    req->message_rate = 2.0f;  // Hz
-
-    auto fut = msg_interval_client_->async_send_request(req);
-    // block briefly to log success
-    if (rclcpp::spin_until_future_complete(
-          this->get_node_base_interface(), fut, std::chrono::seconds(3)) ==
-        rclcpp::FutureReturnCode::SUCCESS) {
-      RCLCPP_INFO(this->get_logger(), "Requested EXTENDED_SYS_STATE stream: success=%s",
-                  fut.get()->success ? "true" : "false");
-    } else {
-      RCLCPP_ERROR(this->get_logger(), "set_message_interval call timed out");
+  
+// Helper to request a MAVLink message stream
+  auto requestMsgInterval = [&](int id, float rate_hz, const char* label) -> bool {
+    if (!msg_interval_client_->wait_for_service(std::chrono::seconds(3))) {
+      RCLCPP_ERROR(get_logger(), "/mavros/set_message_interval not available (%s)", label);
       return false;
     }
-  } else {
-    RCLCPP_ERROR(this->get_logger(), "/mavros/set_message_interval not available");
-    return false;
-  }
+    auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
+    req->message_id = id;
+    req->message_rate = rate_hz;
+    auto fut = msg_interval_client_->async_send_request(req);
+    if (rclcpp::spin_until_future_complete(
+          this->get_node_base_interface(), fut, std::chrono::seconds(3)) !=
+        rclcpp::FutureReturnCode::SUCCESS) {
+      RCLCPP_ERROR(get_logger(), "set_message_interval timed out (%s)", label);
+      return false;
+    }
+    RCLCPP_INFO(get_logger(), "Requested %s stream: success=%s",
+                label, fut.get()->success ? "true" : "false");
+    return true;
+  };
 
+  if (!requestMsgInterval(245, 2.0f,  "EXTENDED_SYS_STATE"))  return false;
+  if (!requestMsgInterval(147, 1.0f,  "BATTERY_STATUS"))       return false;
+  if (!requestMsgInterval(32,  10.0f, "LOCAL_POSITION_NED"))   return false;
+  if (!requestMsgInterval(24,  5.0f,  "GPS_RAW_INT"))          return false;
 
   // Initialize command handlers
   initCommandHandlers();
