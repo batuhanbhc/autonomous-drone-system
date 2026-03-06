@@ -43,7 +43,7 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   const auto qos_action = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   auto qos_sensor_data = rclcpp::SensorDataQoS();
   const auto qos_state_pub = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  const auto qos_info_latched =rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+  const auto qos_info_latched =rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local();
 
   // -----------------------------------
   // --- Subscriptions ---

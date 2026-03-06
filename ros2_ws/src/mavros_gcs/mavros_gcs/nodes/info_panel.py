@@ -137,7 +137,7 @@ class InfoPanelNode(Node):
         )
         qos_latched = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
+            depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
