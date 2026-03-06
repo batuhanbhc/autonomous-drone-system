@@ -24,6 +24,7 @@ services:
       - /proc:/proc
       - /run/dbus:/run/dbus
       - /tmp/.X11-unix:/tmp/.X11-unix
+      - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/home/batuhan/shared/start_nodes.sh
       - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
       - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
       - /home/batuhan/drone-project/config:/config
@@ -38,6 +39,6 @@ services:
       ROS_DOMAIN_ID: 10
       
     working_dir: /home/batuhan/ros2_ws
-    command: bash 
+    command: /bin/bash /home/batuhan/shared/start_nodes.sh
     stdin_open: true
     tty: true
