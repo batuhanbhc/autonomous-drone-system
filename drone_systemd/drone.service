@@ -1,12 +1,16 @@
 [Unit]
 Description=Drone Docker Stack
-After=docker.service
+After=docker.service NetworkManager-wait-online.service
 Requires=docker.service
+Wants=NetworkManager-wait-online.service
 
 [Service]
 Type=simple
 User=batuhan
 WorkingDirectory=/home/batuhan/drone-project/ros2_docker
+ExecStartPre=/bin/bash -c '\
+  until ip addr show wlan0 | grep -q "inet "; \
+  do echo "[drone.service] Waiting for IP on wlan0..."; sleep 2; done'
 ExecStart=/usr/bin/docker compose up
 ExecStop=/usr/bin/docker compose down
 Restart=on-failure
@@ -14,3 +18,4 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
+
