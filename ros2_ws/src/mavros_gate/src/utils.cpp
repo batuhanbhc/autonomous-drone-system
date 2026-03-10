@@ -204,22 +204,30 @@ bool ControlGateNode::initializationRoutine() {
   
 // Helper to request a MAVLink message stream
   auto requestMsgInterval = [&](int id, float rate_hz, const char* label) -> bool {
-    if (!msg_interval_client_->wait_for_service(std::chrono::seconds(3))) {
+    if (!msg_interval_client_->wait_for_service(std::chrono::seconds(30))) {
       RCLCPP_ERROR(get_logger(), "/mavros/set_message_interval not available (%s)", label);
       return false;
     }
     auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
     req->message_id = id;
     req->message_rate = rate_hz;
-    auto fut = msg_interval_client_->async_send_request(req);
-    if (rclcpp::spin_until_future_complete(
-          this->get_node_base_interface(), fut, std::chrono::seconds(3)) !=
-        rclcpp::FutureReturnCode::SUCCESS) {
-      RCLCPP_ERROR(get_logger(), "set_message_interval timed out (%s)", label);
-      return false;
+    int retries = 5;
+    while (retries-- > 0) {
+        auto result = msg_interval_client_->async_send_request(req);
+        if (rclcpp::spin_until_future_complete(
+          this->get_node_base_interface(), result, std::chrono::seconds(3)) == rclcpp::FutureReturnCode::SUCCESS) {
+            RCLCPP_INFO(get_logger(), "Requested %s stream: success=%s",
+             label, result.get()->success ? "true" : "false");
+            break;
+        }
+        RCLCPP_WARN(get_logger(), "set_message_interval timed out, retrying... (%d left)", retries);
+        std::this_thread::sleep_for(std::chrono::seconds(2));
     }
-    RCLCPP_INFO(get_logger(), "Requested %s stream: success=%s",
-                label, fut.get()->success ? "true" : "false");
+    if (retries <= 0) {
+        RCLCPP_FATAL(get_logger(), "set_message_interval failed after all retries: %s", label);
+        throw std::runtime_error("control_gate init failed");
+    }
+    
     return true;
   };
 

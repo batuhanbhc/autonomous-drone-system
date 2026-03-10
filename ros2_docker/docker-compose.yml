@@ -2,7 +2,6 @@ services:
   ros:
     image: test-ros
     build: .
-
     privileged: true
     network_mode: host
     pid: host
@@ -24,20 +23,20 @@ services:
       - /proc:/proc
       - /run/dbus:/run/dbus
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/home/batuhan/shared/start_nodes.sh
       - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
       - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
+      - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/home/batuhan/shared/start_nodes.sh
       - /home/batuhan/drone-project/config:/config
-      - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh  
-      - /usr/share/hailo-models:/usr/share/hailo-models   
+      - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
+      - /usr/share/hailo-models:/usr/share/hailo-models
       - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
 
     group_add:
       - "20"
-      
+
     environment:
       ROS_DOMAIN_ID: 10
-      
+
     working_dir: /home/batuhan/ros2_ws
     command: /bin/bash /home/batuhan/shared/start_nodes.sh
     stdin_open: true

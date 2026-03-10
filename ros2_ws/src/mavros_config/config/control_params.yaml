@@ -17,9 +17,9 @@ panel:
   stale_threshold_s: 5.0
 
 flight_params:
-  takeoff_m: 2.0
+  takeoff_m: 1.5
   gcs_failsafe_s: 10  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
-  failsafe_watchdog_hz: 0.5
+  failsafe_watchdog_hz: 1.0
   
 teleop:
   hz: 8.0

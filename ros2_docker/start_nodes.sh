@@ -6,6 +6,12 @@ DRONE_ID=$(yq '.drone.id' /config/system.yaml)
 LOG_DIR="/home/batuhan/shared/logs"
 mkdir -p "$LOG_DIR"
 
+echo "[startup] Checking for FCU on UART..."
+if [ ! -c /dev/ttyAMA0 ]; then
+  echo "[startup] /dev/ttyAMA0 not found. Is Pixhawk connected? Exiting."
+  exit 1
+fi
+
 echo "[startup] Starting mavros..."
 ros2 run mavros mavros_node \
   --ros-args \
@@ -14,24 +20,17 @@ ros2 run mavros mavros_node \
   -r /uas1/mavlink_source:=mavlink_source \
   -r /uas1/mavlink_sink:=mavlink_sink \
   -p fcu_url:=/dev/ttyAMA0:115200 \
-  --param system_id:=255 \
   >> "$LOG_DIR/mavros.log" 2>&1 &
 MAVROS_PID=$!
 
 
-# Wait until mavros arming service is available
-echo "[startup] Waiting for mavros arming service..."
-until ros2 service list 2>/dev/null | grep -q "/drone_${DRONE_ID}/mavros/cmd/arming"; do
-  # Check mavros hasn't died while we wait
-  if ! kill -0 $MAVROS_PID 2>/dev/null; then
-    echo "[startup] mavros died during startup. Exiting."
-    exit 1
-  fi
-  sleep 1
+echo "[startup] Waiting for FCU heartbeat..."
+until ros2 topic echo --once /drone_${DRONE_ID}/mavros/state 2>/dev/null | grep -q "connected: true"; do
+  sleep 2
 done
-echo "[startup] mavros is ready."
 
-echo "[startup] Starting control_gate..."
+
+echo "[startup] FCU connected, starting control_gate..."
 ros2 run mavros_gate control_gate \
   --ros-args \
   -p drone_id:=$DRONE_ID \

@@ -13,7 +13,7 @@ DRONE_ID=$(yq '.drone.id' /config/system.yaml)
 ROS_DOMAIN_ID=$((ROS_DOMAIN_BASE + DRONE_ID))
 
 export ROS_DOMAIN_ID
-echo "ROS_DOMAIN_ID updated to $ROS_DOMAIN_ID"
+echo "ROS_DOMAIN_ID set to $ROS_DOMAIN_ID"
 
 # Set hailotools environment variables
 export HAILO_TAPPAS=/opt/hailo/tappas

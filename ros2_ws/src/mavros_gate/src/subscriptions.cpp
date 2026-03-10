@@ -192,9 +192,10 @@ void ControlGateNode::onFailsafeWatchdog() {
       if (!st.armed) {
           // nothing to do
       } else if (st.guided) {
+          // change to RTL in future if drone is capable of flying normally
           // armed and guided, return to launch
-          executeRTL(dummy_cmd, st);
-          publishInfo(DroneInfo::LEVEL_ERROR, "Sending RTL.");
+          executeLand(dummy_cmd, st);
+          publishInfo(DroneInfo::LEVEL_ERROR, "Sending LAND.");
       } else {
           // armed but not guided, possibly another failsafe, land directly
           executeLand(dummy_cmd, st);
