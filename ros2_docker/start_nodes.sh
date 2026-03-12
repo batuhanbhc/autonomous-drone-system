@@ -6,11 +6,14 @@ DRONE_ID=$(yq '.drone.id' /config/system.yaml)
 LOG_DIR="/home/batuhan/shared/logs"
 mkdir -p "$LOG_DIR"
 
-echo "[startup] Checking for FCU on UART..."
+
+echo "[startup] Checking for FCU on UART /dev/ttyAMA0..."
 if [ ! -c /dev/ttyAMA0 ]; then
   echo "[startup] /dev/ttyAMA0 not found. Is Pixhawk connected? Exiting."
   exit 1
 fi
+echo "[startup] /dev/ttyAMA0 found."
+
 
 echo "[startup] Starting mavros..."
 ros2 run mavros mavros_node \
@@ -20,21 +23,24 @@ ros2 run mavros mavros_node \
   -r /uas1/mavlink_source:=mavlink_source \
   -r /uas1/mavlink_sink:=mavlink_sink \
   -p fcu_url:=/dev/ttyAMA0:115200 \
-  >> "$LOG_DIR/mavros.log" 2>&1 &
+  > "$LOG_DIR/mavros.log" 2>&1 &
 MAVROS_PID=$!
+echo "[startup] mavros started with PID $MAVROS_PID."
 
 
 echo "[startup] Waiting for FCU heartbeat..."
 until ros2 topic echo --once /drone_${DRONE_ID}/mavros/state 2>/dev/null | grep -q "connected: true"; do
   sleep 2
 done
+echo "[startup] FCU heartbeat received."
 
 
 echo "[startup] FCU connected, starting control_gate..."
 ros2 run mavros_gate control_gate \
   --ros-args \
   -p drone_id:=$DRONE_ID \
-  >> "$LOG_DIR/control_gate.log" 2>&1 &
+  > "$LOG_DIR/control_gate.log" 2>&1 &
+echo "[startup] control_gate started with PID $!."
 
 # Keep script alive — if any child dies, the container exits (triggering systemd restart)
 wait -n
