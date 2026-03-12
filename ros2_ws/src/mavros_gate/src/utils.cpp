@@ -183,9 +183,9 @@ bool ControlGateNode::initializationRoutine() {
   // Wait for mavros to come online before doing anything else
   // Use arming service as a proxy for mavros being ready
   RCLCPP_INFO(get_logger(), "Waiting for mavros to come online...");
-  
+
   auto arming_probe = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
-  
+
   if (!arming_probe->wait_for_service(std::chrono::seconds(60))) {
     RCLCPP_FATAL(get_logger(), "mavros arming service not available after 60s — is mavros running?");
     return false;
@@ -193,7 +193,7 @@ bool ControlGateNode::initializationRoutine() {
   RCLCPP_INFO(get_logger(), "mavros is online.");
   arming_probe.reset(); // discard probe client; real one is created below
   // -----------------------------------
-  
+
   // Create clients
   arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
   command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>(command_long_path);
@@ -201,7 +201,7 @@ bool ControlGateNode::initializationRoutine() {
   takeoff_client_ = this->create_client<mavros_msgs::srv::CommandTOL>(takeoff_path);
   msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>(msg_interval_path);
 
-  
+
 // Helper to request a MAVLink message stream
   auto requestMsgInterval = [&](int id, float rate_hz, const char* label) -> bool {
     if (!msg_interval_client_->wait_for_service(std::chrono::seconds(30))) {
@@ -227,7 +227,7 @@ bool ControlGateNode::initializationRoutine() {
         RCLCPP_FATAL(get_logger(), "set_message_interval failed after all retries: %s", label);
         throw std::runtime_error("control_gate init failed");
     }
-    
+
     return true;
   };
 
@@ -235,6 +235,7 @@ bool ControlGateNode::initializationRoutine() {
   if (!requestMsgInterval(147, 1.0f,  "BATTERY_STATUS"))       return false;
   if (!requestMsgInterval(32,  10.0f, "LOCAL_POSITION_NED"))   return false;
   if (!requestMsgInterval(24,  5.0f,  "GPS_RAW_INT"))          return false;
+  if (!requestMsgInterval(31, 10.0f, "ATTITUDE_QUATERNION")) return false;
 
   // Initialize command handlers
   initCommandHandlers();
