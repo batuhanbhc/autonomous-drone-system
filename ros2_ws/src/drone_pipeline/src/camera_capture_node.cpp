@@ -1,23 +1,19 @@
-#include "drone_camera/camera_capture.hpp"
+#include "drone_pipeline/camera_capture.hpp"
 
-#include <fcntl.h>
-#include <linux/videodev2.h>
-#include <sys/ioctl.h>
 #include <stdexcept>
 #include <string>
 
 #include "yaml-cpp/yaml.h"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
-namespace drone_camera
+namespace drone_pipeline
 {
 
 // ─────────────────────────────────────────────────────────────
 //  Config
 // ─────────────────────────────────────────────────────────────
 
-CameraConfig CameraCapture::loadConfig()
-{
+CameraConfig CameraCapture::loadConfig() {
   const std::string share_dir =
     ament_index_cpp::get_package_share_directory("mavros_config");
   const std::string config_path = share_dir + "/config/control_params.yaml";
@@ -42,7 +38,7 @@ CameraConfig CameraCapture::loadConfig()
   cfg.height       = cam["height"].as<int>();
   cfg.fps          = cam["fps"].as<int>();
   cfg.device_path  = cam["device_path"].as<std::string>();
-  cfg.pixel_format = cam["pixel_format"].as<std::string>();  // "YUY2" or "MJPEG"
+  cfg.pixel_format = cam["pixel_format"].as<std::string>();
 
   if (cfg.pixel_format != "YUY2" && cfg.pixel_format != "MJPEG")
     throw std::runtime_error("pixel_format must be 'YUY2' or 'MJPEG'");
@@ -67,37 +63,11 @@ CameraConfig CameraCapture::loadConfig()
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Force FPS at kernel level before OpenCV opens the device
-// ─────────────────────────────────────────────────────────────
-
-void CameraCapture::forceV4L2Fps(const std::string & device, int fps)
-{
-  int fd = ::open(device.c_str(), O_RDWR);
-  if (fd < 0) {
-    RCLCPP_WARN(get_logger(), "forceV4L2Fps: could not open %s", device.c_str());
-    return;
-  }
-
-  v4l2_streamparm parm{};
-  parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  parm.parm.capture.timeperframe.numerator   = 1;
-  parm.parm.capture.timeperframe.denominator = static_cast<unsigned>(fps);
-
-  if (::ioctl(fd, VIDIOC_S_PARM, &parm) < 0)
-    RCLCPP_WARN(get_logger(), "VIDIOC_S_PARM failed — fps may not apply");
-  else
-    RCLCPP_INFO(get_logger(), "V4L2 fps forced to %d before open", fps);
-
-  ::close(fd);
-}
-
-// ─────────────────────────────────────────────────────────────
 //  Constructor
 // ─────────────────────────────────────────────────────────────
 
 CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
-: Node("camera_capture", options)
-{
+: Node("camera_capture", options) {
   config_ = loadConfig();
 
   const std::string topic =
@@ -107,17 +77,12 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(get_logger(), "Publishing on: %s", topic.c_str());
   image_pub_ = image_transport::create_publisher(this, topic);
 
-  // Force FPS at driver level BEFORE open
-  forceV4L2Fps(config_.device_path, config_.fps);
-
   cap_.open(config_.device_path, cv::CAP_V4L2);
   if (!cap_.isOpened())
     throw std::runtime_error("Camera open failed: " + config_.device_path);
 
-  // Explicit format — no leaving to defaults
   if (config_.pixel_format == "YUY2") {
     cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('Y','U','Y','2'));
-    // YUY2 frames come in as BGR after OpenCV decode → publish as bgr8
   } else {
     cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
   }
@@ -126,7 +91,6 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
   cap_.set(cv::CAP_PROP_FRAME_HEIGHT, config_.height);
   cap_.set(cv::CAP_PROP_FPS,          config_.fps);
 
-  // Read back what the driver actually committed to
   RCLCPP_INFO(get_logger(),
     "Negotiated: %.0fx%.0f @ %.1f fps  fourcc=%.4s",
     cap_.get(cv::CAP_PROP_FRAME_WIDTH),
@@ -137,7 +101,6 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
       return std::string(reinterpret_cast<char*>(&fcc), 4);
     }().c_str());
 
-  // Spawn blocking capture thread — no timer, camera paces itself
   running_ = true;
   capture_thread_ = std::thread(&CameraCapture::captureThread, this);
 
@@ -153,18 +116,15 @@ CameraCapture::~CameraCapture()
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Capture thread — blocks on cap_.read(), camera paces timing
+//  Capture thread
 // ─────────────────────────────────────────────────────────────
 
 void CameraCapture::captureThread()
 {
-  const std::string encoding = "bgr8";  // OpenCV always outputs BGR
+  const std::string encoding = "bgr8";
 
   while (running_ && rclcpp::ok()) {
     cv::Mat frame;
-
-    // cap_.read() blocks here until the camera delivers a frame.
-    // This is driven by the camera's own hardware clock — no timer drift.
     if (!cap_.read(frame)) {
       RCLCPP_WARN(get_logger(), "Failed to grab frame — skipping.");
       continue;
@@ -179,7 +139,7 @@ void CameraCapture::captureThread()
   }
 }
 
-}  // namespace drone_camera
+}  // namespace drone_pipeline
 
 // ─────────────────────────────────────────────────────────────
 //  main
@@ -189,7 +149,7 @@ int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
   try {
-    auto node = std::make_shared<drone_camera::CameraCapture>();
+    auto node = std::make_shared<drone_pipeline::CameraCapture>();
     rclcpp::spin(node);
   } catch (const std::exception & e) {
     RCLCPP_FATAL(
