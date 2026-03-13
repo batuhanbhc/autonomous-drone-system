@@ -93,3 +93,6 @@ teleop:
       PRESS_SAFETY_SWITCH:
         activation_time_s: 1.0
         latch: true
+      SAVE_VIDEO_TOGGLE:
+        activation_time_s: 0.1
+        latch: true

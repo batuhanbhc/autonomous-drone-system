@@ -29,10 +29,10 @@ from mavros_gcs.teleop_utils.print_manual import teleop_manual_text
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
     KeyboardToggle, ControlToggle, Land, RTL, Takeoff, Guided,
-    SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch
+    SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch, SaveVideoToggle
 )
 
-from drone_msgs.msg import TeleopCommand, TeleopAction
+from drone_msgs.msg import TeleopCommand, TeleopAction, Toggle
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -128,7 +128,9 @@ class TeleopKeyboardNode(Node):
 
         self._pub_command = self.create_publisher(TeleopCommand, topic_command, self._qos_command)
         self._pub_action = self.create_publisher(TeleopAction, topic_action, self._qos_action)
-
+        self._pub_record_toggle = self.create_publisher(Toggle, base + "/camera/record_input",
+            self._qos_command,)
+        
         # -------------------------
         # Key handling
         self._key_state = KeyState()
@@ -234,6 +236,12 @@ class TeleopKeyboardNode(Node):
                 hook_fn=None,
                 latch=cmd_params["PRESS_SAFETY_SWITCH"]["latch"],
                 activation_time_s=cmd_params["PRESS_SAFETY_SWITCH"]["activation_time_s"],
+            ),
+            SaveVideoToggle(
+                config=TELEOP_CONFIG["SAVE_VIDEO_TOGGLE"],
+                hook_fn=self._publish_record_toggle,   # ← was None
+                latch=cmd_params["SAVE_VIDEO_TOGGLE"]["latch"],
+                activation_time_s=cmd_params["SAVE_VIDEO_TOGGLE"]["activation_time_s"],
             ),
         ]
 
@@ -354,6 +362,11 @@ class TeleopKeyboardNode(Node):
             raise ValueError(f"Unknown command name: {command_name}")
         
         self._pub_action.publish(msg)
+
+    def _publish_record_toggle(self) -> None:
+        msg = Toggle()
+        msg.state = False   # save_video ignores this value, it just toggles
+        self._pub_record_toggle.publish(msg)
 
     # -------------------------
     def destroy_node(self) -> bool:
