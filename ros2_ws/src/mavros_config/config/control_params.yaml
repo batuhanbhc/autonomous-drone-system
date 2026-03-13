@@ -1,4 +1,15 @@
+drone_id: 0
+
+camera:
+  device_path: "/dev/video2"
+  width: 160
+  height: 120
+  fps: 30
+  pixel_format: "YUY2"
+  
+
 custom_topics:
+  raw_images: "camera/image_raw"
   autonomous_action: "/autonomous/action"
   manual_action:  "/teleop/action"
   manual_command: "/teleop/command" 
