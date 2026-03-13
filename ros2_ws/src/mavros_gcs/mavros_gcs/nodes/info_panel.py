@@ -25,6 +25,7 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
+from drone_msgs.msg import Toggle
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -46,6 +47,7 @@ from mavros_gcs.panel_utils.views import (
     GPSView,
     DroneStateView,
     DroneInfoView,
+    RecordStateView,
 )
 
 from mavros_gcs.panel_utils.helpers import (
@@ -105,6 +107,7 @@ class InfoPanelNode(Node):
         self.gps1          = GPSView()
         self.control_state = DroneStateView()
         self.drone_info    = DroneInfoView(queue_size=self.queue_size)
+        self.record_state = RecordStateView()
 
         reliable_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -127,7 +130,13 @@ class InfoPanelNode(Node):
         self.create_subscription(GPSRAW,         t_gps1_raw,       self._on_gps1_raw,        qos_profile_sensor_data)
         self.create_subscription(DroneState,     t_control_state,  self._on_control_state,   qos_profile_sensor_data)
         self.create_subscription(DroneInfo,      t_drone_info,     self._on_drone_info,       qos_latched)
-
+        self.create_subscription(
+            Toggle,
+            f"/drone_{drone_id}/camera/record_state",
+            self._on_record_state,
+            reliable_qos,
+        )
+        
         period = 1.0 / float(self.refresh_hz)
         self.create_timer(period, self._on_refresh_tick)
 
@@ -137,6 +146,7 @@ class InfoPanelNode(Node):
         self._section_names = [
             "State", "Extended State", "Battery", "Odometry",
             "StatusText", "GPS1", "Control Gate", "Drone Info",
+            "Drone Pipeline",
         ]
         self._dirty       = {n: True  for n in self._section_names}
         self._last_update = {n: None  for n in self._section_names}
@@ -175,10 +185,11 @@ class InfoPanelNode(Node):
             Layout(name="ext_state"),
             Layout(name="ctrl_gate"),
         )
-        # col_2: GPS1 + Battery stacked
+        # col_2: GPS1 + Battery + Drone Pipeline stacked
         self._layout["col_2"].split_column(
             Layout(name="gps1"),
             Layout(name="battery"),
+            Layout(name="drone_pipeline"),
         )
         # col_3: StatusText + DroneInfo stacked
         self._layout["col_3"].split_column(
@@ -236,6 +247,11 @@ class InfoPanelNode(Node):
             self.drone_info.update_from_msg(msg)
             self._mark_dirty("Drone Info")
 
+    def _on_record_state(self, msg: Toggle):
+        with self._ui_lock:
+            self.record_state.update_from_msg(msg)
+            self._mark_dirty("Drone Pipeline")
+
     # ------------------------------------------------------------------ #
     #  Snapshots
     # ------------------------------------------------------------------ #
@@ -280,6 +296,9 @@ class InfoPanelNode(Node):
     def _snapshot_drone_info(self):
         return [dict(item) for item in self.drone_info.history]
 
+    def _snapshot_drone_pipeline(self):
+        return {"recording": self.record_state.recording}
+    
     # ------------------------------------------------------------------ #
     #  Panel renderers  (unchanged logic, same as before)
     # ------------------------------------------------------------------ #
@@ -409,6 +428,20 @@ class InfoPanelNode(Node):
         border = "bright_red" if stale else "red"
         return Panel(t, title=title, border_style=border, expand=True)
 
+    def _render_drone_pipeline_panel(self, data, stale=False) -> Panel:
+        t = self._make_kv_table()
+        rec = data["recording"]
+        if rec is None:
+            val = "[dim]Unknown[/dim]"
+        elif rec:
+            val = "[bold green]● RECORDING[/bold green]"
+        else:
+            val = "[dim red]○ OFF[/dim red]"
+        t.add_row("Save Video", val)
+        title  = "Drone Pipeline [STALE]" if stale else "Drone Pipeline"
+        border = "bright_red" if stale else "magenta"
+        return Panel(t, title=title, border_style=border)
+
     # ------------------------------------------------------------------ #
     #  Layout update  — mutate the fixed Layout tree in-place
     # ------------------------------------------------------------------ #
@@ -447,6 +480,11 @@ class InfoPanelNode(Node):
         self._layout["drone_info"].update(
             self._render_drone_info_panel(snap["Drone Info"], stale=is_stale["Drone Info"])
         )
+        self._layout["drone_pipeline"].update(
+            self._render_drone_pipeline_panel(
+                snap["Drone Pipeline"], stale=is_stale["Drone Pipeline"]
+            )
+        )
 
     # ------------------------------------------------------------------ #
     #  Timer callback
@@ -480,6 +518,7 @@ class InfoPanelNode(Node):
                 "GPS1":           self._snapshot_gps1(),
                 "Control Gate":   self._snapshot_control_state(),
                 "Drone Info":     self._snapshot_drone_info(),
+                "Drone Pipeline": self._snapshot_drone_pipeline(),
             }
 
         # Render outside the lock

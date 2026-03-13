@@ -6,6 +6,7 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
+from drone_msgs.msg import Toggle
 
 from pymavlink import mavutil
 from tf_transformations import euler_from_quaternion
@@ -18,6 +19,13 @@ from mavros_gcs.panel_utils.helpers import (
     _wrap_degrees
 )
 
+
+@dataclass
+class RecordStateView:
+    recording: bool | None = None
+
+    def update_from_msg(self, msg: Toggle):
+        self.recording = bool(msg.state)
 
 @dataclass
 class BatteryView:
