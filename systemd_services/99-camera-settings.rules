@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="video4linux", KERNEL=="video0", TAG+="systemd", ENV{SYSTEMD_WANTS}="camera-settings.service"
