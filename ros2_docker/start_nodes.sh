@@ -23,7 +23,8 @@ ros2 run mavros mavros_node \
   -r /uas1/mavlink_source:=mavlink_source \
   -r /uas1/mavlink_sink:=mavlink_sink \
   -p fcu_url:=/dev/ttyAMA0:115200 \
-  > "$LOG_DIR/mavros.log" 2>&1 &
+  --param system_id:=255 \
+  >> "$LOG_DIR/mavros.log" 2>&1 &
 MAVROS_PID=$!
 echo "[startup] mavros started with PID $MAVROS_PID."
 
@@ -39,15 +40,19 @@ echo "[startup] FCU connected, starting control_gate..."
 ros2 run mavros_gate control_gate \
   --ros-args \
   -p drone_id:=$DRONE_ID \
-  > "$LOG_DIR/control_gate.log" 2>&1 &
-echo "[startup] control_gate started with PID $!."
+  >> "$LOG_DIR/control_gate.log" 2>&1 &
 
-echo "[startup] Starting drone_pipeline..."
-ros2 launch drone_pipeline drone_pipeline.launch.py \
-> "$LOG_DIR/drone_pipeline.log" 2>&1 &
-echo "[startup] drone_pipeline started with PID $!."
+CONTROL_GATE_PID=$! 
+echo "[startup] control_gate started with PID $CONTROL_GATE_PID."
 
-# Keep script alive — if any child dies, the container exits (triggering systemd restart)
-wait -n
-echo "[startup] A node exited. Shutting down container."
+
+
+#echo "[startup] Starting drone_pipeline..."
+#ros2 launch drone_pipeline drone_pipeline.launch.py \
+#    >> "$LOG_DIR/drone_pipeline.log" 2>&1 &
+#echo "[startup] drone_pipeline started with PID $!."
+
+
+wait -n $MAVROS_PID $CONTROL_GATE_PID
+echo "[startup] A critical node exited. Shutting down container."
 exit 1
