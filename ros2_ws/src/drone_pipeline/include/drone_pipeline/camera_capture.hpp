@@ -4,44 +4,49 @@
 #include <atomic>
 #include <string>
 #include <thread>
-#include <memory>
 
 #include "rclcpp/rclcpp.hpp"
-#include "sensor_msgs/msg/image.hpp"
-#include "image_transport/image_transport.hpp"
-#include "cv_bridge/cv_bridge.h"
-#include <opencv2/videoio.hpp>
+#include "sensor_msgs/msg/compressed_image.hpp"
 
 namespace drone_pipeline
 {
 
-enum class PixelFormat { YUY2, MJPEG };
-
+// pixel_format removed — MJPEG is hardcoded throughout
 struct CameraConfig
 {
   int         width;
   int         height;
   int         fps;
   std::string device_path;
-  std::string pixel_format;   // "YUY2" or "MJPEG" from yaml
   uint8_t     drone_id;
   std::string raw_images_topic;
 };
 
-class CameraCapture : public rclcpp::Node {
+class CameraCapture : public rclcpp::Node
+{
 public:
   explicit CameraCapture(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~CameraCapture();
 
 private:
   CameraConfig loadConfig();
-  void captureThread();
+  void         openDevice();   // open + configure V4L2 fd
+  void         startStreaming();
+  void         stopStreaming();
+  void         captureThread();
 
-  CameraConfig               config_;
-  image_transport::Publisher image_pub_;
-  cv::VideoCapture           cap_;
-  std::thread                capture_thread_;
-  std::atomic<bool>          running_{false};
+  CameraConfig config_;
+
+  // UniquePtr publisher — required for intra-process zero-copy.
+  // When both publisher and subscription are created with
+  // rclcpp::NodeOptions().use_intra_process_comms(true) in the same
+  // process, rclcpp will hand the unique_ptr directly to the subscriber
+  // without any copy or serialisation.
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub_;
+
+  int                fd_{-1};          // V4L2 file descriptor
+  std::thread        capture_thread_;
+  std::atomic<bool>  running_{false};
 };
 
 }  // namespace drone_pipeline
