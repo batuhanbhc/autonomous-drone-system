@@ -5,10 +5,10 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# ── Dependencies ──────────────────────────────────────────────
+# ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_components REQUIRED)          # ← ADD THIS
+find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -17,21 +17,32 @@ find_package(yaml-cpp REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(drone_msgs REQUIRED)
+find_package(ffmpeg_image_transport_msgs REQUIRED)
 
-# ── Shared library (camera_capture + save_video as components) ─
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+  libavcodec libavformat libavutil libswscale)
+
+# ── Shared library (components) ───────────────────────────────────────────────
 add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
+  src/mjpeg_writer.cpp
+  src/h264_encoder.cpp
   src/save_video.cpp
 )
+
 target_include_directories(drone_pipeline_components PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${OpenCV_INCLUDE_DIRS}
 )
+
 target_link_libraries(drone_pipeline_components
   yaml-cpp
   ${OpenCV_LIBS}
+  PkgConfig::LIBAV
 )
+
 ament_target_dependencies(drone_pipeline_components
   rclcpp
   rclcpp_components
@@ -41,36 +52,41 @@ ament_target_dependencies(drone_pipeline_components
   nav_msgs
   mavros_msgs
   drone_msgs
+  ffmpeg_image_transport_msgs
 )
 
-# ── Register components ────────────────────────────────────────
+# ── Register components ────────────────────────────────────────────────────────
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::CameraCapture"
   EXECUTABLE camera_capture_node
 )
+
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::SaveVideo"
   EXECUTABLE save_video_node
 )
 
-# ── flight_logger (standalone executable, not a component) ────
+# ── flight_logger (standalone executable) ─────────────────────────────────────
 add_executable(flight_logger_node
   src/flight_logger.cpp
 )
+
 target_include_directories(flight_logger_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+
 target_link_libraries(flight_logger_node
   yaml-cpp
 )
+
 ament_target_dependencies(flight_logger_node
   rclcpp
   nav_msgs
   mavros_msgs
 )
 
-# ── Install ───────────────────────────────────────────────────
+# ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS
   drone_pipeline_components
   flight_logger_node
@@ -78,6 +94,7 @@ install(TARGETS
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
+
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )

@@ -21,7 +21,7 @@ from mavros_gcs.panel_utils.helpers import (
 
 
 @dataclass
-class RecordStateView:
+class RecordActiveView:
     recording: bool | None = None
 
     def update_from_msg(self, msg: Toggle):

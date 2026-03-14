@@ -128,7 +128,7 @@ class TeleopKeyboardNode(Node):
 
         self._pub_command = self.create_publisher(TeleopCommand, topic_command, self._qos_command)
         self._pub_action = self.create_publisher(TeleopAction, topic_action, self._qos_action)
-        self._pub_record_toggle = self.create_publisher(Toggle, base + "/camera/record_input",
+        self._pub_record_toggle = self.create_publisher(Toggle, base + "/camera/record/cmd",
             self._qos_command,)
         
         # -------------------------

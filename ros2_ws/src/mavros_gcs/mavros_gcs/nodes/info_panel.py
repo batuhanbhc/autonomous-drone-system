@@ -47,7 +47,7 @@ from mavros_gcs.panel_utils.views import (
     GPSView,
     DroneStateView,
     DroneInfoView,
-    RecordStateView,
+    RecordActiveView,
 )
 
 from mavros_gcs.panel_utils.helpers import (
@@ -107,7 +107,7 @@ class InfoPanelNode(Node):
         self.gps1          = GPSView()
         self.control_state = DroneStateView()
         self.drone_info    = DroneInfoView(queue_size=self.queue_size)
-        self.record_state = RecordStateView()
+        self.record_active = RecordActiveView()
 
         reliable_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -132,8 +132,8 @@ class InfoPanelNode(Node):
         self.create_subscription(DroneInfo,      t_drone_info,     self._on_drone_info,       qos_latched)
         self.create_subscription(
             Toggle,
-            f"/drone_{drone_id}/camera/record_state",
-            self._on_record_state,
+            f"/drone_{drone_id}/camera/record/active",
+            self._on_record_active,
             reliable_qos,
         )
         
@@ -247,9 +247,9 @@ class InfoPanelNode(Node):
             self.drone_info.update_from_msg(msg)
             self._mark_dirty("Drone Info")
 
-    def _on_record_state(self, msg: Toggle):
+    def _on_record_active(self, msg: Toggle):
         with self._ui_lock:
-            self.record_state.update_from_msg(msg)
+            self.record_active.update_from_msg(msg)
             self._mark_dirty("Drone Pipeline")
 
     # ------------------------------------------------------------------ #
@@ -297,7 +297,7 @@ class InfoPanelNode(Node):
         return [dict(item) for item in self.drone_info.history]
 
     def _snapshot_drone_pipeline(self):
-        return {"recording": self.record_state.recording}
+        return {"recording": self.record_active.recording}
     
     # ------------------------------------------------------------------ #
     #  Panel renderers  (unchanged logic, same as before)

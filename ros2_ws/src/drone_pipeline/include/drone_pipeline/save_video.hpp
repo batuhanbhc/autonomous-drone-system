@@ -14,10 +14,17 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "mavros_msgs/msg/gpsraw.hpp"
 #include "drone_msgs/msg/toggle.hpp"
-#include <opencv2/videoio.hpp>
+#include "ffmpeg_image_transport_msgs/msg/ffmpeg_packet.hpp"
+
+#include "drone_pipeline/mjpeg_writer.hpp"
+#include "drone_pipeline/h264_encoder.hpp"
 
 namespace drone_pipeline
 {
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Config
+// ─────────────────────────────────────────────────────────────────────────────
 
 struct VideoConfig
 {
@@ -30,6 +37,10 @@ struct VideoConfig
   int         height{};
   int         fps{};
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Sensor snapshots
+// ─────────────────────────────────────────────────────────────────────────────
 
 struct OdomSnapshot
 {
@@ -47,21 +58,28 @@ struct GpsSnapshot
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  A single unit of work pushed from the subscriber callback to the encoder
-//  thread.  Carrying sensor snapshots alongside the raw JPEG bytes avoids any
-//  additional locking on the hot path.
+//  Work items pushed to the async threads
 // ─────────────────────────────────────────────────────────────────────────────
-struct EncodeTask
-{
-  // JPEG-compressed bytes straight from the CompressedImage message.
-  // Stored in a vector so ownership is unambiguous after the message is gone.
-  std::vector<uint8_t> jpeg_data;
 
+struct RecordTask
+{
+  std::vector<uint8_t> jpeg_data;
   uint32_t     stamp_sec{};
   uint32_t     stamp_nanosec{};
   OdomSnapshot odom;
   GpsSnapshot  gps;
 };
+
+struct StreamTask
+{
+  std::vector<uint8_t> jpeg_data;
+  uint32_t stamp_sec{};
+  uint32_t stamp_nanosec{};
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SaveVideo node
+// ─────────────────────────────────────────────────────────────────────────────
 
 class SaveVideo : public rclcpp::Node
 {
@@ -79,57 +97,71 @@ private:
   VideoConfig loadConfig();
   std::string resolveSessionDir(const std::string & logs_path);
 
-  // ── Recording state ───────────────────────────────────────────────────────
+  // ── Recording pipeline ────────────────────────────────────────────────────
   std::atomic<bool> recording_{false};
   int               clip_index_{0};
 
-  // Active clip resources — only touched by the encoder thread after openClip()
-  cv::VideoWriter writer_;
-  std::ofstream   csv_file_;
-  std::mutex      clip_mtx_;   // guards writer_ / csv_file_ open/close
+  MjpegWriter   mjpeg_writer_;
+  std::ofstream csv_file_;
+  std::mutex    clip_mtx_;
 
   void openClip();
   void closeClip();
 
-  // ── Async encoder thread ──────────────────────────────────────────────────
-  // The subscriber callback pushes EncodeTask objects here; the encoder
-  // thread drains the queue and does all cv::imdecode + writer_.write() work,
-  // keeping the ROS callback thread free.
-  std::queue<EncodeTask>  encode_queue_;
-  std::mutex              queue_mtx_;
-  std::condition_variable queue_cv_;
-  std::atomic<bool>       encoder_running_{false};
-  std::thread             encoder_thread_;
+  std::queue<RecordTask>  record_queue_;
+  std::mutex              record_queue_mtx_;
+  std::condition_variable record_queue_cv_;
+  std::atomic<bool>       record_thread_running_{false};
+  std::thread             record_thread_;
 
-  void encoderLoop();           // runs on encoder_thread_
-  void startEncoderThread();
-  void stopEncoderThread();
+  void recordLoop();
+  void startRecordThread();
+  void stopRecordThread();
 
-  // ── Sensor caches ─────────────────────────────────────────────────────────
+  // ── Streaming pipeline ────────────────────────────────────────────────────
+  std::atomic<bool> streaming_{false};
+
+  H264Encoder h264_encoder_;
+  std::mutex  encoder_mtx_;
+
+  std::queue<StreamTask>  stream_queue_;
+  std::mutex              stream_queue_mtx_;
+  std::condition_variable stream_queue_cv_;
+  std::atomic<bool>       stream_thread_running_{false};
+  std::thread             stream_thread_;
+
+  void streamLoop();
+  void startStreamThread();
+  void stopStreamThread();
+
+  // ── Sensor caches (recording only) ───────────────────────────────────────
   std::optional<OdomSnapshot> latest_odom_;
   std::optional<GpsSnapshot>  latest_gps_;
   std::mutex                  odom_mtx_;
   std::mutex                  gps_mtx_;
 
-  // ── Subscriptions & publisher ─────────────────────────────────────────────
-  // CompressedImage subscription uses UniquePtr callback — when the publisher
-  // lives in the same process and publishes with unique_ptr, ROS2 intra-process
-  // machinery delivers the message with zero copies.  For inter-process topics
-  // the runtime transparently falls back to a shared-ownership copy.
+  // ── ROS interface ─────────────────────────────────────────────────────────
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
-  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr            toggle_sub_;
-  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr               state_pub_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr            odom_sub_;
-  rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr           gps_sub_;
+
+  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr record_cmd_sub_;
+  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr    record_state_pub_;
+
+  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr stream_cmd_sub_;
+  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr    stream_state_pub_;
+  rclcpp::Publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>::SharedPtr stream_out_pub_;
+
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
+  rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr gps_sub_;
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
-  void toggleCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
-  // UniquePtr overload — enables zero-copy intra-process delivery
-  void imageCallback(sensor_msgs::msg::CompressedImage::UniquePtr msg);
-  void odomCallback (const nav_msgs::msg::Odometry::SharedPtr msg);
-  void gpsCallback  (const mavros_msgs::msg::GPSRAW::SharedPtr msg);
+  void imageCallback    (sensor_msgs::msg::CompressedImage::UniquePtr msg);
+  void recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
+  void streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
+  void odomCallback     (const nav_msgs::msg::Odometry::SharedPtr msg);
+  void gpsCallback      (const mavros_msgs::msg::GPSRAW::SharedPtr msg);
 
-  void publishState();
+  void publishRecordState();
+  void publishStreamState();
 };
 
 }  // namespace drone_pipeline
