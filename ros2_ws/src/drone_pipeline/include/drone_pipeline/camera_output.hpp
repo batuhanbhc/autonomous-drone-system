@@ -78,14 +78,14 @@ struct StreamTask
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  SaveVideo node
+//  CameraOutput node
 // ─────────────────────────────────────────────────────────────────────────────
 
-class SaveVideo : public rclcpp::Node
+class CameraOutput : public rclcpp::Node
 {
 public:
-  explicit SaveVideo(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
-  ~SaveVideo() override;
+  explicit CameraOutput(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
+  ~CameraOutput() override;
 
 private:
   // ── Config & directories ──────────────────────────────────────────────────
@@ -96,6 +96,8 @@ private:
 
   VideoConfig loadConfig();
   std::string resolveSessionDir(const std::string & logs_path);
+
+  static constexpr std::size_t kMaxQueueDepth = 10;
 
   // ── Recording pipeline ────────────────────────────────────────────────────
   std::atomic<bool> recording_{false};

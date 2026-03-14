@@ -37,7 +37,8 @@ public:
   struct EncodeResult
   {
     std::vector<uint8_t> data;          // Annex-B NAL bytes; empty = buffering
-    bool                 is_key_frame{false};
+    bool is_key_frame{false};
+    int64_t pts = 0;
   };
 
   H264Encoder() = default;

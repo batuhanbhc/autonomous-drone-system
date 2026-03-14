@@ -28,6 +28,13 @@ class RecordActiveView:
         self.recording = bool(msg.state)
 
 @dataclass
+class StreamActiveView:
+    streaming: bool | None = None
+
+    def update_from_msg(self, msg: Toggle):
+        self.streaming = bool(msg.state)
+
+@dataclass
 class BatteryView:
     voltage     : float | None = None
     percentage  : float | None = None 

@@ -48,6 +48,7 @@ from mavros_gcs.panel_utils.views import (
     DroneStateView,
     DroneInfoView,
     RecordActiveView,
+    StreamActiveView,
 )
 
 from mavros_gcs.panel_utils.helpers import (
@@ -108,6 +109,7 @@ class InfoPanelNode(Node):
         self.control_state = DroneStateView()
         self.drone_info    = DroneInfoView(queue_size=self.queue_size)
         self.record_active = RecordActiveView()
+        self.stream_active = StreamActiveView()
 
         reliable_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -134,6 +136,12 @@ class InfoPanelNode(Node):
             Toggle,
             f"/drone_{drone_id}/camera/record/active",
             self._on_record_active,
+            reliable_qos,
+        )
+        self.create_subscription(
+            Toggle,
+            f"/drone_{drone_id}/camera/stream/active",
+            self._on_stream_active,
             reliable_qos,
         )
         
@@ -252,6 +260,11 @@ class InfoPanelNode(Node):
             self.record_active.update_from_msg(msg)
             self._mark_dirty("Drone Pipeline")
 
+    def _on_stream_active(self, msg: Toggle):
+        with self._ui_lock:
+            self.stream_active.update_from_msg(msg)
+            self._mark_dirty("Drone Pipeline")
+            
     # ------------------------------------------------------------------ #
     #  Snapshots
     # ------------------------------------------------------------------ #
@@ -297,7 +310,10 @@ class InfoPanelNode(Node):
         return [dict(item) for item in self.drone_info.history]
 
     def _snapshot_drone_pipeline(self):
-        return {"recording": self.record_active.recording}
+        return {
+            "recording": self.record_active.recording,
+            "streaming": self.stream_active.streaming,
+        }
     
     # ------------------------------------------------------------------ #
     #  Panel renderers  (unchanged logic, same as before)
@@ -430,14 +446,25 @@ class InfoPanelNode(Node):
 
     def _render_drone_pipeline_panel(self, data, stale=False) -> Panel:
         t = self._make_kv_table()
+
         rec = data["recording"]
         if rec is None:
-            val = "[dim]Unknown[/dim]"
+            rec_val = "[dim]Unknown[/dim]"
         elif rec:
-            val = "[bold green]● RECORDING[/bold green]"
+            rec_val = "[bold green]● RECORDING[/bold green]"
         else:
-            val = "[dim red]○ OFF[/dim red]"
-        t.add_row("Save Video", val)
+            rec_val = "[dim red]○ OFF[/dim red]"
+        t.add_row("Save Video", rec_val)
+
+        stream = data["streaming"]
+        if stream is None:
+            stream_val = "[dim]Unknown[/dim]"
+        elif stream:
+            stream_val = "[bold green]● STREAMING[/bold green]"
+        else:
+            stream_val = "[dim red]○ OFF[/dim red]"
+        t.add_row("Stream", stream_val)
+
         title  = "Drone Pipeline [STALE]" if stale else "Drone Pipeline"
         border = "bright_red" if stale else "magenta"
         return Panel(t, title=title, border_style=border)

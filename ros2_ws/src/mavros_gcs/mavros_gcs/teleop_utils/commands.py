@@ -459,18 +459,42 @@ class VelocityYaw(Command):
 
         publish_action(self.name, vx, vy, vz, yaw_rate)
 
-class SaveVideoToggle(Command):
+class RecordVideoToggle(Command):
     """
-    Sends toggle message to save_video node via dedicated topic.
+    Sends toggle message to camera_output node via dedicated topic.
     """
-    name = "SAVE_VIDEO_TOGGLE"
+    name = "RECORD_VIDEO_TOGGLE"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
         self._keys = tuple(config.key_list)
         self._config = config
         self.activation_time_s = activation_time_s
         self.latch = latch
-        self._hook_fn = hook_fn   # ← store it
+        self._hook_fn = hook_fn  
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(
+            state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
+        )
+
+    def execute(self, state):
+        if self._hook_fn is not None:
+            self._hook_fn()
+
+class StreamToggle(Command):
+    """
+    Sends toggle message to camera_output node via dedicated topic.
+    """
+    name = "STREAM_TOGGLE"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self.latch = latch
+        self._hook_fn = hook_fn   
 
     def is_triggered(self, state):
         cfg = self._config

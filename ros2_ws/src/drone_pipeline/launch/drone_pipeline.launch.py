@@ -17,8 +17,8 @@ def generate_launch_description():
             ),
             ComposableNode(
                 package="drone_pipeline",
-                plugin="drone_pipeline::SaveVideo",
-                name="save_video",
+                plugin="drone_pipeline::CameraOutput",
+                name="camera_output",
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
         ],

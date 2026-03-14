@@ -9,8 +9,8 @@ flight_params:
 
 camera:
   device_path: "/dev/video0"
-  width: 800
-  height: 600
+  width: 640
+  height: 480
   fps: 30
   
 
@@ -92,6 +92,9 @@ teleop:
       PRESS_SAFETY_SWITCH:
         activation_time_s: 1.0
         latch: true
-      SAVE_VIDEO_TOGGLE:
+      RECORD_VIDEO_TOGGLE:
+        activation_time_s: 0.0
+        latch: true
+      STREAM_TOGGLE:
         activation_time_s: 0.0
         latch: true

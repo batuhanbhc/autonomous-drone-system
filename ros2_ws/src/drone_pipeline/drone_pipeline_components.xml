@@ -5,8 +5,8 @@
            base_class_type="rclcpp::Node">
       <description>V4L2 MJPEG camera capture node</description>
     </class>
-    <class name="drone_pipeline::SaveVideo"
-           type="drone_pipeline::SaveVideo"
+    <class name="drone_pipeline::CameraOutput"
+           type="drone_pipeline::CameraOutput"
            base_class_type="rclcpp::Node">
       <description>Video + telemetry recorder node</description>
     </class>

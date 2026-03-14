@@ -1,4 +1,4 @@
-#include "drone_pipeline/save_video.hpp"
+#include "drone_pipeline/camera_output.hpp"
 
 #include <filesystem>
 #include <iomanip>
@@ -17,7 +17,7 @@ namespace drone_pipeline
 //  Config loading
 // ─────────────────────────────────────────────────────────────────────────────
 
-VideoConfig SaveVideo::loadConfig()
+VideoConfig CameraOutput::loadConfig()
 {
   const std::string share_dir =
     ament_index_cpp::get_package_share_directory("mavros_config");
@@ -66,7 +66,7 @@ VideoConfig SaveVideo::loadConfig()
 //  Session directory
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::string SaveVideo::resolveSessionDir(const std::string & logs_path)
+std::string CameraOutput::resolveSessionDir(const std::string & logs_path)
 {
   fs::create_directories(logs_path);
 
@@ -90,8 +90,8 @@ std::string SaveVideo::resolveSessionDir(const std::string & logs_path)
 //  Constructor
 // ─────────────────────────────────────────────────────────────────────────────
 
-SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
-: Node("save_video", options)
+CameraOutput::CameraOutput(const rclcpp::NodeOptions & options)
+: Node("camera_output", options)
 {
   config_      = loadConfig();
   session_dir_ = resolveSessionDir(config_.logs_path);
@@ -106,6 +106,7 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
 
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
   const auto sensor_qos   = rclcpp::SensorDataQoS();
+  
   const std::string dp    = "/drone_" + std::to_string(config_.drone_id);
 
   image_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
@@ -125,9 +126,9 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
     [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); });
   stream_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     dp + "/camera/stream/active", reliable_qos);
-  stream_out_pub_   = create_publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>(
+  stream_out_pub_ = create_publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>(
     dp + "/camera/stream/out",
-    rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+    sensor_qos);
 
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     config_.odom_topic, sensor_qos,
@@ -140,7 +141,7 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
   publishStreamState();
 
   RCLCPP_INFO(get_logger(),
-    "save_video ready.\n"
+    "camera_output ready.\n"
     "  record : %s/camera/record/{cmd,active}\n"
     "  stream : %s/camera/stream/{cmd,active,out}",
     dp.c_str(), dp.c_str());
@@ -150,7 +151,7 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
 //  Destructor
 // ─────────────────────────────────────────────────────────────────────────────
 
-SaveVideo::~SaveVideo()
+CameraOutput::~CameraOutput()
 {
   if (recording_.load()) {
     recording_.store(false);
@@ -174,7 +175,7 @@ SaveVideo::~SaveVideo()
 //  Recording clip management
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::openClip()
+void CameraOutput::openClip()
 {
   ++clip_index_;
 
@@ -200,7 +201,7 @@ void SaveVideo::openClip()
     video_path.c_str(), csv_path.c_str());
 }
 
-void SaveVideo::closeClip()
+void CameraOutput::closeClip()
 {
   std::lock_guard<std::mutex> lk(clip_mtx_);
   mjpeg_writer_.close();
@@ -215,20 +216,20 @@ void SaveVideo::closeClip()
 //  Recording thread
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::startRecordThread()
+void CameraOutput::startRecordThread()
 {
   record_thread_running_.store(true);
-  record_thread_ = std::thread(&SaveVideo::recordLoop, this);
+  record_thread_ = std::thread(&CameraOutput::recordLoop, this);
 }
 
-void SaveVideo::stopRecordThread()
+void CameraOutput::stopRecordThread()
 {
   { std::lock_guard<std::mutex> lk(record_queue_mtx_); record_thread_running_.store(false); }
   record_queue_cv_.notify_one();
   if (record_thread_.joinable()) record_thread_.join();
 }
 
-void SaveVideo::recordLoop()
+void CameraOutput::recordLoop()
 {
   while (true) {
     RecordTask task;
@@ -261,20 +262,20 @@ void SaveVideo::recordLoop()
 //  Streaming thread
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::startStreamThread()
+void CameraOutput::startStreamThread()
 {
   stream_thread_running_.store(true);
-  stream_thread_ = std::thread(&SaveVideo::streamLoop, this);
+  stream_thread_ = std::thread(&CameraOutput::streamLoop, this);
 }
 
-void SaveVideo::stopStreamThread()
+void CameraOutput::stopStreamThread()
 {
   { std::lock_guard<std::mutex> lk(stream_queue_mtx_); stream_thread_running_.store(false); }
   stream_queue_cv_.notify_one();
   if (stream_thread_.joinable()) stream_thread_.join();
 }
 
-void SaveVideo::streamLoop()
+void CameraOutput::streamLoop()
 {
   while (true) {
     StreamTask task;
@@ -303,7 +304,7 @@ void SaveVideo::streamLoop()
     out_msg->width                = config_.width;
     out_msg->height               = config_.height;
     out_msg->encoding             = "h264";
-    out_msg->pts                  = task.stamp_sec * 1000000000ULL + task.stamp_nanosec;
+    out_msg->pts                  = result.pts;
     // flags bit 0 == AV_PKT_FLAG_KEY, matching the ffmpeg_image_transport convention
     out_msg->flags                = result.is_key_frame ? 1 : 0;
     out_msg->data                 = std::move(result.data);
@@ -316,14 +317,14 @@ void SaveVideo::streamLoop()
 //  State publishers
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::publishRecordState()
+void CameraOutput::publishRecordState()
 {
   drone_msgs::msg::Toggle msg;
   msg.state = recording_.load();
   record_state_pub_->publish(msg);
 }
 
-void SaveVideo::publishStreamState()
+void CameraOutput::publishStreamState()
 {
   drone_msgs::msg::Toggle msg;
   msg.state = streaming_.load();
@@ -334,7 +335,7 @@ void SaveVideo::publishStreamState()
 //  Toggle callbacks
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
+void CameraOutput::recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
 {
   if (!recording_.load()) {
     try {
@@ -355,18 +356,18 @@ void SaveVideo::recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg
   publishRecordState();
 }
 
-void SaveVideo::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
+void CameraOutput::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
 {
   if (!streaming_.load()) {
     try {
       {
         std::lock_guard<std::mutex> lk(encoder_mtx_);
-        h264_encoder_.open(config_.width, config_.height, config_.fps, config_.fps);
+        h264_encoder_.open(config_.width, config_.height, config_.fps, config_.fps / 2);
       }
       startStreamThread();
       streaming_.store(true);
       RCLCPP_INFO(get_logger(), "Stream → ON  (%dx%d @ %d fps, GOP=%d)",
-        config_.width, config_.height, config_.fps, config_.fps);
+        config_.width, config_.height, config_.fps, config_.fps / 2);
     } catch (const std::exception & e) {
       RCLCPP_ERROR(get_logger(), "Failed to start streaming: %s", e.what());
       return;
@@ -387,7 +388,7 @@ void SaveVideo::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg
 //  Sensor callbacks
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+void CameraOutput::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
   const auto & p = msg->pose.pose.position;
   const auto & q = msg->pose.pose.orientation;
@@ -403,7 +404,7 @@ void SaveVideo::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   latest_odom_ = snap;
 }
 
-void SaveVideo::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
+void CameraOutput::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
 {
   GpsSnapshot snap;
   snap.stamp = rclcpp::Time(msg->header.stamp.sec, msg->header.stamp.nanosec, RCL_ROS_TIME);
@@ -418,12 +419,15 @@ void SaveVideo::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
 //  Image callback  — fans frame out to active pipelines
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::imageCallback(sensor_msgs::msg::CompressedImage::UniquePtr msg)
+void CameraOutput::imageCallback(sensor_msgs::msg::CompressedImage::UniquePtr msg)
 {
   const bool do_record = recording_.load();
   const bool do_stream = streaming_.load();
 
   if (!do_record && !do_stream) return;
+
+  bool should_notify_record = false;
+  bool should_notify_stream = false;
 
   if (do_record) {
     OdomSnapshot odom_snap;
@@ -444,8 +448,17 @@ void SaveVideo::imageCallback(sensor_msgs::msg::CompressedImage::UniquePtr msg)
       rtask.odom          = odom_snap;
       rtask.gps           = gps_snap;
 
-      { std::lock_guard<std::mutex> lk(record_queue_mtx_); record_queue_.push(std::move(rtask)); }
-      record_queue_cv_.notify_one();
+      {
+        std::lock_guard<std::mutex> lk(record_queue_mtx_);
+        if (record_queue_.size() >= kMaxQueueDepth) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+            "Record queue full — dropping frame");
+        } else {
+          record_queue_.push(std::move(rtask));
+          should_notify_record = true;
+        }
+      }
+      if (should_notify_record) record_queue_cv_.notify_one();
     }
   }
 
@@ -455,12 +468,21 @@ void SaveVideo::imageCallback(sensor_msgs::msg::CompressedImage::UniquePtr msg)
     stask.stamp_sec     = msg->header.stamp.sec;
     stask.stamp_nanosec = msg->header.stamp.nanosec;
 
-    { std::lock_guard<std::mutex> lk(stream_queue_mtx_); stream_queue_.push(std::move(stask)); }
-    stream_queue_cv_.notify_one();
+    {
+      std::lock_guard<std::mutex> lk(stream_queue_mtx_);
+      if (stream_queue_.size() >= kMaxQueueDepth) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+          "Stream queue full — dropping frame");
+      } else {
+        stream_queue_.push(std::move(stask));
+        should_notify_stream = true;
+      }
+    }
+    if (should_notify_stream) stream_queue_cv_.notify_one();
   }
 }
 
 }  // namespace drone_pipeline
 
 #include "rclcpp_components/register_node_macro.hpp"
-RCLCPP_COMPONENTS_REGISTER_NODE(drone_pipeline::SaveVideo)
+RCLCPP_COMPONENTS_REGISTER_NODE(drone_pipeline::CameraOutput)

@@ -28,7 +28,7 @@ add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
   src/mjpeg_writer.cpp
   src/h264_encoder.cpp
-  src/save_video.cpp
+  src/camera_output.cpp
 )
 
 target_include_directories(drone_pipeline_components PUBLIC
@@ -62,8 +62,8 @@ rclcpp_components_register_node(drone_pipeline_components
 )
 
 rclcpp_components_register_node(drone_pipeline_components
-  PLUGIN "drone_pipeline::SaveVideo"
-  EXECUTABLE save_video_node
+  PLUGIN "drone_pipeline::CameraOutput"
+  EXECUTABLE camera_output_node
 )
 
 # ── flight_logger (standalone executable) ─────────────────────────────────────
