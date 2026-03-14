@@ -6,7 +6,7 @@ Wants=dev-video0.device
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 2
-ExecStart=/usr/bin/v4l2-ctl --device=/dev/video0 --set-ctrl=brightness=128,contrast=34,saturation=48,hue=128,white_balance_automatic=0,gamma=110,gain=0,power_line_frequency=1,white_balance_temperature=4000,sharpness=38,backlight_compensation=4,auto_exposure=1,exposure_time_absolute=450,exposure_dynamic_framerate=0,focus_absolute=1,zoom_absolute=0
+ExecStart=/usr/bin/v4l2-ctl --device=/dev/video0 --set-ctrl=white_balance_automatic=0,white_balance_temperature=4000,auto_exposure=1,exposure_time_absolute=450,exposure_dynamic_framerate=0,focus_absolute=1
 RemainAfterExit=yes
 
 [Install]

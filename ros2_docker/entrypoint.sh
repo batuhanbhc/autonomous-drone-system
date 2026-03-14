@@ -9,7 +9,7 @@ fi
 
 # Set ROS2 related environment variables
 ROS_DOMAIN_BASE=${ROS_DOMAIN_ID}
-DRONE_ID=$(yq '.drone.id' /config/system.yaml)
+DRONE_ID=$(yq '.drone_id' /home/batuhan/ros2_ws/src/mavros_config/config/control_params.yaml)
 ROS_DOMAIN_ID=$((ROS_DOMAIN_BASE + DRONE_ID))
 
 export ROS_DOMAIN_ID
