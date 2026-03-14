@@ -7,13 +7,6 @@ if [ -f /home/batuhan/ros2_ws/install/setup.bash ]; then
     source /home/batuhan/ros2_ws/install/setup.bash
 fi
 
-# Set ROS2 related environment variables
-ROS_DOMAIN_BASE=${ROS_DOMAIN_ID}
-DRONE_ID=$(yq '.drone_id' /home/batuhan/ros2_ws/src/mavros_config/config/control_params.yaml)
-ROS_DOMAIN_ID=$((ROS_DOMAIN_BASE + DRONE_ID))
-
-export ROS_DOMAIN_ID
-echo "ROS_DOMAIN_ID set to $ROS_DOMAIN_ID"
 
 # Set hailotools environment variables
 export HAILO_TAPPAS=/opt/hailo/tappas

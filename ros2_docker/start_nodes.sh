@@ -2,9 +2,13 @@
 set -e
 source /entrypoint.sh
 
-DRONE_ID=$(yq '.drone.id' /config/system.yaml)
+# Set ROS2 related environment variables
+DRONE_ID=$(yq '.drone_id' /home/batuhan/ros2_ws/src/mavros_config/config/control_params.yaml)
 LOG_DIR="/home/batuhan/shared/logs"
 mkdir -p "$LOG_DIR"
+
+echo "DRONE_ID: $DRONE_ID"
+echo "ROS_DOMAIN_ID: $ROS_DOMAIN_ID"
 
 
 echo "[startup] Checking for FCU on UART /dev/ttyAMA0..."
@@ -47,10 +51,10 @@ echo "[startup] control_gate started with PID $CONTROL_GATE_PID."
 
 
 
-#echo "[startup] Starting drone_pipeline..."
-#ros2 launch drone_pipeline drone_pipeline.launch.py \
-#    >> "$LOG_DIR/drone_pipeline.log" 2>&1 &
-#echo "[startup] drone_pipeline started with PID $!."
+echo "[startup] Starting drone_pipeline..."
+ros2 launch drone_pipeline drone_pipeline.launch.py \
+    >> "$LOG_DIR/drone_pipeline.log" 2>&1 &
+echo "[startup] drone_pipeline started with PID $!."
 
 
 wait -n $MAVROS_PID $CONTROL_GATE_PID
