@@ -19,7 +19,7 @@ struct CameraConfig
   int         fps;
   std::string device_path;
   uint8_t     drone_id;
-  std::string raw_images_topic;
+  std::string images_topic;
 };
 
 class CameraCapture : public rclcpp::Node

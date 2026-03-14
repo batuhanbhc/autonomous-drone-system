@@ -8,8 +8,8 @@
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "yaml-cpp/yaml.h"
-#include "cv_bridge/cv_bridge.h"
-#include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>   // cv::imdecode
+#include <opencv2/imgproc.hpp>     // cv::resize
 
 namespace fs = std::filesystem;
 
@@ -17,7 +17,7 @@ namespace drone_pipeline
 {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Config loading  (mirrors flight_logger / camera_capture pattern)
+//  Config loading
 // ─────────────────────────────────────────────────────────────────────────────
 
 VideoConfig SaveVideo::loadConfig()
@@ -38,12 +38,10 @@ VideoConfig SaveVideo::loadConfig()
 
   VideoConfig cfg;
 
-  // ── drone_id ─────────────────────────────────────────────────────────────
   if (!root["drone_id"])
     throw std::runtime_error("Missing 'drone_id' in config");
   cfg.drone_id = static_cast<uint8_t>(root["drone_id"].as<int>());
 
-  // ── mavros_topics (odom + gps) ────────────────────────────────────────────
   if (!root["mavros_topics"])
     throw std::runtime_error("Missing 'mavros_topics' section");
   const auto & mv = root["mavros_topics"];
@@ -58,18 +56,15 @@ VideoConfig SaveVideo::loadConfig()
   cfg.gps1_raw_topic = "/drone_" + std::to_string(cfg.drone_id) +
                        mv["gps1_raw"].as<std::string>();
 
-  // ── custom_topics (raw images) ────────────────────────────────────────────
-  if (!root["custom_topics"] || !root["custom_topics"]["raw_images"])
-    throw std::runtime_error("Missing 'custom_topics/raw_images'");
-  cfg.raw_images_topic = "/drone_" + std::to_string(cfg.drone_id) +
-                         "/" + root["custom_topics"]["raw_images"].as<std::string>();
+  if (!root["custom_topics"] || !root["custom_topics"]["images"])
+    throw std::runtime_error("Missing 'custom_topics/images'");
+  cfg.images_topic = "/drone_" + std::to_string(cfg.drone_id) +
+                         "/" + root["custom_topics"]["images"].as<std::string>();
 
-  // ── flight_params/logs_path ───────────────────────────────────────────────
   if (!root["flight_params"] || !root["flight_params"]["logs_path"])
     throw std::runtime_error("Missing 'flight_params/logs_path'");
   cfg.logs_path = root["flight_params"]["logs_path"].as<std::string>();
 
-  // ── camera (width / height / fps) ─────────────────────────────────────────
   if (!root["camera"])
     throw std::runtime_error("Missing 'camera' section");
   const auto cam = root["camera"];
@@ -84,7 +79,7 @@ VideoConfig SaveVideo::loadConfig()
     cfg.drone_id,
     cfg.odom_topic.c_str(),
     cfg.gps1_raw_topic.c_str(),
-    cfg.raw_images_topic.c_str(),
+    cfg.images_topic.c_str(),
     cfg.logs_path.c_str(),
     cfg.width, cfg.height, cfg.fps);
 
@@ -93,9 +88,6 @@ VideoConfig SaveVideo::loadConfig()
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Session directory resolution
-//  Counts existing sub-directories → picks the SAME session already used by
-//  flight_logger (they count the same way and run in the same launch).
-//  The session directory is created here only if it doesn't exist yet.
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::string SaveVideo::resolveSessionDir(const std::string & logs_path)
@@ -107,12 +99,8 @@ std::string SaveVideo::resolveSessionDir(const std::string & logs_path)
     if (entry.is_directory()) ++dir_count;
   }
 
-  // If flight_logger already created the session directory it will show up in
-  // the count.  If this node starts first, it creates a new one (same logic).
   std::size_t session_num = (dir_count == 0) ? 1 : dir_count;
 
-  // Peek: does the highest-numbered directory already exist?
-  // Re-use it rather than creating a new one (sibling nodes share a session).
   std::ostringstream oss;
   oss << std::setw(4) << std::setfill('0') << session_num;
   std::string candidate = logs_path + "/" + oss.str();
@@ -131,7 +119,12 @@ std::string SaveVideo::resolveSessionDir(const std::string & logs_path)
 
 SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
 : Node("save_video", options)
-{
+{ 
+  // Must be set before any VideoWriter is opened
+  ::setenv("OPENCV_FFMPEG_WRITER_OPTIONS",
+           "preset;ultrafast|tune;zerolatency|crf;28",
+           /*overwrite=*/0);
+
   config_      = loadConfig();
   session_dir_ = resolveSessionDir(config_.logs_path);
   videos_dir_  = session_dir_ + "/videos";
@@ -143,13 +136,13 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(get_logger(), "Videos → %s", videos_dir_.c_str());
   RCLCPP_INFO(get_logger(), "Data   → %s", data_dir_.c_str());
 
-  // ── Reliable QoS for toggle ───────────────────────────────────────────────
-  const auto reliable_qos =
-    rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  const auto sensor_qos   = rclcpp::SensorDataQoS();   // best-effort
 
   const std::string drone_prefix =
     "/drone_" + std::to_string(config_.drone_id);
 
+  // ── Toggle / state ────────────────────────────────────────────────────────
   toggle_sub_ = create_subscription<drone_msgs::msg::Toggle>(
     drone_prefix + "/camera/record_input", reliable_qos,
     [this](const drone_msgs::msg::Toggle::SharedPtr msg) {
@@ -159,15 +152,20 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
   state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     drone_prefix + "/camera/record_state", reliable_qos);
 
-  // ── Sensor-data QoS for image / odom / gps ────────────────────────────────
-  const auto sensor_qos = rclcpp::SensorDataQoS();
-
-  image_sub_ = create_subscription<sensor_msgs::msg::Image>(
-    config_.raw_images_topic, sensor_qos,
-    [this](const sensor_msgs::msg::Image::SharedPtr msg) {
-      imageCallback(msg);
+  // ── CompressedImage — UniquePtr callback for zero-copy intra-process ──────
+  // ROS2 intra-process transport will call this overload directly with a
+  // moved unique_ptr when the publisher is in the same process, avoiding any
+  // heap allocation or copy.  For inter-process topics the middleware creates
+  // a new unique_ptr from the deserialized bytes, so the callback signature
+  // remains identical in both cases.
+  image_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
+    config_.images_topic,
+    rclcpp::SensorDataQoS(),
+    [this](sensor_msgs::msg::CompressedImage::UniquePtr msg) {
+      imageCallback(std::move(msg));
     });
 
+  // ── Odometry & GPS ────────────────────────────────────────────────────────
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     config_.odom_topic, sensor_qos,
     [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -180,7 +178,6 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
       gpsCallback(msg);
     });
 
-  // Publish initial state (mode = off)
   publishState();
 
   RCLCPP_INFO(get_logger(),
@@ -196,7 +193,11 @@ SaveVideo::SaveVideo(const rclcpp::NodeOptions & options)
 SaveVideo::~SaveVideo()
 {
   if (recording_.load()) {
+    recording_.store(false);
+    stopEncoderThread();
     closeClip();
+  } else {
+    stopEncoderThread();
   }
 }
 
@@ -214,7 +215,21 @@ void SaveVideo::openClip()
   const std::string video_path = videos_dir_ + "/" + idx.str() + ".mp4";
   const std::string csv_path   = data_dir_   + "/" + idx.str() + ".csv";
 
-  // H.264 / mp4
+  // ── Configure VideoWriter for H.264 / ultrafast ───────────────────────────
+  // cv::VideoWriter accepts a CAP_PROP_HW_ACCELERATION hint and extra params
+  // via the VideoCaptureAPIs overload.  The cleaner portable path is to pass
+  // encoder parameters through the environment or rely on OpenCV's GStreamer /
+  // FFmpeg back-end selecting x264 automatically for avc1 / mp4v fourcc.
+  //
+  // For the lowest possible CPU cost on an embedded platform:
+  //   fourcc = 'avc1' (H.264 baseline, handled by libx264 in FFmpeg back-end)
+  //   OPENCV_FFMPEG_WRITER_OPTIONS env var sets x264 options at process start
+  //   (set in main() below).
+  //
+  // Alternatively, if the platform has hardware H.264 (V4L2/VAAPI/OMX) the
+  // GStreamer pipeline override approach is more reliable, but that requires
+  // knowing the exact HW codec name at deploy time.  We keep it portable here.
+
   const int fourcc = cv::VideoWriter::fourcc('a', 'v', 'c', '1');
   writer_.open(video_path, fourcc, config_.fps,
                cv::Size(config_.width, config_.height));
@@ -241,19 +256,112 @@ void SaveVideo::openClip()
 void SaveVideo::closeClip()
 {
   std::lock_guard<std::mutex> lk(clip_mtx_);
-
-  if (writer_.isOpened()) {
-    writer_.release();
-  }
-  if (csv_file_.is_open()) {
-    csv_file_.flush();
-    csv_file_.close();
-  }
+  if (writer_.isOpened()) writer_.release();
+  if (csv_file_.is_open()) { csv_file_.flush(); csv_file_.close(); }
 
   std::ostringstream idx;
   idx << std::setw(3) << std::setfill('0') << clip_index_;
   RCLCPP_INFO(get_logger(),
     "Recording stopped → clip %s finalized.", idx.str().c_str());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Encoder thread management
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SaveVideo::startEncoderThread()
+{
+  encoder_running_.store(true);
+  encoder_thread_ = std::thread(&SaveVideo::encoderLoop, this);
+}
+
+void SaveVideo::stopEncoderThread()
+{
+  {
+    std::lock_guard<std::mutex> lk(queue_mtx_);
+    encoder_running_.store(false);
+  }
+  queue_cv_.notify_one();
+  if (encoder_thread_.joinable()) {
+    encoder_thread_.join();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Encoder loop
+//
+//  Runs on a dedicated thread.  Pulls EncodeTask objects from encode_queue_,
+//  decodes JPEG → BGR with cv::imdecode, resizes if needed, writes the frame
+//  to the VideoWriter, and appends a CSV row — all without touching the ROS
+//  executor thread.
+//
+//  CPU notes:
+//    • cv::imdecode for JPEG is libjpeg-turbo under the hood on most distros:
+//      fast SIMD-accelerated decode, typically < 1 ms per 720p frame.
+//    • x264 ultrafast + zerolatency cuts encode time to a fraction of what
+//      the default medium preset costs; quality loss is acceptable for
+//      telemetry video.
+//    • We do NOT hold any mutex while encoding so the subscriber callback
+//      never stalls waiting for the encoder.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SaveVideo::encoderLoop()
+{
+  while (true) {
+    EncodeTask task;
+
+    {
+      std::unique_lock<std::mutex> lk(queue_mtx_);
+      queue_cv_.wait(lk, [this] {
+        return !encode_queue_.empty() || !encoder_running_.load();
+      });
+
+      // Drain remaining frames even after stop signal so nothing is lost
+      if (encode_queue_.empty()) {
+        break;   // encoder_running_ == false and queue is empty → exit
+      }
+
+      task = std::move(encode_queue_.front());
+      encode_queue_.pop();
+    }
+
+    // ── Decode JPEG bytes → BGR Mat ───────────────────────────────────────
+    // cv::imdecode is allocation-light: it writes directly into the Mat
+    // buffer.  IMREAD_COLOR forces BGR output regardless of JPEG colour space.
+    cv::Mat frame = cv::imdecode(
+      cv::InputArray(task.jpeg_data),
+      cv::IMREAD_COLOR);
+
+    if (frame.empty()) {
+      RCLCPP_WARN(get_logger(), "imdecode produced an empty frame — skipping.");
+      continue;
+    }
+
+    // Resize only when the JPEG resolution differs from the configured size
+    if (frame.cols != config_.width || frame.rows != config_.height) {
+      cv::resize(frame, frame, cv::Size(config_.width, config_.height));
+    }
+
+    // ── Write frame + CSV ─────────────────────────────────────────────────
+    std::lock_guard<std::mutex> lk(clip_mtx_);
+
+    if (!writer_.isOpened() || !csv_file_.is_open()) {
+      // Recording was stopped between the push and now — discard gracefully
+      continue;
+    }
+
+    writer_.write(frame);
+
+    csv_file_
+      << task.stamp_sec          << ','
+      << task.stamp_nanosec      << ','
+      << task.odom.pos_x         << ',' << task.odom.pos_y  << ',' << task.odom.pos_z  << ','
+      << task.odom.quat_x        << ',' << task.odom.quat_y << ','
+      << task.odom.quat_z        << ',' << task.odom.quat_w << ','
+      << task.odom.vel_x         << ',' << task.odom.vel_y  << ',' << task.odom.vel_z  << ','
+      << task.gps.lat            << ',' << task.gps.lon
+      << '\n';
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +376,7 @@ void SaveVideo::publishState()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Toggle callback — flips recording on/off regardless of msg.state value
+//  Toggle callback
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SaveVideo::toggleCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
@@ -276,10 +384,8 @@ void SaveVideo::toggleCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
   if (!recording_.load()) {
     // OFF → ON
     try {
-      {
-        std::lock_guard<std::mutex> lk(clip_mtx_);
-        openClip();
-      }
+      openClip();
+      startEncoderThread();
       recording_.store(true);
       RCLCPP_INFO(get_logger(), "Mode → ON  (clip %03d)", clip_index_);
     } catch (const std::exception & e) {
@@ -288,7 +394,10 @@ void SaveVideo::toggleCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
     }
   } else {
     // ON → OFF
+    // Stop accepting new frames first, then drain the encoder queue before
+    // closing the clip so no buffered frames are lost.
     recording_.store(false);
+    stopEncoderThread();
     closeClip();
     RCLCPP_INFO(get_logger(), "Mode → OFF");
   }
@@ -297,7 +406,7 @@ void SaveVideo::toggleCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Odom callback — cache latest snapshot
+//  Odom callback
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SaveVideo::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -307,7 +416,6 @@ void SaveVideo::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   const auto & v = msg->twist.twist.linear;
 
   OdomSnapshot snap;
-  // Convert header stamp to rclcpp::Time using ROS_TIME clock for comparison
   snap.stamp  = rclcpp::Time(msg->header.stamp.sec,
                               msg->header.stamp.nanosec,
                               RCL_ROS_TIME);
@@ -320,7 +428,7 @@ void SaveVideo::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  GPS callback — cache latest snapshot
+//  GPS callback
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SaveVideo::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
@@ -337,22 +445,23 @@ void SaveVideo::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Image callback — encode frame + write CSV row when recording
+//  Image callback  (UniquePtr overload — zero-copy intra-process)
 //
-//  Timestamp strategy:
-//    camera_capture stamps frames with now() using the node's clock.
-//    odom and gps are stamped by MAVROS from the FCU clock.
-//    Both are kept in ROS_TIME (sim time or wall time depending on the
-//    launch configuration), so they share the same reference frame.
-//    We simply grab the latest cached snapshot; at typical odom/gps rates
-//    (≥10 Hz) the age is well below one video frame period.
+//  This callback runs on the ROS executor thread and must return quickly.
+//  All it does is:
+//    1. Snapshot sensor caches
+//    2. Move the JPEG bytes into an EncodeTask
+//    3. Push to the encoder queue
+//    4. Return
+//
+//  The encoder thread owns the actual decode + write work.
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SaveVideo::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
+void SaveVideo::imageCallback(sensor_msgs::msg::CompressedImage::UniquePtr msg)
 {
   if (!recording_.load()) return;
 
-  // ── Grab sensor snapshots ─────────────────────────────────────────────────
+  // ── Snapshot sensor caches ────────────────────────────────────────────────
   OdomSnapshot odom_snap;
   GpsSnapshot  gps_snap;
   bool have_odom, have_gps;
@@ -374,66 +483,25 @@ void SaveVideo::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     return;
   }
 
-  // ── Decode image ──────────────────────────────────────────────────────────
-  cv_bridge::CvImageConstPtr cv_ptr;
-  try {
-    // Accept bgr8 (from camera_capture) or yuv422 / mono8 fallback
-    cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
-  } catch (const cv_bridge::Exception & e) {
-    RCLCPP_WARN(get_logger(), "cv_bridge: %s", e.what());
-    return;
+  // ── Build task and push to encoder queue ──────────────────────────────────
+  // std::move(msg->data) avoids copying the JPEG bytes; the unique_ptr itself
+  // is consumed here so there is no dangling reference.
+  EncodeTask task;
+  task.jpeg_data       = std::move(msg->data);   // zero-copy move of the vector
+  task.stamp_sec       = msg->header.stamp.sec;
+  task.stamp_nanosec   = msg->header.stamp.nanosec;
+  task.odom            = odom_snap;
+  task.gps             = gps_snap;
+
+  {
+    std::lock_guard<std::mutex> lk(queue_mtx_);
+    encode_queue_.push(std::move(task));
   }
-
-  cv::Mat frame = cv_ptr->image;
-  if (frame.empty()) {
-    RCLCPP_WARN(get_logger(), "Received empty frame — skipping.");
-    return;
-  }
-
-  // Resize if the live negotiated resolution differs from config
-  if (frame.cols != config_.width || frame.rows != config_.height) {
-    cv::resize(frame, frame, cv::Size(config_.width, config_.height));
-  }
-
-  // ── Write video frame + CSV row ───────────────────────────────────────────
-  std::lock_guard<std::mutex> lk(clip_mtx_);
-
-  // Guard against a race where recording_ was set false between the check
-  // at the top of the callback and acquiring clip_mtx_.
-  if (!writer_.isOpened() || !csv_file_.is_open()) return;
-
-  writer_.write(frame);
-
-  csv_file_
-    << msg->header.stamp.sec     << ','
-    << msg->header.stamp.nanosec << ','
-    << odom_snap.pos_x  << ',' << odom_snap.pos_y  << ',' << odom_snap.pos_z  << ','
-    << odom_snap.quat_x << ',' << odom_snap.quat_y << ','
-    << odom_snap.quat_z << ',' << odom_snap.quat_w << ','
-    << odom_snap.vel_x  << ',' << odom_snap.vel_y  << ',' << odom_snap.vel_z  << ','
-    << gps_snap.lat     << ',' << gps_snap.lon
-    << '\n';
+  queue_cv_.notify_one();
 }
 
 }  // namespace drone_pipeline
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  main
 // ─────────────────────────────────────────────────────────────────────────────
 
-int main(int argc, char * argv[])
-{
-  rclcpp::init(argc, argv);
-  try {
-    auto node = std::make_shared<drone_pipeline::SaveVideo>();
-    rclcpp::spin(node);
-  } catch (const std::exception & e) {
-    RCLCPP_FATAL(
-      rclcpp::get_logger("save_video"),
-      "Fatal error: %s", e.what());
-    rclcpp::shutdown();
-    return 1;
-  }
-  rclcpp::shutdown();
-  return 0;
-}
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(drone_pipeline::SaveVideo)

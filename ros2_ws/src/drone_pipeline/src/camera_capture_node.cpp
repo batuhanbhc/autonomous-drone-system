@@ -83,16 +83,16 @@ CameraConfig CameraCapture::loadConfig()
     throw std::runtime_error("Missing 'drone_id'");
   cfg.drone_id = static_cast<uint8_t>(root["drone_id"].as<int>());
 
-  if (!root["custom_topics"] || !root["custom_topics"]["raw_images"])
-    throw std::runtime_error("Missing 'custom_topics/raw_images'");
-  cfg.raw_images_topic = root["custom_topics"]["raw_images"].as<std::string>();
+  if (!root["custom_topics"] || !root["custom_topics"]["images"])
+    throw std::runtime_error("Missing 'custom_topics/images'");
+  cfg.images_topic = root["custom_topics"]["images"].as<std::string>();
 
   RCLCPP_INFO(
     get_logger(),
     "Config → device=%s  format=MJPEG(hardcoded)  resolution=%dx%d  fps=%d  "
     "drone_id=%u  topic=%s",
     cfg.device_path.c_str(), cfg.width, cfg.height, cfg.fps,
-    cfg.drone_id, cfg.raw_images_topic.c_str());
+    cfg.drone_id, cfg.images_topic.c_str());
 
   return cfg;
 }
@@ -226,21 +226,11 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
 {
   config_ = loadConfig();
 
-  // Build topic name.
-  // Convention: <base_topic>/compressed  so tools like image_view,
-  // web_video_server, etc. recognise it automatically.
-  const std::string topic =
-    "/drone_" + std::to_string(config_.drone_id) +
-    "/" + config_.raw_images_topic + "/compressed";
-
+  const std::string topic = "/drone_" + std::to_string(config_.drone_id) + "/" + config_.images_topic;
   RCLCPP_INFO(get_logger(), "Publishing on: %s", topic.c_str());
 
   // Sensor-data QoS (best-effort, small depth) is appropriate for live video.
-  // UniquePtr publish path is used in captureThread() which enables
-  // zero-copy intra-process delivery when both ends opt into it via
-  // rclcpp::NodeOptions().use_intra_process_comms(true).
-  image_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
-    topic, rclcpp::SensorDataQoS());
+  image_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(topic, rclcpp::SensorDataQoS());
 
   openDevice();
   startStreaming();
@@ -325,28 +315,6 @@ void CameraCapture::captureThread()
 }  // namespace drone_pipeline
 
 // ─────────────────────────────────────────────────────────────
-//  main
-// ─────────────────────────────────────────────────────────────
 
-int main(int argc, char * argv[])
-{
-  rclcpp::init(argc, argv);
-  try {
-    // use_intra_process_comms is intentionally left at its default (false)
-    // here so the node works standalone without any change.
-    // When composing nodes in the same process, construct via
-    //   rclcpp::NodeOptions().use_intra_process_comms(true)
-    // and the publisher's unique_ptr path will deliver frames to any
-    // same-process subscriber with zero copies.
-    auto node = std::make_shared<drone_pipeline::CameraCapture>();
-    rclcpp::spin(node);
-  } catch (const std::exception & e) {
-    RCLCPP_FATAL(
-      rclcpp::get_logger("camera_capture"),
-      "Fatal error: %s", e.what());
-    rclcpp::shutdown();
-    return 1;
-  }
-  rclcpp::shutdown();
-  return 0;
-}
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(drone_pipeline::CameraCapture)

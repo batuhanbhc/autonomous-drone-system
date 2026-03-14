@@ -113,8 +113,8 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
     ),
     "SAVE_VIDEO_TOGGLE": COMMAND_CONFIG(
         key_list=("KEY_F2",),
-        activation_switch=False,
-        activation_switch_key=None,
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
 }

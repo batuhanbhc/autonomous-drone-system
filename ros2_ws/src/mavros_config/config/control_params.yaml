@@ -4,19 +4,18 @@ flight_params:
   takeoff_m: 2.0
   gcs_failsafe_s: 10  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
   failsafe_watchdog_hz: 1.0
-  logs_path: "/home/batuhan/test"
+  logs_path: "/home/batuhan/shared/recordings"
 
 
 camera:
   device_path: "/dev/video0"
   width: 800
   height: 600
-  fps: 25
-  pixel_format: "YUY2"
+  fps: 30
   
 
 custom_topics:
-  raw_images: "camera/image_raw"
+  images: "camera/image/compressed"
   autonomous_action: "/autonomous/action"
   manual_action:  "/teleop/action"
   manual_command: "/teleop/command" 
@@ -94,5 +93,5 @@ teleop:
         activation_time_s: 1.0
         latch: true
       SAVE_VIDEO_TOGGLE:
-        activation_time_s: 0.1
+        activation_time_s: 0.0
         latch: true

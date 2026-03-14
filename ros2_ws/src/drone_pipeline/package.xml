@@ -18,8 +18,10 @@
   <depend>mavros_msgs</depend>
   <depend>drone_msgs</depend>
   <depend>libopencv-dev</depend>
+  <depend>rclcpp_components</depend>
   
   <export>
-    <build_type>ament_cmake</build_type>
+  <build_type>ament_cmake</build_type>
+  <rclcpp_components plugin="${prefix}/drone_pipeline_components.xml"/>
   </export>
 </package>

@@ -1,0 +1,14 @@
+<class_libraries>
+  <library path="drone_pipeline_components">
+    <class name="drone_pipeline::CameraCapture"
+           type="drone_pipeline::CameraCapture"
+           base_class_type="rclcpp::Node">
+      <description>V4L2 MJPEG camera capture node</description>
+    </class>
+    <class name="drone_pipeline::SaveVideo"
+           type="drone_pipeline::SaveVideo"
+           base_class_type="rclcpp::Node">
+      <description>Video + telemetry recorder node</description>
+    </class>
+  </library>
+</class_libraries>
