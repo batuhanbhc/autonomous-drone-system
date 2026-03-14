@@ -3,10 +3,19 @@ ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
 ros2_ws/core
-
 build/
 install/
 log/
+
+# hailort and tappas deb and zip files
+ros2_docker/hailort_4.20.0_arm64.deb
+ros2_docker/tappas_3.31.0_linux_installer.zip
+
+# docker shared
+docker_shared/
+
+# vscode
+.vscode/
 
 # Python
 __pycache__/
