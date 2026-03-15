@@ -107,6 +107,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-usb-cam \
     ros-humble-image-tools \
     ros-humble-image-view \
+    ros-humble-ffmpeg-image-transport \
     ros-humble-tf-transformations \
     python3-colcon-common-extensions \
     python3-rosdep \
