@@ -4,13 +4,13 @@ flight_params:
   takeoff_m: 2.0
   gcs_failsafe_s: 10  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
   failsafe_watchdog_hz: 1.0
-  logs_path: "/home/batuhan/temp"
+  logs_path: "/home/batuhan/shared/recordings"
 
 
 camera:
   device_path: "/dev/video0"
-  width: 640
-  height: 480
+  width: 800
+  height: 600
   fps: 30
   
 
@@ -40,12 +40,20 @@ teleop:
                      "/dev/input/by-id/usb-ASUSTek_Computer_Inc._N-KEY_Device-event-mouse"]
 
   velocity:
-    categories:
-      horizontal: [2.0, 3.0, 5.0, 10.0]
-      vertical:   [0.5, 1.0, 2.0, 3.0]
-      default_start_index: 0     # e.g. horizontal vel: horizontal[default_start_index]
+    horizontal_default: 1       # m/s
+    vertical_default: 0.5       # m/s
+    horizontal_increment: 1.0   # m/s per command
+    vertical_increment: 0.5     # m/s per command
+    horizontal_max: 5.0         # m/s
+    vertical_max: 2.0           # m/s
+    horizontal_min: 1.0        # m/s
+    vertical_min: 0.5          # m/s
 
-    yaw_rate: 0.6   # rad/s
+  yaw_rate:
+    default: 0.5   # rad/s
+    min: 0.1
+    max: 1.0
+    increment: 0.1  # rad/s per command
   
   commands:
     params:
@@ -80,12 +88,24 @@ teleop:
       GUIDED:
         activation_time_s: 0.1
         latch: true
-      SPEED_UP:
-        activation_time_s: 0.0
+      SPEED_UP_HORIZONTAL:
         latch: true
-      SPEED_DOWN:
-        activation_time_s: 0.0
+        activation_time_s: 0.1
+      SPEED_DOWN_HORIZONTAL:
         latch: true
+        activation_time_s: 0.1
+      SPEED_UP_VERTICAL:
+        latch: true
+        activation_time_s: 0.1
+      SPEED_DOWN_VERTICAL:
+        latch: true
+        activation_time_s: 0.1
+      SPEED_UP_YAW:
+        latch: true
+        activation_time_s: 0.1
+      SPEED_DOWN_YAW:
+        latch: true
+        activation_time_s: 0.1
       VEL_YAW:
         activation_time_s: 0.0
         latch: false

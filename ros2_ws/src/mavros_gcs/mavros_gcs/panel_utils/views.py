@@ -68,20 +68,20 @@ class DroneStateView:
     control_mode    : int | None = None
     velocity_h      : float | None = None
     velocity_v      : float | None = None
+    velocity_yaw    : float | None = None   # ← add
     keyboard_on     : bool | None = None
     safety_switch_on: bool | None = None
     system_killed   : bool | None = None
-    time_since_action_s: float | None = None  # display-friendly (seconds)
+    time_since_action_s: float | None = None
 
     def update_from_msg(self, msg: DroneState):
         self.control_mode = int(msg.control_mode)
         self.velocity_h = float(msg.velocity_h)
         self.velocity_v = float(msg.velocity_v)
+        self.velocity_yaw = float(msg.velocity_yaw)   # ← add
         self.keyboard_on = bool(msg.keyboard_on)
         self.safety_switch_on = bool(msg.safety_switch_on)
         self.system_killed = bool(msg.system_killed)
-
-        # builtin_interfaces/Duration -> seconds float for display
         sec = int(msg.time_since_action.sec)
         nsec = int(msg.time_since_action.nanosec)
         self.time_since_action_s = float(sec) + float(nsec) * 1e-9

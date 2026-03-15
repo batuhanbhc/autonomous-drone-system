@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 
 from mavros_gcs.teleop_utils.commands import Command, VelocityYaw
-from mavros_gcs.teleop_utils.definitions import TELEOP_CONFIG, ClampedIndex
+from mavros_gcs.teleop_utils.definitions import TELEOP_CONFIG, ClampedFloat
 
 @dataclass
 class HoldSlot:
@@ -14,37 +14,23 @@ class HoldSlot:
 
 
 class CommandManager:
-    """
-    Enforces:
-      - only one command executes per tick
-      - priority arbitration
-      - command_on_hold slot for hold-to-activate commands
-      - latching behavior: once executed, won't re-execute until released
-    """
-    def __init__(self, commands, hz: float, *, vel_categories: dict, vel_start_index: int):
+    def __init__(self, commands, hz: float, *, vel_cfg: dict, yaw_cfg: dict):
+        # vel_cfg keys: horizontal_default, horizontal_min, horizontal_max, horizontal_increment
+        #               vertical_default,   vertical_min,   vertical_max,   vertical_increment
+        # yaw_cfg keys: default, min, max, increment
+
         one_tick_s = 1 / float(hz)
+        self.commands = list(commands)
 
-        # commands must be a sorted list in terms of priorities, starting with higher priority commands
-        self.commands = list(commands)     
-
-        # calculate required ticks for execution for each command once
         for cmd in self.commands:
             act_t = cmd.get_activation_time()
-            if act_t <= 0:
-                required_ticks = 0
-            else:
-                required_ticks = int(math.ceil(act_t/ one_tick_s))
-
+            required_ticks = 0 if act_t <= 0 else int(math.ceil(act_t / one_tick_s))
             cmd.set_required_ticks(required_ticks)
 
-        # command on hold slot
         self._hold: Optional[HoldSlot] = None
-
-        # flag for accepting command inputs
         self._keyboard_active = True
 
-        # hover command to keep Hz > 2 requirement for ardupilot guided mode
-        self._hover_command= VelocityYaw(
+        self._hover_command = VelocityYaw(
             config=TELEOP_CONFIG["ACTION"],
             hook_fn=None,
             latch=False,
@@ -52,14 +38,27 @@ class CommandManager:
             hover=True,
         )
 
-        self.vel_categories = vel_categories
-        size = len(self.vel_categories["horizontal"])
-        self.vel_idx = ClampedIndex(start=vel_start_index, size=size)
+        # Three independent clamped velocity axes
+        self._horizontal = ClampedFloat(
+            default=vel_cfg["horizontal_default"],
+            min_val=vel_cfg["horizontal_min"],
+            max_val=vel_cfg["horizontal_max"],
+            increment=vel_cfg["horizontal_increment"],
+        )
+        self._vertical = ClampedFloat(
+            default=vel_cfg["vertical_default"],
+            min_val=vel_cfg["vertical_min"],
+            max_val=vel_cfg["vertical_max"],
+            increment=vel_cfg["vertical_increment"],
+        )
+        self._yaw = ClampedFloat(
+            default=yaw_cfg["default"],
+            min_val=yaw_cfg["min"],
+            max_val=yaw_cfg["max"],
+            increment=yaw_cfg["increment"],
+        )
 
-        # Time variable that stores when kill-switch window will close
         self._kill_pending_until: float | None = None
-        
-        # Track last *executed* non-hover command
         self._last_executed_cmd: Optional[Command] = None
         self._last_executed_time_s: Optional[float] = None
     
@@ -70,30 +69,29 @@ class CommandManager:
         self._keyboard_active = not self._keyboard_active
         return self._keyboard_active
     
+    # --- Velocity accessors ---
+
     def get_velocity(self):
-        """
-        Returns in order horizontal velocity level, vertical velocity level, and velocity index
-        """
-        idx = self.vel_idx.get()
-        return (
-            float(self.vel_categories["horizontal"][idx]),
-            float(self.vel_categories["vertical"][idx]),
-            idx,
-        )
-    
-    def increment_velocity(self):
-        """
-        Increases velocity index within allowed range.
-        """
-        self.vel_idx.increase()
-        return self.get_velocity()
-    
-    def decrement_velocity(self):
-        """
-        Decreases velocity index within allowed range.
-        """
-        self.vel_idx.decrease()
-        return self.get_velocity()
+        """Returns (horizontal_velocity, vertical_velocity, yaw_rate)."""
+        return self._horizontal.get(), self._vertical.get(), self._yaw.get()
+
+    def increment_horizontal_velocity(self) -> float:
+        return self._horizontal.increase()
+
+    def decrement_horizontal_velocity(self) -> float:
+        return self._horizontal.decrease()
+
+    def increment_vertical_velocity(self) -> float:
+        return self._vertical.increase()
+
+    def decrement_vertical_velocity(self) -> float:
+        return self._vertical.decrease()
+
+    def increment_yaw_rate(self) -> float:
+        return self._yaw.increase()
+
+    def decrement_yaw_rate(self) -> float:
+        return self._yaw.decrease()
     
     def execute_hover(self):
         self._hover_command.execute(state=dict())

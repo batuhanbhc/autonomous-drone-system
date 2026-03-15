@@ -57,14 +57,38 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
         activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
-    "SPEED_UP": COMMAND_CONFIG(
-        key_list=("KEY_EQUAL",),
+    "SPEED_UP_HORIZONTAL": COMMAND_CONFIG(
+        key_list=("KEY_EQUAL", "KEY_F6"),
         activation_switch=True,
         activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
-    "SPEED_DOWN": COMMAND_CONFIG(
-        key_list=("KEY_MINUS",),
+    "SPEED_DOWN_HORIZONTAL": COMMAND_CONFIG(
+        key_list=("KEY_MINUS", "KEY_F6"),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
+    "SPEED_UP_VERTICAL": COMMAND_CONFIG(
+        key_list=("KEY_EQUAL", "KEY_F7"),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
+    "SPEED_DOWN_VERTICAL": COMMAND_CONFIG(
+        key_list=("KEY_MINUS", "KEY_F7"),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
+    "SPEED_UP_YAW": COMMAND_CONFIG(
+        key_list=("KEY_EQUAL", "KEY_F8"),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
+    "SPEED_DOWN_YAW": COMMAND_CONFIG(
+        key_list=("KEY_MINUS", "KEY_F8"),
         activation_switch=True,
         activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
@@ -125,36 +149,34 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
     ),
 }
 
-class ClampedIndex:
+
+class ClampedFloat:
     """
-    Clamped index object, allows safe incrementing and decrementing index values within the valid index range of a fixed-length list
+    Thread-safe float value clamped between [min_val, max_val],
+    adjustable by a fixed increment.
     """
-    def __init__(self, start: int, size: int):
-        if size <= 0:
-            raise ValueError("size must be >= 1")
-        self._max_len = size
-        self._idx = max(0, min(start, size - 1))
+    def __init__(self, default: float, min_val: float, max_val: float, increment: float):
+        if min_val > max_val:
+            raise ValueError("min_val must be <= max_val")
+        self._min = min_val
+        self._max = max_val
+        self._increment = increment
+        self._value = max(min_val, min(default, max_val))
         self._lock = threading.Lock()
 
-    def increase(self):
+    def increase(self) -> float:
         with self._lock:
-            self._idx = min(self._idx + 1, self._max_len - 1)
+            self._value = min(self._value + self._increment, self._max)
+            return self._value
 
-    def decrease(self):
+    def decrease(self) -> float:
         with self._lock:
-            self._idx = max(self._idx - 1, 0)
+            self._value = max(self._value - self._increment, self._min)
+            return self._value
 
-    def get(self):
+    def get(self) -> float:
         with self._lock:
-            return self._idx
-
-    def set_min(self):
-        with self._lock:
-            self._idx = 0
-
-    def set_max(self):
-        with self._lock:
-            self._idx = self._max_len - 1
+            return self._value
 
 
 class NoEchoTerminal:

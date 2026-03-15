@@ -301,6 +301,7 @@ class InfoPanelNode(Node):
         return {"control_mode": self.control_state.control_mode,
                 "velocity_h": self.control_state.velocity_h,
                 "velocity_v": self.control_state.velocity_v,
+                "velocity_yaw": self.control_state.velocity_yaw,
                 "keyboard_on": self.control_state.keyboard_on,
                 "safety_switch_on": self.control_state.safety_switch_on,
                 "system_killed": self.control_state.system_killed,
@@ -419,6 +420,7 @@ class InfoPanelNode(Node):
         t.add_row("Control Mode",    _format_str_to_str(mode))
         t.add_row("Vel H (m/s)",     _format_float_to_str(data["velocity_h"], 2))
         t.add_row("Vel V (m/s)",     _format_float_to_str(data["velocity_v"], 2))
+        t.add_row("Yaw Rate (rad/s)", _format_float_to_str(data["velocity_yaw"], 2))
         t.add_row("Keyboard",        _format_bool_to_str(data["keyboard_on"]))
         t.add_row("Safe",            _format_bool_to_str(data["safety_switch_on"]))
         t.add_row("System Killed",   _format_bool_to_str(data["system_killed"]))

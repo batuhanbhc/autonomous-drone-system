@@ -29,8 +29,10 @@ from mavros_gcs.teleop_utils.print_manual import teleop_manual_text
 from mavros_gcs.teleop_utils.commands import (
     Command, KillConfirm, KillSwitch, Arm, Disarm,
     KeyboardToggle, ControlToggle, Land, RTL, Takeoff, Guided,
-    SpeedDown, SpeedUp, VelocityYaw, PressSafetySwitch, RecordVideoToggle,
-    StreamToggle
+    SpeedUpHorizontal, SpeedDownHorizontal,
+    SpeedUpVertical, SpeedDownVertical,
+    SpeedUpYaw, SpeedDownYaw,
+    VelocityYaw, PressSafetySwitch, RecordVideoToggle, StreamToggle
 )
 
 from drone_msgs.msg import TeleopCommand, TeleopAction, Toggle
@@ -106,9 +108,25 @@ class TeleopKeyboardNode(Node):
 
         # -------------------------
         # teleop command parameters from YAML
-        vel_categories = teleop_cfg["velocity"]["categories"]
-        vel_start_index = int(teleop_cfg["velocity"]["categories"].get("default_start_index", 0))
-        yaw_rate = float(teleop_cfg["velocity"].get("yaw_rate", 1.0))
+        vel_cfg_raw = teleop_cfg["velocity"]
+        yaw_cfg_raw = teleop_cfg["yaw_rate"]
+
+        vel_cfg = {
+            "horizontal_default": float(vel_cfg_raw["horizontal_default"]),
+            "horizontal_min":     float(vel_cfg_raw["horizontal_min"]),
+            "horizontal_max":     float(vel_cfg_raw["horizontal_max"]),
+            "horizontal_increment": float(vel_cfg_raw["horizontal_increment"]),
+            "vertical_default":   float(vel_cfg_raw["vertical_default"]),
+            "vertical_min":       float(vel_cfg_raw["vertical_min"]),
+            "vertical_max":       float(vel_cfg_raw["vertical_max"]),
+            "vertical_increment": float(vel_cfg_raw["vertical_increment"]),
+        }
+        yaw_cfg = {
+            "default":   float(yaw_cfg_raw["default"]),
+            "min":       float(yaw_cfg_raw["min"]),
+            "max":       float(yaw_cfg_raw["max"]),
+            "increment": float(yaw_cfg_raw["increment"]),
+        }   
         cmd_params = teleop_cfg["commands"]["params"]
         self.cmd_params = cmd_params
 
@@ -215,24 +233,49 @@ class TeleopKeyboardNode(Node):
                 latch=cmd_params["TAKEOFF"]["latch"],
                 activation_time_s=cmd_params["TAKEOFF"]["activation_time_s"],
             ),
-            SpeedUp(
-                config=TELEOP_CONFIG["SPEED_UP"],
-                hook_fn=lambda: manager.increment_velocity(),
-                latch=cmd_params["SPEED_UP"]["latch"],
-                activation_time_s=cmd_params["SPEED_UP"]["activation_time_s"],
+            SpeedUpHorizontal(
+                config=TELEOP_CONFIG["SPEED_UP_HORIZONTAL"],
+                hook_fn=lambda: manager.increment_horizontal_velocity(),
+                latch=cmd_params["SPEED_UP_HORIZONTAL"]["latch"],
+                activation_time_s=cmd_params["SPEED_UP_HORIZONTAL"]["activation_time_s"],
             ),
-            SpeedDown(
-                config=TELEOP_CONFIG["SPEED_DOWN"],
-                hook_fn=lambda: manager.decrement_velocity(),
-                latch=cmd_params["SPEED_DOWN"]["latch"],
-                activation_time_s=cmd_params["SPEED_DOWN"]["activation_time_s"],
+            SpeedDownHorizontal(
+                config=TELEOP_CONFIG["SPEED_DOWN_HORIZONTAL"],
+                hook_fn=lambda: manager.decrement_horizontal_velocity(),
+                latch=cmd_params["SPEED_DOWN_HORIZONTAL"]["latch"],
+                activation_time_s=cmd_params["SPEED_DOWN_HORIZONTAL"]["activation_time_s"],
             ),
+            SpeedUpVertical(
+                config=TELEOP_CONFIG["SPEED_UP_VERTICAL"],
+                hook_fn=lambda: manager.increment_vertical_velocity(),
+                latch=cmd_params["SPEED_UP_VERTICAL"]["latch"],
+                activation_time_s=cmd_params["SPEED_UP_VERTICAL"]["activation_time_s"],
+            ),
+            SpeedDownVertical(
+                config=TELEOP_CONFIG["SPEED_DOWN_VERTICAL"],
+                hook_fn=lambda: manager.decrement_vertical_velocity(),
+                latch=cmd_params["SPEED_DOWN_VERTICAL"]["latch"],
+                activation_time_s=cmd_params["SPEED_DOWN_VERTICAL"]["activation_time_s"],
+            ),
+            SpeedUpYaw(
+                config=TELEOP_CONFIG["SPEED_UP_YAW"],
+                hook_fn=lambda: manager.increment_yaw_rate(),
+                latch=cmd_params["SPEED_UP_YAW"]["latch"],
+                activation_time_s=cmd_params["SPEED_UP_YAW"]["activation_time_s"],
+            ),
+            SpeedDownYaw(
+                config=TELEOP_CONFIG["SPEED_DOWN_YAW"],
+                hook_fn=lambda: manager.decrement_yaw_rate(),
+                latch=cmd_params["SPEED_DOWN_YAW"]["latch"],
+                activation_time_s=cmd_params["SPEED_DOWN_YAW"]["activation_time_s"],
+            ),
+
+            # Update VelocityYaw — remove yaw_rate= kwarg:
             VelocityYaw(
                 config=TELEOP_CONFIG["ACTION"],
-                hook_fn=lambda: manager.get_velocity(),
+                hook_fn=lambda: manager.get_velocity(),  # now returns (hv, vv, yaw_rate)
                 latch=cmd_params["VEL_YAW"]["latch"],
                 activation_time_s=cmd_params["VEL_YAW"]["activation_time_s"],
-                yaw_rate=yaw_rate,
             ),
             PressSafetySwitch(
                 config=TELEOP_CONFIG["PRESS_SAFETY_SWITCH"],
@@ -259,8 +302,8 @@ class TeleopKeyboardNode(Node):
         manager = CommandManager(
             commands=commands,
             hz=self._hz,
-            vel_categories=vel_categories,
-            vel_start_index=vel_start_index,
+            vel_cfg=vel_cfg,
+            yaw_cfg=yaw_cfg, 
         )
         self._manager = manager
 

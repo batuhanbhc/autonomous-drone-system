@@ -321,54 +321,131 @@ class Guided(Command):
     def execute(self, state):
         publish_command(self.name)
 
-class SpeedUp(Command):
-    """
-    Sends command to switch to higher velocity level for action commands.
-    """
-    name = "SPEED_UP"
+
+class SpeedUpHorizontal(Command):
+    """Increase horizontal velocity."""
+    name = "SPEED_UP_HORIZONTAL"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
         self._keys = tuple(config.key_list)
         self._config = config
         self.activation_time_s = activation_time_s
-        self._hook_fn = hook_fn
+        self._hook_fn = hook_fn  # manager.increment_horizontal_velocity
         self.latch = latch
 
     def is_triggered(self, state):
         cfg = self._config
-        return command_triggered(
-            state, self._keys,
-            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
-        )
+        return command_triggered(state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key)
 
     def execute(self, state):
-        hv, vv, _ = self._hook_fn()
-        publish_command(self.name, float_1=hv, float_2=vv)
+        hv = self._hook_fn()
+        publish_command(self.name, float_1=hv)
 
 
-class SpeedDown(Command):
-    """
-    Sends command to switch to lower velocity level for action commands.
-    """
-    name = "SPEED_DOWN"
+class SpeedDownHorizontal(Command):
+    """Decrease horizontal velocity."""
+    name = "SPEED_DOWN_HORIZONTAL"
 
     def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
         self._keys = tuple(config.key_list)
         self._config = config
         self.activation_time_s = activation_time_s
-        self._hook_fn = hook_fn
+        self._hook_fn = hook_fn  # manager.decrement_horizontal_velocity
         self.latch = latch
 
     def is_triggered(self, state):
         cfg = self._config
-        return command_triggered(
-            state, self._keys,
-            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key
-        )
+        return command_triggered(state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key)
 
     def execute(self, state):
-        hv, vv, _ = self._hook_fn()
-        publish_command(self.name, float_1=hv, float_2=vv)
+        hv = self._hook_fn()
+        publish_command(self.name, float_1=hv)
+
+
+class SpeedUpVertical(Command):
+    """Increase vertical velocity."""
+    name = "SPEED_UP_VERTICAL"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self._hook_fn = hook_fn  # manager.increment_vertical_velocity
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key)
+
+    def execute(self, state):
+        vv = self._hook_fn()
+        publish_command(self.name, float_1=vv)
+
+
+class SpeedDownVertical(Command):
+    """Decrease vertical velocity."""
+    name = "SPEED_DOWN_VERTICAL"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self._hook_fn = hook_fn  # manager.decrement_vertical_velocity
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key)
+
+    def execute(self, state):
+        vv = self._hook_fn()
+        publish_command(self.name, float_1=vv)
+
+
+class SpeedUpYaw(Command):
+    """Increase yaw rate."""
+    name = "SPEED_UP_YAW"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self._hook_fn = hook_fn  # manager.increment_yaw_rate
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key)
+
+    def execute(self, state):
+        yr = self._hook_fn()
+        publish_command(self.name, float_1=yr)
+
+
+class SpeedDownYaw(Command):
+    """Decrease yaw rate."""
+    name = "SPEED_DOWN_YAW"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.1):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self._hook_fn = hook_fn  # manager.decrement_yaw_rate
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key)
+
+    def execute(self, state):
+        yr = self._hook_fn()
+        publish_command(self.name, float_1=yr)
 
 class PressSafetySwitch(Command):
     """
@@ -407,7 +484,6 @@ class VelocityYaw(Command):
         latch,
         activation_time_s=0.0,
         hover=False,
-        yaw_rate: float = 1.0,  # rad/s
     ):
         self.activation_time_s = activation_time_s
         self._keys = tuple(config.key_list)
@@ -418,8 +494,6 @@ class VelocityYaw(Command):
 
         if hover:
             self.priority = -9999
-
-        self._yaw_rate = yaw_rate
 
     def is_triggered(self, state):
         cfg = self._config
@@ -433,14 +507,11 @@ class VelocityYaw(Command):
             publish_action("HOVER", 0.0, 0.0, 0.0, 0.0)
             return
 
-        hv, vv, _ = self._hook_fn()  # hv: desired horizontal speed, vv: desired vertical speed
+        hv, vv, yaw_rate = self._hook_fn()
 
-        # 1) Horizontal velocity
-        # calculate unit direction vectors
         x_dir = (1.0 if "KEY_W" in state else 0.0) + (-1.0 if "KEY_S" in state else 0.0)
         y_dir = (1.0 if "KEY_A" in state else 0.0) + (-1.0 if "KEY_D" in state else 0.0)
 
-        # normalize so combined velocity vector in x-y axis has length 1
         mag = math.hypot(x_dir, y_dir)
         if mag > 0.0:
             vx = (x_dir / mag) * hv
@@ -449,15 +520,14 @@ class VelocityYaw(Command):
             vx = 0.0
             vy = 0.0
 
-        # 2) Vertical velocity
-        z_dir= (1.0 if "KEY_UP" in state else 0.0) + (-1.0 if "KEY_DOWN" in state else 0.0)
+        z_dir = (1.0 if "KEY_UP" in state else 0.0) + (-1.0 if "KEY_DOWN" in state else 0.0)
         vz = vv * z_dir
 
-        # 3) Yaw rate
-        yaw_dir= (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
-        yaw_rate = yaw_dir * self._yaw_rate
+        yaw_dir = (1.0 if "KEY_LEFT" in state else 0.0) + (-1.0 if "KEY_RIGHT" in state else 0.0)
+        yaw_rate_out = yaw_dir * yaw_rate  # scale direction by current yaw_rate magnitude
 
-        publish_action(self.name, vx, vy, vz, yaw_rate)
+        publish_action(self.name, vx, vy, vz, yaw_rate_out)
+
 
 class RecordVideoToggle(Command):
     """
