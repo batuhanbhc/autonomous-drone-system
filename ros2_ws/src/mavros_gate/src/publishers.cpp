@@ -17,6 +17,7 @@ void ControlGateNode::onPublishStateTimer() {
 
   msg.velocity_h = st.vel.hv;
   msg.velocity_v = st.vel.vv;
+  msg.velocity_yaw = st.vel.yaw;
 
   msg.keyboard_on = st.keyboard_on;
   msg.safety_switch_on = st.safety_switch_on;

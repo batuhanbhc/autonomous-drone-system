@@ -397,22 +397,45 @@ ControlGateNode::executeKeyboardToggle(const TeleopCmd&, const InternalState& st
 
 
 ControlGateNode::CommandResult
-ControlGateNode::executeChangeSpeed(const TeleopCmd& msg, const InternalState&) {
-  /*
-    Updates internal state according to current ControlGateNode::ControlMode::/Manual mode velocity settings
-  */
-  
-  double hv = msg.float_1, vv = msg.float_2;
+ControlGateNode::executeChangeSpeedHorizontal(const TeleopCmd& msg, const InternalState& st) {
+    double hv = msg.float_1;
 
-  InternalStateUpdate upt;
-  upt.vel = VelocityLevel{hv, vv};
-  updateInternalStateAtomic(upt);
+    InternalStateUpdate upt;
+    upt.vel = VelocityLevel{hv, st.vel.vv, st.vel.yaw};
+    updateInternalStateAtomic(upt);
 
-  std::ostringstream oss;
-  oss << "Velocity levels: (Horizontal: " << std::fixed << std::setprecision(2) << hv << " m/s, " \
-      << "Vertical: " << std::fixed << std::setprecision(2) << vv << " m/s).";
-  publishInfo(DroneInfo::LEVEL_INFO, oss.str());
-  return {true, oss.str()};
+    std::ostringstream oss;
+    oss << "Horizontal velocity: " << std::fixed << std::setprecision(2) << hv << " m/s.";
+    publishInfo(DroneInfo::LEVEL_INFO, oss.str());
+    return {true, oss.str()};
+}
+
+ControlGateNode::CommandResult
+ControlGateNode::executeChangeSpeedVertical(const TeleopCmd& msg, const InternalState& st) {
+    double vv = msg.float_1;
+
+    InternalStateUpdate upt;
+    upt.vel = VelocityLevel{st.vel.hv, vv, st.vel.yaw};
+    updateInternalStateAtomic(upt);
+
+    std::ostringstream oss;
+    oss << "Vertical velocity: " << std::fixed << std::setprecision(2) << vv << " m/s.";
+    publishInfo(DroneInfo::LEVEL_INFO, oss.str());
+    return {true, oss.str()};
+}
+
+ControlGateNode::CommandResult
+ControlGateNode::executeChangeSpeedYaw(const TeleopCmd& msg, const InternalState& st) {
+    double yaw = msg.float_1;
+
+    InternalStateUpdate upt;
+    upt.vel = VelocityLevel{st.vel.hv, st.vel.vv, yaw};
+    updateInternalStateAtomic(upt);
+
+    std::ostringstream oss;
+    oss << "Yaw rate: " << std::fixed << std::setprecision(2) << yaw << " rad/s.";
+    publishInfo(DroneInfo::LEVEL_INFO, oss.str());
+    return {true, oss.str()};
 }
 
 

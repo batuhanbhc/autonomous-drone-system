@@ -17,8 +17,12 @@ const char* ControlGateNode::commandName(int8_t id) {
     case Cmd::RTL:            return "RTL";
     case Cmd::TAKEOFF:        return "TAKEOFF";
     case Cmd::GUIDED:         return "GUIDED";
-    case Cmd::SPEED_UP:       return "SPEED_UP";
-    case Cmd::SPEED_DOWN:     return "SPEED_DOWN";
+    case Cmd::SPEED_UP_HORIZONTAL:   return "SPEED_UP_HORIZONTAL";
+    case Cmd::SPEED_DOWN_HORIZONTAL: return "SPEED_DOWN_HORIZONTAL";
+    case Cmd::SPEED_UP_VERTICAL:     return "SPEED_UP_VERTICAL";
+    case Cmd::SPEED_DOWN_VERTICAL:   return "SPEED_DOWN_VERTICAL";
+    case Cmd::SPEED_UP_YAW:          return "SPEED_UP_YAW";
+    case Cmd::SPEED_DOWN_YAW:        return "SPEED_DOWN_YAW";
     case Cmd::PRESS_SAFETY_SWITCH:  return "PRESS_SAFETY_SWITCH";
     case Cmd::VEL_YAW:        return "VEL_YAW";
     case Cmd::HOVER:          return "HOVER";
@@ -154,12 +158,23 @@ void ControlGateNode::initCommandHandlers() {
     return this->executeKeyboardToggle(cmd, st);
   };
 
-  cmd_handlers_[TeleopCmd::SPEED_UP] = [this](const TeleopCmd& cmd, const InternalState& st) {
-    return this->executeChangeSpeed(cmd, st);
+  cmd_handlers_[TeleopCmd::SPEED_UP_HORIZONTAL] = [this](const TeleopCmd& cmd, const InternalState& st) {
+    return this->executeChangeSpeedHorizontal(cmd, st);
   };
-
-  cmd_handlers_[TeleopCmd::SPEED_DOWN] = [this](const TeleopCmd& cmd, const InternalState& st) {
-    return this->executeChangeSpeed(cmd, st);
+  cmd_handlers_[TeleopCmd::SPEED_DOWN_HORIZONTAL] = [this](const TeleopCmd& cmd, const InternalState& st) {
+      return this->executeChangeSpeedHorizontal(cmd, st);
+  };
+  cmd_handlers_[TeleopCmd::SPEED_UP_VERTICAL] = [this](const TeleopCmd& cmd, const InternalState& st) {
+      return this->executeChangeSpeedVertical(cmd, st);
+  };
+  cmd_handlers_[TeleopCmd::SPEED_DOWN_VERTICAL] = [this](const TeleopCmd& cmd, const InternalState& st) {
+      return this->executeChangeSpeedVertical(cmd, st);
+  };
+  cmd_handlers_[TeleopCmd::SPEED_UP_YAW] = [this](const TeleopCmd& cmd, const InternalState& st) {
+      return this->executeChangeSpeedYaw(cmd, st);
+  };
+  cmd_handlers_[TeleopCmd::SPEED_DOWN_YAW] = [this](const TeleopCmd& cmd, const InternalState& st) {
+      return this->executeChangeSpeedYaw(cmd, st);
   };
 
   cmd_handlers_[TeleopCmd::PRESS_SAFETY_SWITCH] = [this](const TeleopCmd& cmd, const InternalState& st) {

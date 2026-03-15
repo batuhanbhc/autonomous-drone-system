@@ -69,8 +69,9 @@ private:
   };
 
   struct VelocityLevel {
-    double hv;  // horizontal veloctiy
-    double vv;  // vertical velocity
+      double hv  = 1.0;
+      double vv  = 0.5;
+      double yaw = 0.5;  // rad/s
   };
 
   struct InternalState {
@@ -128,7 +129,9 @@ private:
   CommandResult executeTakeoff(const TeleopCmd&, const InternalState&);
   CommandResult executeControlToggle(const TeleopCmd&, const InternalState&);
   CommandResult executeKeyboardToggle(const TeleopCmd&, const InternalState&);
-  CommandResult executeChangeSpeed(const TeleopCmd&, const InternalState&);
+  CommandResult executeChangeSpeedHorizontal(const TeleopCmd&, const InternalState&);
+  CommandResult executeChangeSpeedVertical(const TeleopCmd&, const InternalState&);
+  CommandResult executeChangeSpeedYaw(const TeleopCmd&, const InternalState&);
   CommandResult executePressSafetySwitch(const TeleopCmd&, const InternalState&);
 
   // function that initializes assigning command IDs to function pointers

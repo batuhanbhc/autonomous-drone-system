@@ -9,6 +9,7 @@ uint8 control_mode
 
 float64 velocity_h
 float64 velocity_v
+float32 velocity_yaw
 
 bool keyboard_on
 bool safety_switch_on
