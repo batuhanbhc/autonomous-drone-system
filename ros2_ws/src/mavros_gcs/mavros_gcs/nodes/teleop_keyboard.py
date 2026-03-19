@@ -417,12 +417,12 @@ class TeleopKeyboardNode(Node):
 
     def _publish_record_toggle(self) -> None:
         msg = Toggle()
-        msg.state = False   # camera_output ignores this value, it just toggles
+        msg.state = False   # record_video ignores this value, it just toggles
         self._pub_record_toggle.publish(msg)
     
     def _publish_stream_toggle(self) -> None:
         msg = Toggle()
-        msg.state = False   # camera_output ignores this value, it just toggles
+        msg.state = False   # record_video ignores this value, it just toggles
         self._pub_stream_toggle.publish(msg)
 
     # -------------------------

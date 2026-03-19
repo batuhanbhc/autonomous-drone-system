@@ -18,29 +18,38 @@ find_package(nav_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(drone_msgs REQUIRED)
 find_package(ffmpeg_image_transport_msgs REQUIRED)
-
 find_package(PkgConfig REQUIRED)
+
 pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
   libavcodec libavformat libavutil libswscale)
+
+find_path(TURBOJPEG_INCLUDE_DIR turbojpeg.h)
+find_library(TURBOJPEG_LIBRARY turbojpeg)
+if(NOT TURBOJPEG_INCLUDE_DIR OR NOT TURBOJPEG_LIBRARY)
+  message(FATAL_ERROR "libturbojpeg not found — install libturbojpeg0-dev")
+endif()
 
 # ── Shared library (components) ───────────────────────────────────────────────
 add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
   src/mjpeg_writer.cpp
   src/h264_encoder.cpp
-  src/camera_output.cpp
+  src/record_video.cpp
+  src/vision_pipeline.cpp
 )
 
 target_include_directories(drone_pipeline_components PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${OpenCV_INCLUDE_DIRS}
+  ${TURBOJPEG_INCLUDE_DIR}
 )
 
 target_link_libraries(drone_pipeline_components
   yaml-cpp
   ${OpenCV_LIBS}
   PkgConfig::LIBAV
+  ${TURBOJPEG_LIBRARY}
 )
 
 ament_target_dependencies(drone_pipeline_components
@@ -60,10 +69,13 @@ rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::CameraCapture"
   EXECUTABLE camera_capture_node
 )
-
 rclcpp_components_register_node(drone_pipeline_components
-  PLUGIN "drone_pipeline::CameraOutput"
-  EXECUTABLE camera_output_node
+  PLUGIN "drone_pipeline::RecordVideo"
+  EXECUTABLE record_video_node
+)
+rclcpp_components_register_node(drone_pipeline_components
+  PLUGIN "drone_pipeline::VisionPipeline"
+  EXECUTABLE vision_pipeline_node
 )
 
 # ── flight_logger (standalone executable) ─────────────────────────────────────

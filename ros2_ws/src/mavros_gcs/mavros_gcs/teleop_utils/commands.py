@@ -531,7 +531,7 @@ class VelocityYaw(Command):
 
 class RecordVideoToggle(Command):
     """
-    Sends toggle message to camera_output node via dedicated topic.
+    Sends toggle message to record_video node via dedicated topic.
     """
     name = "RECORD_VIDEO_TOGGLE"
 
@@ -555,7 +555,7 @@ class RecordVideoToggle(Command):
 
 class StreamToggle(Command):
     """
-    Sends toggle message to camera_output node via dedicated topic.
+    Sends toggle message to record_video node via dedicated topic.
     """
     name = "STREAM_TOGGLE"
 

@@ -19,6 +19,8 @@
   <depend>drone_msgs</depend>
   <depend>libopencv-dev</depend>
   <depend>rclcpp_components</depend>
+  <depend>ffmpeg_image_transport_msgs</depend>
+  <depend>libturbojpeg</depend>
   
   <export>
   <build_type>ament_cmake</build_type>
