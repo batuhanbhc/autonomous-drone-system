@@ -3,7 +3,7 @@ drone_id: 0
 flight_params:
   takeoff_m: 2.0
   gcs_failsafe_s: 10  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
-  failsafe_watchdog_hz: 1.0
+  failsafe_watchdog_hz: 2.0
   logs_path: "/home/batuhan/shared/recordings"
 
 
