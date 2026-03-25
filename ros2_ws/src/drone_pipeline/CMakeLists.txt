@@ -29,6 +29,18 @@ if(NOT TURBOJPEG_INCLUDE_DIR OR NOT TURBOJPEG_LIBRARY)
   message(FATAL_ERROR "libturbojpeg not found — install libturbojpeg0-dev")
 endif()
 
+# ── HailoRT ───────────────────────────────────────────────────────────────────
+find_library(HAILORT_LIBRARY hailort
+  HINTS /usr/lib /usr/local/lib
+)
+find_path(HAILORT_INCLUDE_DIR hailo/hailort.hpp
+  HINTS /usr/include /usr/local/include
+)
+if(NOT HAILORT_LIBRARY OR NOT HAILORT_INCLUDE_DIR)
+  message(FATAL_ERROR "HailoRT not found — install hailort dev package")
+endif()
+message(STATUS "HailoRT: ${HAILORT_LIBRARY}  includes: ${HAILORT_INCLUDE_DIR}")
+
 # ── Shared library (components) ───────────────────────────────────────────────
 add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
@@ -43,6 +55,7 @@ target_include_directories(drone_pipeline_components PUBLIC
   $<INSTALL_INTERFACE:include>
   ${OpenCV_INCLUDE_DIRS}
   ${TURBOJPEG_INCLUDE_DIR}
+  ${HAILORT_INCLUDE_DIR}
 )
 
 target_link_libraries(drone_pipeline_components
@@ -50,6 +63,7 @@ target_link_libraries(drone_pipeline_components
   ${OpenCV_LIBS}
   PkgConfig::LIBAV
   ${TURBOJPEG_LIBRARY}
+  ${HAILORT_LIBRARY}
 )
 
 ament_target_dependencies(drone_pipeline_components
@@ -64,7 +78,6 @@ ament_target_dependencies(drone_pipeline_components
   ffmpeg_image_transport_msgs
 )
 
-# ── Register components ────────────────────────────────────────────────────────
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::CameraCapture"
   EXECUTABLE camera_capture_node
@@ -78,7 +91,6 @@ rclcpp_components_register_node(drone_pipeline_components
   EXECUTABLE vision_pipeline_node
 )
 
-# ── flight_logger (standalone executable) ─────────────────────────────────────
 add_executable(flight_logger_node
   src/flight_logger.cpp
 )
@@ -98,7 +110,6 @@ ament_target_dependencies(flight_logger_node
   mavros_msgs
 )
 
-# ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS
   drone_pipeline_components
   flight_logger_node
