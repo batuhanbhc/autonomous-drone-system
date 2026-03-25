@@ -31,6 +31,12 @@ private:
   LoggerConfig loadConfig();
   std::string  createSessionDir(const std::string & logs_path);
 
+  // write buffer
+  std::vector<std::string> odom_buffer_;
+  std::vector<std::string> gps_buffer_;
+  rclcpp::TimerBase::SharedPtr flush_timer_;
+  static constexpr size_t kBufferFlushSize = 100;
+
   // ── callbacks ─────────────────────────────────────────────
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void gpsCallback (const mavros_msgs::msg::GPSRAW::SharedPtr msg);

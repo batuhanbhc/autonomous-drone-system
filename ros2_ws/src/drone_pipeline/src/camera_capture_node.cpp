@@ -361,8 +361,9 @@ void CameraCapture::captureThread()
     buf.memory = V4L2_MEMORY_MMAP;
 
     if (xioctl(fd_, VIDIOC_DQBUF, &buf) == -1) {
-      if (errno == EAGAIN) continue;  // spurious wakeup
-      RCLCPP_WARN(get_logger(), "VIDIOC_DQBUF error: %s", std::strerror(errno));
+      if (errno == EAGAIN) continue;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,  // max once per 5000ms
+        "VIDIOC_DQBUF error: %s", std::strerror(errno));
       continue;
     }
 
