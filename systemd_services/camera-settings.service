@@ -6,7 +6,16 @@ Wants=dev-video0.device
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 2
-ExecStart=/usr/bin/v4l2-ctl --device=/dev/video0 --set-ctrl=white_balance_automatic=0,white_balance_temperature=4000,auto_exposure=1,exposure_time_absolute=450,exposure_dynamic_framerate=0,focus_absolute=1
+ExecStart=/bin/sh -c '\
+  set -x; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=white_balance_automatic=0; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=white_balance_temperature=4600; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=auto_exposure=1; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=exposure_time_absolute=175; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=focus_automatic_continuous=0 && \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=focus_absolute=1; \
+  /usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=backlight_compensation=0'
 RemainAfterExit=yes
 
 [Install]
