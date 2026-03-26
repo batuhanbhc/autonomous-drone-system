@@ -34,6 +34,8 @@ struct VisionConfig
   int         width{};
   int         height{};
   int         fps{};
+  std::string hef_path;
+  float       score_threshold{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,14 +94,9 @@ private:
   // ── Constants ─────────────────────────────────────────────────────────────
   static constexpr int kNumSlots      = 30;
   static constexpr int kNumWorkers    = 4;
-  
-  // Path to the compiled HEF model
-  static constexpr const char * kHefPath =
-    "/usr/share/hailo-models/yolov8s_h8l.hef";
 
   // COCO class index for "person"
-  static constexpr int   kPersonClassIdx  = 0;
-  static constexpr float kScoreThreshold  = 0.5f;
+  static constexpr int kPersonClassIdx = 0;
 
   // ── Config ────────────────────────────────────────────────────────────────
   VisionConfig loadConfig();

@@ -9,10 +9,13 @@ flight_params:
 
 camera:
   device_path: "/dev/video0"
-  width: 800
-  height: 600
+  width: 640
+  height: 480
   fps: 30
   
+vision_pipeline:
+  obj_det_hef_path: "/usr/share/hailo-models/yolov8s_h8l.hef"
+  obj_det_score_thresh: 0.5
 
 custom_topics:
   images: "camera/image/compressed"

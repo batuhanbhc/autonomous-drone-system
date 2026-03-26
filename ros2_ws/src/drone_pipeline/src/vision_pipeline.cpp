@@ -40,10 +40,15 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.height = cam["height"].as<int>();
   cfg.fps    = cam["fps"].as<int>();
 
+  const auto vp = root["vision_pipeline"];
+  cfg.hef_path        = vp["obj_det_hef_path"].as<std::string>();
+  cfg.score_threshold = vp["obj_det_score_thresh"].as<float>();
+
   RCLCPP_INFO(get_logger(),
-    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps",
+    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  score_thresh=%.2f",
     cfg.drone_id, cfg.frames_topic.c_str(),
-    cfg.width, cfg.height, cfg.fps);
+    cfg.width, cfg.height, cfg.fps,
+    cfg.hef_path.c_str(), cfg.score_threshold);
 
   return cfg;
 }
@@ -64,7 +69,7 @@ void VisionPipeline::initHailo()
   hailo_vdevice_ = vdevice_exp.release();
 
   // 2. Load HEF and create InferModel
-  auto infer_model_exp = hailo_vdevice_->create_infer_model(kHefPath);
+  auto infer_model_exp = hailo_vdevice_->create_infer_model(config_.hef_path);
   if (!infer_model_exp) {
     throw std::runtime_error(
       "create_infer_model failed: " +
@@ -80,7 +85,7 @@ void VisionPipeline::initHailo()
     auto out_name = infer_model->get_output_names().front();
     auto out = infer_model->output(out_name);
     if (out) {
-      out->set_nms_score_threshold(kScoreThreshold);
+      out->set_nms_score_threshold(config_.score_threshold);
       hailo_output_frame_size_ = out->get_frame_size();
     }
   }
