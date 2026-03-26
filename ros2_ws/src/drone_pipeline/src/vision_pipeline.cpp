@@ -2,9 +2,12 @@
 
 #include <stdexcept>
 #include <cstdio>
+#include <cmath>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "yaml-cpp/yaml.h"
+#include <tf2/utils.h>
+#include <tf2/LinearMath/Quaternion.h>
 
 // OpenCV for letterbox resize
 #include <opencv2/imgproc.hpp>
@@ -44,11 +47,34 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.hef_path        = vp["obj_det_hef_path"].as<std::string>();
   cfg.score_threshold = vp["obj_det_score_thresh"].as<float>();
 
+  // Camera intrinsics
+  const auto intr = vp["camera_intrinsics"];
+  cfg.fx = intr["fx"].as<double>();
+  cfg.fy = intr["fy"].as<double>();
+  cfg.cx = intr["cx"].as<double>();
+  cfg.cy = intr["cy"].as<double>();
+
+  // Distortion coefficients
+  const auto dist = vp["distortion"];
+  cfg.k1 = dist["k1"].as<double>();
+  cfg.k2 = dist["k2"].as<double>();
+  cfg.p1 = dist["p1"].as<double>();
+  cfg.p2 = dist["p2"].as<double>();
+  cfg.k3 = dist["k3"].as<double>();
+
   RCLCPP_INFO(get_logger(),
     "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  score_thresh=%.2f",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
     cfg.hef_path.c_str(), cfg.score_threshold);
+
+  RCLCPP_INFO(get_logger(),
+    "Camera intrinsics → fx=%.4f fy=%.4f cx=%.4f cy=%.4f",
+    cfg.fx, cfg.fy, cfg.cx, cfg.cy);
+
+  RCLCPP_INFO(get_logger(),
+    "Distortion → k1=%.6f k2=%.6f p1=%.6f p2=%.6f k3=%.6f",
+    cfg.k1, cfg.k2, cfg.p1, cfg.p2, cfg.k3);
 
   return cfg;
 }
@@ -59,7 +85,6 @@ VisionConfig VisionPipeline::loadConfig()
 
 void VisionPipeline::initHailo()
 {
-  // 1. Open VDevice
   auto vdevice_exp = hailort::VDevice::create();
   if (!vdevice_exp) {
     throw std::runtime_error(
@@ -68,7 +93,6 @@ void VisionPipeline::initHailo()
   }
   hailo_vdevice_ = vdevice_exp.release();
 
-  // 2. Load HEF and create InferModel
   auto infer_model_exp = hailo_vdevice_->create_infer_model(config_.hef_path);
   if (!infer_model_exp) {
     throw std::runtime_error(
@@ -77,10 +101,8 @@ void VisionPipeline::initHailo()
   }
   auto infer_model = infer_model_exp.release();
 
-  // 3. Configure model parameters BEFORE configure()
   infer_model->set_batch_size(1);
 
-  // Optional NMS threshold override if supported by your HEF/output
   if (!infer_model->get_output_names().empty()) {
     auto out_name = infer_model->get_output_names().front();
     auto out = infer_model->output(out_name);
@@ -94,7 +116,6 @@ void VisionPipeline::initHailo()
     throw std::runtime_error("Failed to determine Hailo output frame size");
   }
 
-  // 4. Configure -> ConfiguredInferModel
   auto configured_exp = infer_model->configure();
   if (!configured_exp) {
     throw std::runtime_error(
@@ -103,20 +124,15 @@ void VisionPipeline::initHailo()
   }
   hailo_infer_model_ = configured_exp.release();
 
-  // 5. Pre-allocate per-slot bindings and output buffers
   const size_t nms_output_floats = hailo_output_frame_size_ / sizeof(float);
 
-  const auto &input_names = infer_model->get_input_names();
+  const auto &input_names  = infer_model->get_input_names();
   const auto &output_names = infer_model->get_output_names();
 
-  if (input_names.empty()) {
-    throw std::runtime_error("Hailo model has no inputs");
-  }
-  if (output_names.empty()) {
-    throw std::runtime_error("Hailo model has no outputs");
-  }
+  if (input_names.empty())  throw std::runtime_error("Hailo model has no inputs");
+  if (output_names.empty()) throw std::runtime_error("Hailo model has no outputs");
 
-  const auto input_name = input_names.front();
+  const auto input_name  = input_names.front();
   const auto output_name = output_names.front();
   const size_t input_frame_size = infer_model->input(input_name)->get_frame_size();
 
@@ -158,6 +174,75 @@ void VisionPipeline::initHailo()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Yaw calibration — runs in its own thread, blocks up to kYawCalibTimeout s
+// ─────────────────────────────────────────────────────────────────────────────
+
+void VisionPipeline::runYawCalibration()
+{
+  RCLCPP_INFO(get_logger(),
+    "Yaw calibration started — collecting %d samples over %.0f s max",
+    kYawCalibSamples, kYawCalibTimeout);
+
+  std::vector<double> yaw_samples;
+  yaw_samples.reserve(kYawCalibSamples);
+
+  const auto deadline =
+    std::chrono::steady_clock::now() +
+    std::chrono::duration<double>(kYawCalibTimeout);
+
+  while (static_cast<int>(yaw_samples.size()) < kYawCalibSamples) {
+    if (std::chrono::steady_clock::now() >= deadline) break;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    LatestQuat q;
+    {
+      std::lock_guard<std::mutex> lk(latest_quat_mtx_);
+      q = latest_quat_;
+    }
+
+    if (!q.valid) continue;
+
+    tf2::Quaternion tf_q(q.x, q.y, q.z, q.w);
+    double roll_unused, pitch_unused, yaw;
+    tf2::Matrix3x3(tf_q).getRPY(roll_unused, pitch_unused, yaw);
+
+    yaw_samples.push_back(yaw);
+
+    // Mark consumed so we don't re-read the same quaternion
+    {
+      std::lock_guard<std::mutex> lk(latest_quat_mtx_);
+      latest_quat_.valid = false;
+    }
+  }
+
+  if (yaw_samples.empty()) {
+    RCLCPP_WARN(get_logger(),
+      "Yaw calibration: no odometry received within %.0f s — defaulting yaw_offset=0",
+      kYawCalibTimeout);
+    yaw_offset_ = 0.0;
+  } else {
+    // Circular mean to handle wrap-around correctly at ±π
+    double sum_sin = 0.0, sum_cos = 0.0;
+    for (double y : yaw_samples) { sum_sin += std::sin(y); sum_cos += std::cos(y); }
+    yaw_offset_ = std::atan2(sum_sin / static_cast<double>(yaw_samples.size()),
+                             sum_cos / static_cast<double>(yaw_samples.size()));
+
+    if (static_cast<int>(yaw_samples.size()) < kYawCalibSamples) {
+      RCLCPP_WARN(get_logger(),
+        "Yaw calibration: only %zu/%d samples before timeout",
+        yaw_samples.size(), kYawCalibSamples);
+    }
+
+    RCLCPP_INFO(get_logger(),
+      "Yaw calibration complete — %zu samples, yaw_offset=%.4f rad (%.2f deg)",
+      yaw_samples.size(), yaw_offset_, yaw_offset_ * 180.0 / M_PI);
+  }
+
+  yaw_calibrated_.store(true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Constructor
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -167,9 +252,6 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   config_ = loadConfig();
 
   // ── De-letterbox constants ────────────────────────────────────────────────
-  // The longer side of the original frame is scaled to 640.
-  // For 1280×960: scale=0.5, scaled_h=480, pad_top=80, pad_left=0.
-  // These are computed from the actual loaded config so any resolution works.
   lb_scale_     = static_cast<float>(kHailoInputW) /
                   static_cast<float>(std::max(config_.width, config_.height));
   const int scaled_w = static_cast<int>(std::round(config_.width  * lb_scale_));
@@ -180,6 +262,20 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(get_logger(),
     "Letterbox: scale=%.4f  scaled=%dx%d  pad_left=%d  pad_top=%d",
     lb_scale_, scaled_w, scaled_h, lb_pad_left_, lb_pad_top_);
+
+  // ── Ground projector ─────────────────────────────────────────────────────
+  {
+    CameraParams cp;
+    cp.fx = config_.fx;  cp.fy = config_.fy;
+    cp.cx = config_.cx;  cp.cy = config_.cy;
+
+    DistortionCoeffs dc;
+    dc.k1 = config_.k1;  dc.k2 = config_.k2;
+    dc.p1 = config_.p1;  dc.p2 = config_.p2;
+    dc.k3 = config_.k3;
+
+    projector_ = std::make_unique<GroundProjector>(cp, dc);
+  }
 
   // ── libjpeg-turbo ────────────────────────────────────────────────────────
   tj_decompress_ = tjInitDecompress();
@@ -217,6 +313,9 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 
   publishStreamState();
 
+  // ── Yaw calibration thread (starts after subscriptions are live) ─────────
+  yaw_calib_thread_ = std::thread(&VisionPipeline::runYawCalibration, this);
+
   // ── Worker threads ────────────────────────────────────────────────────────
   workers_running_.store(true);
   for (auto & t : worker_threads_)
@@ -240,25 +339,21 @@ VisionPipeline::~VisionPipeline()
     tj_decompress_ = nullptr;
   }
 
-  // Stop workers first — they may be mid-async-call
   workers_running_.store(false);
   work_queue_cv_.notify_all();
   for (auto & t : worker_threads_)
     if (t.joinable()) t.join();
 
-  // At this point no new async jobs can be submitted.
-  // Any in-flight Hailo callbacks will complete naturally since
-  // ConfiguredInferModel destructor waits for pending jobs.
-  // Release Hailo resources before stopping encoder.
-  // (ConfiguredInferModel dtor flushes the async queue.)
-  hailo_vdevice_.reset();   // also destroys configured model via RAII
+  hailo_vdevice_.reset();
 
-  // Stop encoder
   encoder_running_.store(false);
   encoder_queue_cv_.notify_all();
   for (auto & slot : buffer_)
     slot.cv.notify_all();
   if (encoder_thread_.joinable()) encoder_thread_.join();
+
+  // Calibration thread will have long finished in normal operation
+  if (yaw_calib_thread_.joinable()) yaw_calib_thread_.join();
 
   std::lock_guard<std::mutex> lk(encoder_mtx_);
   if (h264_encoder_.isOpen()) h264_encoder_.close();
@@ -289,6 +384,12 @@ int VisionPipeline::acquireSlot()
 
 void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg)
 {
+  // ── Feed latest quaternion to calibration thread (non-blocking) ───────────
+  if (!yaw_calibrated_.load() && msg->odom_valid) {
+    std::lock_guard<std::mutex> lk(latest_quat_mtx_);
+    latest_quat_ = {msg->quat_x, msg->quat_y, msg->quat_z, msg->quat_w, true};
+  }
+
   const int idx = acquireSlot();
   if (idx == -1) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
@@ -299,6 +400,16 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   FrameSlot & slot = buffer_[idx];
   slot.stamp_sec     = msg->image.header.stamp.sec;
   slot.stamp_nanosec = msg->image.header.stamp.nanosec;
+
+  // ── Odometry snapshot ─────────────────────────────────────────────────────
+  slot.pos_x      = msg->pos_x;
+  slot.pos_y      = msg->pos_y;
+  slot.pos_z      = msg->pos_z;
+  slot.quat_x     = msg->quat_x;
+  slot.quat_y     = msg->quat_y;
+  slot.quat_z     = msg->quat_z;
+  slot.quat_w     = msg->quat_w;
+  slot.odom_valid = msg->odom_valid;
 
   const int ret = tjDecompress2(
     tj_decompress_,
@@ -348,7 +459,6 @@ void VisionPipeline::workerLoop()
 
     FrameSlot & slot = buffer_[idx];
 
-    // CAS PENDING → PROCESSING
     SlotState expected = SlotState::PENDING;
     if (!slot.state.compare_exchange_strong(
           expected, SlotState::PROCESSING,
@@ -358,43 +468,31 @@ void VisionPipeline::workerLoop()
       continue;
     }
 
-    // ── Letterbox resize: RGB24 → 640×640 RGB24 ──────────────────────────
-    // Wrap the raw slot RGB buffer in a cv::Mat (no copy).
+    // ── Letterbox resize ─────────────────────────────────────────────────
     const cv::Mat src(config_.height, config_.width, CV_8UC3, slot.rgb.data());
-
-    // Scale so the longer side becomes 640.
     const int scaled_w = static_cast<int>(std::round(config_.width  * lb_scale_));
     const int scaled_h = static_cast<int>(std::round(config_.height * lb_scale_));
 
     cv::Mat resized;
     cv::resize(src, resized, cv::Size(scaled_w, scaled_h), 0, 0, cv::INTER_LINEAR);
 
-    // Wrap the pre-allocated letterbox buffer as a 640×640 Mat (no alloc).
     cv::Mat letterbox(kHailoInputH, kHailoInputW, CV_8UC3,
                       slot.letterbox_buf.data());
-    letterbox.setTo(cv::Scalar(0, 0, 0));   // black padding
+    letterbox.setTo(cv::Scalar(0, 0, 0));
 
-    // Copy resized image into the centre of the letterbox canvas.
     const cv::Rect roi(lb_pad_left_, lb_pad_top_, scaled_w, scaled_h);
     resized.copyTo(letterbox(roi));
 
-    // ── Transition PROCESSING → INFERENCING ─────────────────────────────
     slot.state.store(SlotState::INFERENCING, std::memory_order_release);
 
-    // ── Fire async Hailo inference ───────────────────────────────────────
-    // Capture everything by value except 'this' — the lambda runs on a
-    // HailoRT-internal thread after this worker has already returned.
+    // ── Async Hailo inference ─────────────────────────────────────────────
     auto callback = [this, idx](const hailort::AsyncInferCompletionInfo & info)
     {
       FrameSlot & cb_slot = buffer_[idx];
 
       if (info.status != HAILO_SUCCESS) {
-        RCLCPP_WARN(
-          get_logger(),
-          "Hailo async infer failed (slot %d): %d",
-          idx,
-          static_cast<int>(info.status));
-
+        RCLCPP_WARN(get_logger(), "Hailo async infer failed (slot %d): %d",
+          idx, static_cast<int>(info.status));
         {
           std::lock_guard<std::mutex> lk(cb_slot.cv_mtx);
           cb_slot.state.store(SlotState::PROCESSED, std::memory_order_release);
@@ -403,28 +501,35 @@ void VisionPipeline::workerLoop()
         return;
       }
 
-      // ── Parse NMS output (BY_CLASS layout) ──────────────────────────
-      // Layout for each class:
-      //   float[0]        = number of valid detections (cast to int)
-      //   float[1..5*N]   = N detections × [y_min, x_min, y_max, x_max, score]
-      //                     coordinates are normalised to [0, 1] in 640×640 space
-      //
-      // Stride per class = 1 + max_bboxes_per_class * 5 = 501 floats
+      // ── Parse NMS output ──────────────────────────────────────────────
       static constexpr int kMaxBboxPerClass = 100;
       static constexpr int kClassStride     = 1 + kMaxBboxPerClass * 5;
 
-      const float * nms = cb_slot.nms_output_buf.data();
-
-      // Only look at person class (index 0)
-      const float * cls_ptr = nms + kPersonClassIdx * kClassStride;
-      const int num_dets = static_cast<int>(cls_ptr[0]);
+      const float * nms      = cb_slot.nms_output_buf.data();
+      const float * cls_ptr  = nms + kPersonClassIdx * kClassStride;
+      const int     num_dets = static_cast<int>(cls_ptr[0]);
 
       if (num_dets > 0) {
-        // Draw detections in-place on the RGB buffer (no copy — cv::Mat is just a view).
         cv::Mat frame(config_.height, config_.width, CV_8UC3, cb_slot.rgb.data());
 
+        // ── Decode pose for ground projection ─────────────────────────
+        double roll = 0.0, pitch = 0.0, yaw = 0.0;
+        const bool can_project = cb_slot.odom_valid;
+        if (can_project) {
+          tf2::Quaternion tf_q(
+            cb_slot.quat_x, cb_slot.quat_y,
+            cb_slot.quat_z, cb_slot.quat_w);
+          tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
+
+          // Subtract calibrated offset → local ENU yaw
+          yaw -= yaw_offset_;
+
+          projector_->setPose(
+            cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
+            yaw, pitch, roll);
+        }
+
         for (int d = 0; d < num_dets; ++d) {
-          // Each detection: [y_min, x_min, y_max, x_max, score] (normalised, 640-space)
           const float * det      = cls_ptr + 1 + d * 5;
           const float y_min_norm = det[0];
           const float x_min_norm = det[1];
@@ -432,40 +537,67 @@ void VisionPipeline::workerLoop()
           const float x_max_norm = det[3];
           const float score      = det[4];
 
-          // Convert from normalised [0,1] to pixel coords in 640×640 space
+          // Letterbox → original frame pixel coords
           const float x_min_lb = x_min_norm * kHailoInputW;
           const float y_min_lb = y_min_norm * kHailoInputH;
           const float x_max_lb = x_max_norm * kHailoInputW;
           const float y_max_lb = y_max_norm * kHailoInputH;
 
-          // De-letterbox back to original frame coordinates
           const float x_min = (x_min_lb - lb_pad_left_) / lb_scale_;
           const float y_min = (y_min_lb - lb_pad_top_)  / lb_scale_;
           const float x_max = (x_max_lb - lb_pad_left_) / lb_scale_;
           const float y_max = (y_max_lb - lb_pad_top_)  / lb_scale_;
 
-          // Clamp to frame bounds
           const int ix0 = std::max(0,                  static_cast<int>(x_min));
           const int iy0 = std::max(0,                  static_cast<int>(y_min));
           const int ix1 = std::min(config_.width  - 1, static_cast<int>(x_max));
           const int iy1 = std::min(config_.height - 1, static_cast<int>(y_max));
 
-          // Bounding box — bright green in RGB
+          // Bounding box — bright green
           cv::rectangle(frame,
             cv::Point(ix0, iy0), cv::Point(ix1, iy1),
             cv::Scalar(0, 255, 0), 2);
 
-          // Score label
-          char label[16];
-          std::snprintf(label, sizeof(label), "%.2f", score);
-          cv::putText(frame, label,
+          // Detection score — bottom-left of top edge
+          char score_label[16];
+          std::snprintf(score_label, sizeof(score_label), "%.2f", score);
+          cv::putText(frame, score_label,
             cv::Point(ix0, std::max(iy0 - 4, 0)),
             cv::FONT_HERSHEY_SIMPLEX, 0.5,
             cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
+
+          // ── Ground position label — centred above bbox top edge ──────
+          // Foot point = bottom-centre of bounding box
+          const int foot_u = (ix0 + ix1) / 2;
+          const int foot_v = iy1;
+
+          char pos_label[48];
+          if (can_project) {
+            const auto res = projector_->projectOne(Pixel{foot_u, foot_v});
+            if (res.valid) {
+              std::snprintf(pos_label, sizeof(pos_label),
+                "x=%.1f y=%.1f", res.world_x, res.world_y);
+            } else {
+              std::snprintf(pos_label, sizeof(pos_label), "ABOVE GROUND");
+            }
+          } else {
+            std::snprintf(pos_label, sizeof(pos_label), "NO ODOM");
+          }
+
+          int baseline = 0;
+          const cv::Size text_sz = cv::getTextSize(
+            pos_label, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &baseline);
+          const int label_x = std::max(0, (ix0 + ix1) / 2 - text_sz.width / 2);
+          const int label_y = std::max(text_sz.height + 2, iy0 - 6);
+
+          cv::putText(frame, pos_label,
+            cv::Point(label_x, label_y),
+            cv::FONT_HERSHEY_SIMPLEX, 0.45,
+            cv::Scalar(255, 255, 0), 1, cv::LINE_AA);
         }
       }
 
-      // ── Transition INFERENCING → PROCESSED, wake encoder ─────────────
+      // ── INFERENCING → PROCESSED ───────────────────────────────────────
       {
         std::lock_guard<std::mutex> lk(cb_slot.cv_mtx);
         cb_slot.state.store(SlotState::PROCESSED, std::memory_order_release);
@@ -475,12 +607,8 @@ void VisionPipeline::workerLoop()
 
     auto job_exp = hailo_infer_model_.run_async(hailo_bindings_[idx], callback);
     if (!job_exp) {
-      RCLCPP_ERROR(
-        get_logger(),
-        "run_async failed (slot %d): %d",
-        idx,
-        static_cast<int>(job_exp.status()));
-
+      RCLCPP_ERROR(get_logger(), "run_async failed (slot %d): %d",
+        idx, static_cast<int>(job_exp.status()));
       {
         std::lock_guard<std::mutex> lk(slot.cv_mtx);
         slot.state.store(SlotState::PROCESSED, std::memory_order_release);
@@ -491,13 +619,11 @@ void VisionPipeline::workerLoop()
 
     auto job = job_exp.release();
     (void)job;
-
-    // Worker returns here. Slot stays INFERENCING until the Hailo callback fires.
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Encoder loop — unchanged logic, new state predicate
+//  Encoder loop
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VisionPipeline::encoderLoop()
@@ -516,8 +642,6 @@ void VisionPipeline::encoderLoop()
 
     FrameSlot & slot = buffer_[idx];
 
-    // Wait until Hailo callback transitions slot to PROCESSED
-    // (or until we are shutting down)
     {
       std::unique_lock<std::mutex> lk(slot.cv_mtx);
       slot.cv.wait(lk, [&slot, this] {
@@ -531,7 +655,6 @@ void VisionPipeline::encoderLoop()
       break;
     }
 
-    // Encode and publish if streaming
     if (streaming_.load()) {
       H264Encoder::EncodeResult result;
       {

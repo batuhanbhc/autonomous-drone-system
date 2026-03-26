@@ -16,6 +16,7 @@
 #include "drone_msgs/msg/toggle.hpp"
 #include "ffmpeg_image_transport_msgs/msg/ffmpeg_packet.hpp"
 #include "drone_pipeline/h264_encoder.hpp"
+#include "drone_pipeline/ray_ground_intersection.hpp"
 
 // HailoRT high-level C++ API
 #include "hailo/hailort.hpp"
@@ -36,16 +37,18 @@ struct VisionConfig
   int         fps{};
   std::string hef_path;
   float       score_threshold{};
+
+  // Camera intrinsics
+  double fx{}, fy{}, cx{}, cy{};
+
+  // Distortion (OpenCV 5-parameter)
+  double k1{}, k2{}, p1{}, p2{}, k3{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Frame buffer
 // ─────────────────────────────────────────────────────────────────────────────
 
-// INFERENCING is between PROCESSING and PROCESSED.
-// Worker transitions PROCESSING → INFERENCING when it fires the async call.
-// Hailo callback transitions INFERENCING → PROCESSED.
-// Encoder waits for PROCESSED exactly as before.
 enum class SlotState : uint8_t
 {
   FREE,
@@ -65,15 +68,24 @@ struct FrameSlot
   std::vector<uint8_t>    rgb;            // cfg.width * cfg.height * 3
 
   // ── Letterboxed input for Hailo ──────────────────────────────────────────
-  // Pre-allocated at construction. workerLoop writes here, then binds to Hailo.
   std::vector<uint8_t>    letterbox_buf;  // 640 * 640 * 3
 
   // ── NMS output from Hailo ────────────────────────────────────────────────
-  // Size is determined from the HEF output vstream info at init time.
   std::vector<float>      nms_output_buf;
 
+  // ── Timestamp ────────────────────────────────────────────────────────────
   uint32_t                stamp_sec{};
   uint32_t                stamp_nanosec{};
+
+  // ── Odometry snapshot (copied from FrameData at capture time) ────────────
+  double                  pos_x{};        ///< ENU East  (m)
+  double                  pos_y{};        ///< ENU North (m)
+  double                  pos_z{};        ///< ENU Up    (m)
+  double                  quat_x{};
+  double                  quat_y{};
+  double                  quat_z{};
+  double                  quat_w{1.0};
+  bool                    odom_valid{false};
 
   std::atomic<SlotState>  state{SlotState::FREE};
   std::mutex              cv_mtx;
@@ -98,15 +110,39 @@ private:
   // COCO class index for "person"
   static constexpr int kPersonClassIdx = 0;
 
+  // Yaw calibration: collect this many samples during startup
+  static constexpr int    kYawCalibSamples  = 10;
+  static constexpr double kYawCalibTimeout  = 30.0;  ///< seconds
+
   // ── Config ────────────────────────────────────────────────────────────────
   VisionConfig loadConfig();
   VisionConfig config_;
 
   // ── De-letterbox constants (computed once in constructor) ─────────────────
-  // These map 640x640 detection coordinates back to original frame pixels.
-  float lb_scale_{};       // scale applied to the longer side
-  int   lb_pad_top_{};     // black rows added at top
-  int   lb_pad_left_{};    // black cols added at left (0 for 4:3 landscape)
+  float lb_scale_{};
+  int   lb_pad_top_{};
+  int   lb_pad_left_{};
+
+  // ── Ground projector ──────────────────────────────────────────────────────
+  // Heap-allocated so we can construct it after loadConfig().
+  std::unique_ptr<GroundProjector> projector_;
+
+  // ── Yaw calibration ───────────────────────────────────────────────────────
+  // The offset between the EKF's earth-north yaw and the local ENU frame yaw
+  // established at arming. Computed once at startup from the first N frames.
+  //
+  // Corrected yaw = raw_yaw - yaw_offset_
+  // When drone is stationary facing local north: raw_yaw == yaw_offset_
+  double             yaw_offset_{0.0};
+  std::atomic<bool>  yaw_calibrated_{false};
+
+  // Shared state written by frameCallback, read by calibration thread
+  struct LatestQuat { double x=0, y=0, z=0, w=1; bool valid=false; };
+  LatestQuat         latest_quat_;
+  std::mutex         latest_quat_mtx_;
+
+  std::thread        yaw_calib_thread_;
+  void               runYawCalibration();   ///< blocks for up to kYawCalibTimeout s
 
   // ── ROS interfaces ────────────────────────────────────────────────────────
   rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr      frame_sub_;

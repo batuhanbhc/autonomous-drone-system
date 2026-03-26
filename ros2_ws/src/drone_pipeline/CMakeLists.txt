@@ -18,6 +18,7 @@ find_package(nav_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(drone_msgs REQUIRED)
 find_package(ffmpeg_image_transport_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
@@ -76,6 +77,7 @@ ament_target_dependencies(drone_pipeline_components
   mavros_msgs
   drone_msgs
   ffmpeg_image_transport_msgs
+  tf2
 )
 
 rclcpp_components_register_node(drone_pipeline_components
@@ -94,16 +96,11 @@ rclcpp_components_register_node(drone_pipeline_components
 add_executable(flight_logger_node
   src/flight_logger.cpp
 )
-
 target_include_directories(flight_logger_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-
-target_link_libraries(flight_logger_node
-  yaml-cpp
-)
-
+target_link_libraries(flight_logger_node yaml-cpp)
 ament_target_dependencies(flight_logger_node
   rclcpp
   nav_msgs
@@ -117,7 +114,6 @@ install(TARGETS
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )

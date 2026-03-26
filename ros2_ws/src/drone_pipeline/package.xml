@@ -21,9 +21,10 @@
   <depend>rclcpp_components</depend>
   <depend>ffmpeg_image_transport_msgs</depend>
   <depend>libturbojpeg</depend>
-  
+  <depend>tf2</depend>
+
   <export>
-  <build_type>ament_cmake</build_type>
-  <rclcpp_components plugin="${prefix}/drone_pipeline_components.xml"/>
+    <build_type>ament_cmake</build_type>
+    <rclcpp_components plugin="${prefix}/drone_pipeline_components.xml"/>
   </export>
 </package>

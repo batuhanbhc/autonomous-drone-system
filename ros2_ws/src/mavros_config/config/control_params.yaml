@@ -16,6 +16,19 @@ camera:
 vision_pipeline:
   obj_det_hef_path: "/usr/share/hailo-models/yolov8s_h8l.hef"
   obj_det_score_thresh: 0.5
+  
+  camera_intrinsics:
+    fx: 499.59041324
+    fy: 498.40102851
+    cx: 320.11657344
+    cy: 245.76315875
+ 
+  distortion:
+    k1:  0.18333092
+    k2: -0.69846172
+    p1: -0.00170541
+    p2: -0.00092574
+    k3:  0.68747843
 
 custom_topics:
   images: "camera/image/compressed"
