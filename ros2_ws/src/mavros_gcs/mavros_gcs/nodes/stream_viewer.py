@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import threading
 import rclpy
 from rclpy.node import Node
@@ -8,9 +7,14 @@ import cv2
 import av
 from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
 
+
 class StreamViewer(Node):
-    def __init__(self, drone_id: int):
-        super().__init__(f'stream_viewer_drone_{drone_id}')
+    def __init__(self):
+        super().__init__('stream_viewer')
+
+        self.declare_parameter('drone_id', 0)
+        drone_id = int(self.get_parameter('drone_id').value)
+
         self.codec        = av.CodecContext.create('h264', 'r')
         self.lock         = threading.Lock()
         self.latest       = None
@@ -21,10 +25,16 @@ class StreamViewer(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
+
         topic = f'/drone_{drone_id}/camera/stream/out'
         self.sub = self.create_subscription(
             FFMPEGPacket, topic, self.callback, qos)
         self.get_logger().info(f'Subscribed to {topic}')
+
+        self._window = f'Drone {drone_id} stream'
+        self._gui_thread = threading.Thread(
+            target=self._gui_loop, daemon=True)
+        self._gui_thread.start()
 
     def callback(self, msg: FFMPEGPacket):
         if not self.got_keyframe:
@@ -43,30 +53,31 @@ class StreamViewer(Node):
         except Exception as e:
             self.get_logger().warn(f'decode error: {e}')
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--drone-id', type=int, default=0)
-    args = parser.parse_args()
+    def _gui_loop(self):
+        cv2.namedWindow(self._window, cv2.WINDOW_NORMAL)
+        while rclpy.ok():
+            with self.lock:
+                frame = self.latest
+            if frame is not None:
+                cv2.imshow(self._window, frame)
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord('q'):
+                rclpy.shutdown()
+                break
+        cv2.destroyAllWindows()
 
-    rclpy.init()
-    node = StreamViewer(drone_id=args.drone_id)
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
-    spin_thread.start()
 
-    window = f'Drone {args.drone_id} stream'
-    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-    while rclpy.ok():
-        with node.lock:
-            frame = node.latest
-        if frame is not None:
-            cv2.imshow(window, frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
+def main(argv=None):
+    rclpy.init(args=argv)
+    node = StreamViewer()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
 
-    cv2.destroyAllWindows()
-    node.destroy_node()
-    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
