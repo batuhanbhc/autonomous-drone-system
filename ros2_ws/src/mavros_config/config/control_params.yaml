@@ -12,6 +12,7 @@ camera:
   width: 640
   height: 480
   fps: 30
+  gimbal_pitch_angle: 15.0  # degrees, positive downwards
   
 vision_pipeline:
   obj_det_hef_path: "/usr/share/hailo-models/yolov8s_h8l.hef"

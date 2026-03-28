@@ -42,7 +42,8 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.width  = cam["width"].as<int>();
   cfg.height = cam["height"].as<int>();
   cfg.fps    = cam["fps"].as<int>();
-
+  cfg.gimbal_pitch_angle = cam["gimbal_pitch_angle"].as<double>();
+  
   const auto vp = root["vision_pipeline"];
   cfg.hef_path        = vp["obj_det_hef_path"].as<std::string>();
   cfg.score_threshold = vp["obj_det_score_thresh"].as<float>();
@@ -67,6 +68,8 @@ VisionConfig VisionPipeline::loadConfig()
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
     cfg.hef_path.c_str(), cfg.score_threshold);
+  
+  RCLCPP_INFO(get_logger(), "Gimbal pitch angle= %.2f deg)", cfg.gimbal_pitch_angle);
 
   RCLCPP_INFO(get_logger(),
     "Camera intrinsics → fx=%.4f fy=%.4f cx=%.4f cy=%.4f",
@@ -250,6 +253,7 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 : Node("vision_pipeline", options)
 {
   config_ = loadConfig();
+  gimbal_pitch_rad_ = config_.gimbal_pitch_angle * M_PI / 180.0;
 
   // ── De-letterbox constants ────────────────────────────────────────────────
   lb_scale_     = static_cast<float>(kHailoInputW) /
@@ -519,15 +523,11 @@ void VisionPipeline::workerLoop()
           tf2::Quaternion tf_q(
             cb_slot.quat_x, cb_slot.quat_y,
             cb_slot.quat_z, cb_slot.quat_w);
-          tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-
-          // Subtract calibrated offset → local ENU yaw
+          tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);  // keep for yaw only
           yaw -= yaw_offset_;
-
           projector_->setPose(
             cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
-            yaw, pitch, roll);
-        }
+            yaw, gimbal_pitch_rad_, 0.0);
 
         for (int d = 0; d < num_dets; ++d) {
           const float * det      = cls_ptr + 1 + d * 5;
