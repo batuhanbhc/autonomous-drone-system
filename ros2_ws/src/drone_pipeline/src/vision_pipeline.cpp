@@ -43,10 +43,14 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.height = cam["height"].as<int>();
   cfg.fps    = cam["fps"].as<int>();
   cfg.gimbal_pitch_angle = cam["gimbal_pitch_angle"].as<double>();
+
+  
   
   const auto vp = root["vision_pipeline"];
   cfg.hef_path        = vp["obj_det_hef_path"].as<std::string>();
   cfg.score_threshold = vp["obj_det_score_thresh"].as<float>();
+  cfg.model_input_size = vp["obj_det_model_input_size"].as<int>();
+  cfg.person_class_idx = vp["obj_det_person_class_idx"].as<int>();
 
   // Camera intrinsics
   const auto intr = vp["camera_intrinsics"];
@@ -64,11 +68,11 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.k3 = dist["k3"].as<double>();
 
   RCLCPP_INFO(get_logger(),
-    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  score_thresh=%.2f",
+    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  score_thresh=%.2f  model_input=%d  person_class=%d",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
-    cfg.hef_path.c_str(), cfg.score_threshold);
-  
+    cfg.hef_path.c_str(), cfg.score_threshold, cfg.model_input_size, cfg.person_class_idx);
+
   RCLCPP_INFO(get_logger(), "Gimbal pitch angle= %.2f deg)", cfg.gimbal_pitch_angle);
 
   RCLCPP_INFO(get_logger(),
@@ -256,12 +260,12 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   gimbal_pitch_rad_ = config_.gimbal_pitch_angle * M_PI / 180.0;
 
   // ── De-letterbox constants ────────────────────────────────────────────────
-  lb_scale_     = static_cast<float>(kHailoInputW) /
-                  static_cast<float>(std::max(config_.width, config_.height));
+  lb_scale_ = static_cast<float>(config_.model_input_size) /
+              static_cast<float>(std::max(config_.width, config_.height));
   const int scaled_w = static_cast<int>(std::round(config_.width  * lb_scale_));
   const int scaled_h = static_cast<int>(std::round(config_.height * lb_scale_));
-  lb_pad_left_  = (kHailoInputW - scaled_w) / 2;
-  lb_pad_top_   = (kHailoInputH - scaled_h) / 2;
+  lb_pad_left_  = (config_.model_input_size - scaled_w) / 2;
+  lb_pad_top_   = (config_.model_input_size - scaled_h) / 2;
 
   RCLCPP_INFO(get_logger(),
     "Letterbox: scale=%.4f  scaled=%dx%d  pad_left=%d  pad_top=%d",
@@ -480,8 +484,8 @@ void VisionPipeline::workerLoop()
     cv::Mat resized;
     cv::resize(src, resized, cv::Size(scaled_w, scaled_h), 0, 0, cv::INTER_LINEAR);
 
-    cv::Mat letterbox(kHailoInputH, kHailoInputW, CV_8UC3,
-                      slot.letterbox_buf.data());
+   cv::Mat letterbox(config_.model_input_size, config_.model_input_size,
+                    CV_8UC3, slot.letterbox_buf.data());
     letterbox.setTo(cv::Scalar(0, 0, 0));
 
     const cv::Rect roi(lb_pad_left_, lb_pad_top_, scaled_w, scaled_h);
@@ -510,7 +514,7 @@ void VisionPipeline::workerLoop()
       static constexpr int kClassStride     = 1 + kMaxBboxPerClass * 5;
 
       const float * nms      = cb_slot.nms_output_buf.data();
-      const float * cls_ptr  = nms + kPersonClassIdx * kClassStride;
+      const float * cls_ptr  = nms + config_.person_class_idx * kClassStride;
       const int     num_dets = static_cast<int>(cls_ptr[0]);
 
       if (num_dets > 0) {
@@ -528,7 +532,8 @@ void VisionPipeline::workerLoop()
           projector_->setPose(
             cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
             yaw, gimbal_pitch_rad_, 0.0);
-
+        }
+        
         for (int d = 0; d < num_dets; ++d) {
           const float * det      = cls_ptr + 1 + d * 5;
           const float y_min_norm = det[0];
@@ -538,10 +543,10 @@ void VisionPipeline::workerLoop()
           const float score      = det[4];
 
           // Letterbox → original frame pixel coords
-          const float x_min_lb = x_min_norm * kHailoInputW;
-          const float y_min_lb = y_min_norm * kHailoInputH;
-          const float x_max_lb = x_max_norm * kHailoInputW;
-          const float y_max_lb = y_max_norm * kHailoInputH;
+          const float x_min_lb = x_min_norm * config_.model_input_size;
+          const float y_min_lb = y_min_norm * config_.model_input_size;
+          const float x_max_lb = x_max_norm * config_.model_input_size;
+          const float y_max_lb = y_max_norm * config_.model_input_size;
 
           const float x_min = (x_min_lb - lb_pad_left_) / lb_scale_;
           const float y_min = (y_min_lb - lb_pad_top_)  / lb_scale_;

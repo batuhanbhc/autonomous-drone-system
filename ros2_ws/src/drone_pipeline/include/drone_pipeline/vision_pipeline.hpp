@@ -35,8 +35,13 @@ struct VisionConfig
   int         width{};
   int         height{};
   int         fps{};
+
+  double gimbal_pitch_angle;
+
   std::string hef_path;
   float       score_threshold{};
+  int         model_input_size{}; 
+  int         person_class_idx{};
 
   // Camera intrinsics
   double fx{}, fy{}, cx{}, cy{};
@@ -58,9 +63,6 @@ enum class SlotState : uint8_t
   PROCESSED
 };
 
-static constexpr int kHailoInputW  = 640;
-static constexpr int kHailoInputH  = 640;
-static constexpr int kHailoInputC  = 3;   // RGB24
 
 struct FrameSlot
 {
@@ -107,8 +109,6 @@ private:
   static constexpr int kNumSlots      = 30;
   static constexpr int kNumWorkers    = 4;
 
-  // COCO class index for "person"
-  static constexpr int kPersonClassIdx = 0;
 
   // Yaw calibration: collect this many samples during startup
   static constexpr int    kYawCalibSamples  = 10;
@@ -117,6 +117,7 @@ private:
   // ── Config ────────────────────────────────────────────────────────────────
   VisionConfig loadConfig();
   VisionConfig config_;
+  double gimbal_pitch_rad_{0.0};
 
   // ── De-letterbox constants (computed once in constructor) ─────────────────
   float lb_scale_{};

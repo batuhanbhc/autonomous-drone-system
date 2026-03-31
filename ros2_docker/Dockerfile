@@ -235,6 +235,12 @@ RUN set -eux; \
     rm -rf /tmp/${TAPPAS_DIR} && rm -rf /tmp/setup
 
 # -------------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    libturbojpeg \
+    libturbojpeg0-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# -------------------------------------------------------
 # Create / adjust non-root user
 ARG USERNAME=batuhan
 ARG UID=1000
