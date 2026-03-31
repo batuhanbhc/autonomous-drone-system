@@ -12,7 +12,7 @@ objp[:, :2] = np.indices(chessboard_size).T.reshape(-1, 2) * square_size
 objpoints = []
 imgpoints = []
 
-images = glob.glob('/home/batuhan/autonomous-drone-system/ros2_ws/camera_calibration/calibration_images/*.png')
+images = glob.glob('/home/batuhan/autonomous-drone-system-main/ros2_ws/camera_calibration/calibration_images/*.png')
 
 for fname in images:
     img = cv2.imread(fname)

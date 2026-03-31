@@ -5,7 +5,7 @@ import os
 CAMERA_INDEX = 2
 WIDTH = 640
 HEIGHT = 480
-FORMAT = "YUY2"  # "MJPEG" or "YUY2"
+FORMAT = "MJPEG"  # "MJPEG" or "YUY2"
 # ---------------------
 
 save_dir = "calibration_images"
