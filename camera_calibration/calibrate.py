@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import glob
 import json
+import os
 
 chessboard_size = (9, 6)
 square_size = 0.024
@@ -12,7 +13,10 @@ objp[:, :2] = np.indices(chessboard_size).T.reshape(-1, 2) * square_size
 objpoints = []
 imgpoints = []
 
-images = glob.glob('/home/batuhan/autonomous-drone-system/ros2_ws/camera_calibration/calibration_images/*.png')
+# Match save_images.py: relative "calibration_images" folder
+script_dir = os.path.dirname(os.path.abspath(__file__))
+images_dir = os.path.join(script_dir, "calibration_images")
+images = glob.glob(os.path.join(images_dir, "*.png"))
 
 for fname in images:
     img = cv2.imread(fname)
@@ -31,7 +35,6 @@ if len(objpoints) == 0:
     exit()
 
 print(f"Calibrating with {len(objpoints)} images...")
-
 ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
     objpoints, imgpoints, gray.shape[::-1], None, None
 )
@@ -44,10 +47,12 @@ calibration_data = {
     "rms_error": ret,
     "camera_matrix": mtx.tolist(),
     "distortion_coefficients": dist.tolist(),
-    "image_size": [gray.shape[1], gray.shape[0]]  # W, H
+    "image_size": [gray.shape[1], gray.shape[0]]
 }
 
-with open("calibration.json", "w") as f:
+# Save calibration.json next to this script, same as save_images saves next to itself
+output_path = os.path.join(script_dir, "calibration.json")
+with open(output_path, "w") as f:
     json.dump(calibration_data, f, indent=4)
 
-print("Saved calibration.json")
+print(f"Saved {output_path}")

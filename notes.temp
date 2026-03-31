@@ -1,1 +1,0 @@
-install "sudo apt install ros-$ROS_DISTRO-ffmpeg-image-transport" to raspberry pi docker
