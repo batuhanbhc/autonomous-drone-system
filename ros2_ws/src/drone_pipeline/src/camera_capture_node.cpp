@@ -77,7 +77,6 @@ CameraConfig CameraCapture::loadConfig()
   cfg.height      = cam["height"].as<int>();
   cfg.fps         = cam["fps"].as<int>();
   cfg.device_path = cam["device_path"].as<std::string>();
-  // pixel_format is intentionally NOT read — MJPEG is hardcoded.
 
   if (!root["drone_id"])
     throw std::runtime_error("Missing 'drone_id'");
@@ -85,14 +84,19 @@ CameraConfig CameraCapture::loadConfig()
 
   if (!root["custom_topics"] || !root["custom_topics"]["images"])
     throw std::runtime_error("Missing 'custom_topics/images'");
-  cfg.images_topic = root["custom_topics"]["images"].as<std::string>();
+  cfg.frames_topic = root["custom_topics"]["images"].as<std::string>();
+
+  const auto & mv    = root["mavros_topics"];
+  const std::string dp = "/drone_" + std::to_string(cfg.drone_id);
+  cfg.odom_topic     = dp + mv["odom"].as<std::string>();
+  cfg.gps1_raw_topic = dp + mv["gps1_raw"].as<std::string>();
 
   RCLCPP_INFO(
     get_logger(),
     "Config → device=%s  format=MJPEG(hardcoded)  resolution=%dx%d  fps=%d  "
     "drone_id=%u  topic=%s",
     cfg.device_path.c_str(), cfg.width, cfg.height, cfg.fps,
-    cfg.drone_id, cfg.images_topic.c_str());
+    cfg.drone_id, cfg.frames_topic.c_str());
 
   return cfg;
 }
@@ -226,11 +230,51 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
 {
   config_ = loadConfig();
 
-  const std::string topic = "/drone_" + std::to_string(config_.drone_id) + "/" + config_.images_topic;
-  RCLCPP_INFO(get_logger(), "Publishing on: %s", topic.c_str());
+  const std::string dp    = "/drone_" + std::to_string(config_.drone_id);
+  const std::string topic = dp + "/" + config_.frames_topic;
 
-  // Sensor-data QoS (best-effort, small depth) is appropriate for live video.
-  image_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(topic, rclcpp::SensorDataQoS());
+  frame_pub_ = create_publisher<drone_msgs::msg::FrameData>(topic, rclcpp::SensorDataQoS());
+
+  const auto sensor_qos   = rclcpp::SensorDataQoS();
+  const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+
+  odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+    config_.odom_topic, sensor_qos,
+    [this](const nav_msgs::msg::Odometry::SharedPtr msg) { odomCallback(msg); });
+
+  gps_sub_ = create_subscription<mavros_msgs::msg::GPSRAW>(
+    config_.gps1_raw_topic, reliable_qos,
+    [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) { gpsCallback(msg); });
+
+  // Staleness timers — fire every 1 s; reset snapshot to nullopt if no fresh data arrived.
+  // Each timer is independent: GPS can go stale while odom remains valid, and vice-versa.
+  odom_staleness_timer_ = create_wall_timer(
+    std::chrono::seconds(1),
+    [this]() {
+      // If odom_valid_ is already false the sensor was already stale — no-op.
+      // If it was true, a fresh odomCallback() will have reset it to true since the
+      // last timer fire; if not, mark it stale now.
+      // We use a simple flag: odomCallback sets odom_valid_ = true each time it fires.
+      // The timer checks and then unconditionally clears the flag.
+      // That gives a ~1 s window of tolerance.
+      if (!odom_valid_.exchange(false)) {
+        std::lock_guard<std::mutex> lk(odom_mtx_);
+        latest_odom_.reset();
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "Odom stale — FrameData will carry odom_valid=false");
+      }
+    });
+
+  gps_staleness_timer_ = create_wall_timer(
+    std::chrono::seconds(1),
+    [this]() {
+      if (!gps_valid_.exchange(false)) {
+        std::lock_guard<std::mutex> lk(gps_mtx_);
+        latest_gps_.reset();
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "GPS stale — FrameData will carry gps_valid=false");
+      }
+    });
 
   openDevice();
   startStreaming();
@@ -238,7 +282,7 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
   running_        = true;
   capture_thread_ = std::thread(&CameraCapture::captureThread, this);
 
-  RCLCPP_INFO(get_logger(), "camera_capture node ready.");
+  RCLCPP_INFO(get_logger(), "camera_capture ready → %s", topic.c_str());
 }
 
 CameraCapture::~CameraCapture()
@@ -247,6 +291,37 @@ CameraCapture::~CameraCapture()
   if (capture_thread_.joinable())
     capture_thread_.join();
   stopStreaming();
+}
+
+void CameraCapture::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  const auto & p = msg->pose.pose.position;
+  const auto & q = msg->pose.pose.orientation;
+  const auto & v = msg->twist.twist.linear;
+
+  OdomSnapshot snap;
+  snap.pos_x  = p.x;  snap.pos_y  = p.y;  snap.pos_z  = p.z;
+  snap.quat_x = q.x;  snap.quat_y = q.y;  snap.quat_z = q.z;  snap.quat_w = q.w;
+  snap.vel_x  = v.x;  snap.vel_y  = v.y;  snap.vel_z  = v.z;
+
+  {
+    std::lock_guard<std::mutex> lk(odom_mtx_);
+    latest_odom_ = snap;
+  }
+  odom_valid_.store(true);   // tell the staleness timer we got fresh data
+}
+
+void CameraCapture::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
+{
+  GpsSnapshot snap;
+  snap.lat = msg->lat;
+  snap.lon = msg->lon;
+
+  {
+    std::lock_guard<std::mutex> lk(gps_mtx_);
+    latest_gps_ = snap;
+  }
+  gps_valid_.store(true);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -286,25 +361,53 @@ void CameraCapture::captureThread()
     buf.memory = V4L2_MEMORY_MMAP;
 
     if (xioctl(fd_, VIDIOC_DQBUF, &buf) == -1) {
-      if (errno == EAGAIN) continue;  // spurious wakeup
-      RCLCPP_WARN(get_logger(), "VIDIOC_DQBUF error: %s", std::strerror(errno));
+      if (errno == EAGAIN) continue;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,  // max once per 5000ms
+        "VIDIOC_DQBUF error: %s", std::strerror(errno));
       continue;
     }
 
-    // ── Build CompressedImage and publish ───────────────────
-    // The MMAP buffer contains a complete MJPEG frame.
-    // We copy it once into the ROS message; with intra-process zero-copy
-    // enabled that message unique_ptr is moved directly to the subscriber
-    // without any further copies or serialisation.
-    auto msg          = std::make_unique<sensor_msgs::msg::CompressedImage>();
-    msg->header.stamp    = now();
-    msg->header.frame_id = frame_id;
-    msg->format          = "jpeg";   // ROS convention for MJPEG/JPEG
+    auto msg = std::make_unique<drone_msgs::msg::FrameData>();
 
+    // ── Image fields ────────────────────────────────────────
+    msg->image.header.stamp    = now();
+    msg->image.header.frame_id = frame_id;
+    msg->image.format          = "jpeg";
     const auto * src = static_cast<const uint8_t *>(g_buffers[buf.index].start);
-    msg->data.assign(src, src + buf.bytesused);
+    msg->image.data.assign(src, src + buf.bytesused);
 
-    image_pub_->publish(std::move(msg));  // zero-copy path when intra-process
+    // ── Odom fields ─────────────────────────────────────────
+    {
+      std::lock_guard<std::mutex> lk(odom_mtx_);
+      if (latest_odom_.has_value()) {
+        const auto & o  = *latest_odom_;
+        msg->pos_x      = o.pos_x;  msg->pos_y  = o.pos_y;  msg->pos_z  = o.pos_z;
+        msg->quat_x     = o.quat_x; msg->quat_y = o.quat_y;
+        msg->quat_z     = o.quat_z; msg->quat_w = o.quat_w;
+        msg->vel_x      = o.vel_x;  msg->vel_y  = o.vel_y;  msg->vel_z  = o.vel_z;
+        msg->odom_valid = true;
+      } else {
+        // Dummy: identity quaternion, everything else zero
+        msg->quat_w     = 1.0;
+        msg->odom_valid = false;
+      }
+    }
+
+    // ── GPS fields ──────────────────────────────────────────
+    {
+      std::lock_guard<std::mutex> lk(gps_mtx_);
+      if (latest_gps_.has_value()) {
+        msg->lat       = latest_gps_->lat;
+        msg->lon       = latest_gps_->lon;
+        msg->gps_valid = true;
+      } else {
+        msg->lat       = 0;
+        msg->lon       = 0;
+        msg->gps_valid = false;
+      }
+    }
+
+    frame_pub_->publish(std::move(msg));
 
     // ── Re-enqueue the buffer immediately ───────────────────
     if (xioctl(fd_, VIDIOC_QBUF, &buf) == -1)

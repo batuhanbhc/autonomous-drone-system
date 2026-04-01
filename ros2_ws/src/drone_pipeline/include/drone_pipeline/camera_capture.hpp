@@ -2,16 +2,19 @@
 #define DRONE_PIPELINE__CAMERA_CAPTURE_HPP_
 
 #include <atomic>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
 #include "rclcpp/rclcpp.hpp"
-#include "sensor_msgs/msg/compressed_image.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "mavros_msgs/msg/gpsraw.hpp"
+#include "drone_msgs/msg/frame_data.hpp"
 
 namespace drone_pipeline
 {
 
-// pixel_format removed — MJPEG is hardcoded throughout
 struct CameraConfig
 {
   int         width;
@@ -19,7 +22,23 @@ struct CameraConfig
   int         fps;
   std::string device_path;
   uint8_t     drone_id;
-  std::string images_topic;
+  std::string frames_topic;
+  std::string odom_topic;
+  std::string gps1_raw_topic;
+};
+
+// Lightweight snapshots stored under their respective mutexes.
+struct OdomSnapshot
+{
+  double pos_x{}, pos_y{}, pos_z{};
+  double quat_x{}, quat_y{}, quat_z{}, quat_w{1.0};
+  double vel_x{}, vel_y{}, vel_z{};
+};
+
+struct GpsSnapshot
+{
+  int32_t lat{};
+  int32_t lon{};
 };
 
 class CameraCapture : public rclcpp::Node
@@ -29,26 +48,41 @@ public:
   ~CameraCapture();
 
 private:
+  // ── Config / device ───────────────────────────────────────
   CameraConfig loadConfig();
-  void         openDevice();   // open + configure V4L2 fd
+  void         openDevice();
   void         startStreaming();
   void         stopStreaming();
   void         captureThread();
 
+  // ── Sensor callbacks ──────────────────────────────────────
+  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void gpsCallback (const mavros_msgs::msg::GPSRAW::SharedPtr msg);
+
+  // ── Members ───────────────────────────────────────────────
   CameraConfig config_;
 
-  // UniquePtr publisher — required for intra-process zero-copy.
-  // When both publisher and subscription are created with
-  // rclcpp::NodeOptions().use_intra_process_comms(true) in the same
-  // process, rclcpp will hand the unique_ptr directly to the subscriber
-  // without any copy or serialisation.
-  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub_;
+  rclcpp::Publisher<drone_msgs::msg::FrameData>::SharedPtr frame_pub_;
 
-  int                fd_{-1};          // V4L2 file descriptor
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
+  rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr gps_sub_;
+
+  // Staleness timers — each fires independently at ~1 Hz
+  rclcpp::TimerBase::SharedPtr odom_staleness_timer_;
+  rclcpp::TimerBase::SharedPtr gps_staleness_timer_;
+
+  std::mutex               odom_mtx_;
+  std::optional<OdomSnapshot> latest_odom_;   // nullopt → stale / never received
+  std::atomic<bool>        odom_valid_{false};
+
+  std::mutex               gps_mtx_;
+  std::optional<GpsSnapshot>  latest_gps_;
+  std::atomic<bool>        gps_valid_{false};
+
+  int                fd_{-1};
   std::thread        capture_thread_;
   std::atomic<bool>  running_{false};
 };
 
 }  // namespace drone_pipeline
-
 #endif  // DRONE_PIPELINE__CAMERA_CAPTURE_HPP_

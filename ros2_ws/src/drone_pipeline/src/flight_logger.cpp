@@ -156,6 +156,28 @@ FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
 
   RCLCPP_INFO(get_logger(), "flight_logger ready.  odom→%s  gps→%s",
     config_.odom_topic.c_str(), config_.gps1_raw_topic.c_str());
+
+  // ── Flush timer ───────────────────────────────────────────
+   // Flushes buffers to disk every 3 seconds, or when buffer size exceeds threshold.
+   // This is a safeguard to prevent data loss on crash, since the destructor won't run.
+  flush_timer_ = create_wall_timer(
+  std::chrono::seconds(3),
+  [this]() {
+    {
+      std::lock_guard<std::mutex> lk(odom_mtx_);
+      for (const auto & line : odom_buffer_)
+        odom_file_ << line;
+      odom_buffer_.clear();
+      odom_file_.flush();
+    }
+    {
+      std::lock_guard<std::mutex> lk(gps_mtx_);
+      for (const auto & line : gps_buffer_)
+        gps_file_ << line;
+      gps_buffer_.clear();
+      gps_file_.flush();
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,15 +186,12 @@ FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
 
 FlightLogger::~FlightLogger()
 {
-  if (odom_file_.is_open()) {
-    odom_file_.flush();
-    odom_file_.close();
-  }
-  if (gps_file_.is_open()) {
-    gps_file_.flush();
-    gps_file_.close();
-  }
-  RCLCPP_INFO(get_logger(), "flight_logger: CSV files flushed and closed.");
+  // Flush any remaining buffered lines
+  for (const auto & line : odom_buffer_) odom_file_ << line;
+  for (const auto & line : gps_buffer_)  gps_file_  << line;
+
+  if (odom_file_.is_open()) { odom_file_.flush(); odom_file_.close(); }
+  if (gps_file_.is_open())  { gps_file_.flush();  gps_file_.close();  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,15 +204,15 @@ void FlightLogger::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   const auto & q = msg->pose.pose.orientation;
   const auto & v = msg->twist.twist.linear;
 
-  std::lock_guard<std::mutex> lk(odom_mtx_);
+  std::ostringstream oss;
+  oss << msg->header.stamp.sec     << ','
+      << msg->header.stamp.nanosec << ','
+      << p.x << ',' << p.y << ',' << p.z << ','
+      << q.x << ',' << q.y << ',' << q.z << ',' << q.w << ','
+      << v.x << ',' << v.y << ',' << v.z << '\n';
 
-  odom_file_
-    << msg->header.stamp.sec     << ','
-    << msg->header.stamp.nanosec << ','
-    << p.x << ',' << p.y << ',' << p.z << ','
-    << q.x << ',' << q.y << ',' << q.z << ',' << q.w << ','
-    << v.x << ',' << v.y << ',' << v.z
-    << '\n';
+  std::lock_guard<std::mutex> lk(odom_mtx_);
+  odom_buffer_.push_back(oss.str());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

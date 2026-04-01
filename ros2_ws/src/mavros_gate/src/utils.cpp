@@ -248,9 +248,9 @@ bool ControlGateNode::initializationRoutine() {
 
   if (!requestMsgInterval(245, 2.0f,  "EXTENDED_SYS_STATE"))  return false;
   if (!requestMsgInterval(147, 1.0f,  "BATTERY_STATUS"))       return false;
-  if (!requestMsgInterval(32,  10.0f, "LOCAL_POSITION_NED"))   return false;
+  if (!requestMsgInterval(32,  30.0f, "LOCAL_POSITION_NED"))   return false;
   if (!requestMsgInterval(24,  5.0f,  "GPS_RAW_INT"))          return false;
-  if (!requestMsgInterval(31, 10.0f, "ATTITUDE_QUATERNION")) return false;
+  if (!requestMsgInterval(31, 30.0f, "ATTITUDE_QUATERNION")) return false;
 
   // Initialize command handlers
   initCommandHandlers();

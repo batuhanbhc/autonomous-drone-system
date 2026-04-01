@@ -12,7 +12,7 @@ ExecStartPre=/bin/bash -c '\
   until ip addr show wlan0 | grep -q "inet "; \
   do echo "[drone.service] Waiting for IP on wlan0..."; sleep 2; done'
 ExecStart=/usr/bin/docker compose up
-ExecStop=/usr/bin/docker compose down
+ExecStop=/usr/bin/docker compose stop
 Restart=on-failure
 RestartSec=10
 
