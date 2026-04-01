@@ -33,3 +33,9 @@ __pycache__/
 # Misc
 *.bin
 *.so
+
+# ESP-IDF
+esp_ws/esp-idf/
+esp_ws/**/build/
+esp_ws/**/sdkconfig
+esp_ws/**/managed_components/
