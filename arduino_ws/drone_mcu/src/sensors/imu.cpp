@@ -1,54 +1,229 @@
 #include "imu.h"
 
-static Adafruit_BNO08x   bno08x(IMU_RESET_PIN);
+static Adafruit_BNO08x  bno08x(IMU_RESET_PIN);
 static sh2_SensorValue_t sensorValue;
 
 ImuData imuData = {};
 
 static volatile bool imuInterruptFired = false;
+static uint32_t lastTimestamp_us = 0;
 
-
-static void quatToEuler(const float q[4], float out[3]) {
-  // q = [i, j, k, real]  →  [x, y, z, w]
-  float x = q[0], y = q[1], z = q[2], w = q[3];
-
-  // Roll (X-axis rotation)
-  float sinr_cosp = 2.0f * (w * x + y * z);
-  float cosr_cosp = 1.0f - 2.0f * (x * x + y * y);
-  out[2] = atan2f(sinr_cosp, cosr_cosp) * RAD_TO_DEG;
-
-  // Pitch (Y-axis rotation) — clamped to avoid NaN at poles
-  float sinp = 2.0f * (w * y - z * x);
-  sinp = sinp >  1.0f ?  1.0f : sinp;
-  sinp = sinp < -1.0f ? -1.0f : sinp;
-  out[1] = asinf(sinp) * RAD_TO_DEG;
-
-  // Yaw (Z-axis rotation)
-  float siny_cosp = 2.0f * (w * z + x * y);
-  float cosy_cosp = 1.0f - 2.0f * (y * y + z * z);
-  out[0] = atan2f(siny_cosp, cosy_cosp) * RAD_TO_DEG;
-}
-
-static void gravToEuler(float x, float y, float z, float out[2]) {
-  float norm = sqrtf(x*x + y*y + z*z);
-  if (norm < 0.001f) { out[0] = out[1] = 0.0f; return; }
-  x /= norm; y /= norm; z /= norm;
-  out[0] = asinf(-x)         * RAD_TO_DEG;  // pitch
-  out[1] = atan2f(y, z)      * RAD_TO_DEG;  // roll
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 void IRAM_ATTR imuISR() {
-    imuInterruptFired = true;  // back to just this, nothing else
+  imuInterruptFired = true;
+}
+
+static inline float deg2rad(float deg) {
+  return deg * DEG_TO_RAD;
+}
+
+static void vecCopy3(const float in[3], float out[3]) {
+  out[0] = in[0];
+  out[1] = in[1];
+  out[2] = in[2];
+}
+
+static void matVecMul3(const float M[3][3], const float v[3], float out[3]) {
+  out[0] = M[0][0] * v[0] + M[0][1] * v[1] + M[0][2] * v[2];
+  out[1] = M[1][0] * v[0] + M[1][1] * v[1] + M[1][2] * v[2];
+  out[2] = M[2][0] * v[0] + M[2][1] * v[1] + M[2][2] * v[2];
+}
+
+static void matMul3(const float A[3][3], const float B[3][3], float C[3][3]) {
+  for (int r = 0; r < 3; r++) {
+    for (int c = 0; c < 3; c++) {
+      C[r][c] = A[r][0] * B[0][c] +
+                A[r][1] * B[1][c] +
+                A[r][2] * B[2][c];
+    }
+  }
+}
+
+static void matTranspose3(const float A[3][3], float AT[3][3]) {
+  for (int r = 0; r < 3; r++) {
+    for (int c = 0; c < 3; c++) {
+      AT[r][c] = A[c][r];
+    }
+  }
+}
+
+static void cross3(const float a[3], const float b[3], float out[3]) {
+  out[0] = a[1] * b[2] - a[2] * b[1];
+  out[1] = a[2] * b[0] - a[0] * b[2];
+  out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static void rotationZDeg(float yawDeg, float R[3][3]) {
+  const float c = cosf(deg2rad(yawDeg));
+  const float s = sinf(deg2rad(yawDeg));
+
+  // Maps vector components from IMU frame to DRONE frame.
+  // "yawOffset_deg rotates IMU +Y onto drone +Y", CCW positive.
+  R[0][0] =  c; R[0][1] = -s; R[0][2] = 0.0f;
+  R[1][0] =  s; R[1][1] =  c; R[1][2] = 0.0f;
+  R[2][0] = 0.0f; R[2][1] = 0.0f; R[2][2] = 1.0f;
+}
+
+static void quatNormalize(float q[4]) {
+  const float n = sqrtf(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+  if (n <= 0.0f) {
+    q[0] = q[1] = q[2] = 0.0f;
+    q[3] = 1.0f;
+    return;
+  }
+  q[0] /= n;
+  q[1] /= n;
+  q[2] /= n;
+  q[3] /= n;
+}
+
+static void quatToMatrix(const float qIn[4], float R[3][3]) {
+  float q[4] = { qIn[0], qIn[1], qIn[2], qIn[3] };
+  quatNormalize(q);
+
+  const float x = q[0];
+  const float y = q[1];
+  const float z = q[2];
+  const float w = q[3];
+
+  // Rotation matrix: IMU/body frame -> world frame
+  R[0][0] = 1.0f - 2.0f * (y * y + z * z);
+  R[0][1] = 2.0f * (x * y - z * w);
+  R[0][2] = 2.0f * (x * z + y * w);
+
+  R[1][0] = 2.0f * (x * y + z * w);
+  R[1][1] = 1.0f - 2.0f * (x * x + z * z);
+  R[1][2] = 2.0f * (y * z - x * w);
+
+  R[2][0] = 2.0f * (x * z - y * w);
+  R[2][1] = 2.0f * (y * z + x * w);
+  R[2][2] = 1.0f - 2.0f * (x * x + y * y);
+}
+
+static void matrixToQuat(const float R[3][3], float q[4]) {
+  const float trace = R[0][0] + R[1][1] + R[2][2];
+
+  if (trace > 0.0f) {
+    const float s = sqrtf(trace + 1.0f) * 2.0f;
+    q[3] = 0.25f * s;
+    q[0] = (R[2][1] - R[1][2]) / s;
+    q[1] = (R[0][2] - R[2][0]) / s;
+    q[2] = (R[1][0] - R[0][1]) / s;
+  } else if ((R[0][0] > R[1][1]) && (R[0][0] > R[2][2])) {
+    const float s = sqrtf(1.0f + R[0][0] - R[1][1] - R[2][2]) * 2.0f;
+    q[3] = (R[2][1] - R[1][2]) / s;
+    q[0] = 0.25f * s;
+    q[1] = (R[0][1] + R[1][0]) / s;
+    q[2] = (R[0][2] + R[2][0]) / s;
+  } else if (R[1][1] > R[2][2]) {
+    const float s = sqrtf(1.0f + R[1][1] - R[0][0] - R[2][2]) * 2.0f;
+    q[3] = (R[0][2] - R[2][0]) / s;
+    q[0] = (R[0][1] + R[1][0]) / s;
+    q[1] = 0.25f * s;
+    q[2] = (R[1][2] + R[2][1]) / s;
+  } else {
+    const float s = sqrtf(1.0f + R[2][2] - R[0][0] - R[1][1]) * 2.0f;
+    q[3] = (R[1][0] - R[0][1]) / s;
+    q[0] = (R[0][2] + R[2][0]) / s;
+    q[1] = (R[1][2] + R[2][1]) / s;
+    q[2] = 0.25f * s;
+  }
+
+  quatNormalize(q);
 }
 
 static bool setReports() {
   if (!bno08x.enableReport(SH2_LINEAR_ACCELERATION,  IMU_REPORT_RATE_US)) return false;
   if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, IMU_REPORT_RATE_US)) return false;
-  if (!bno08x.enableReport(SH2_GRAVITY, IMU_REPORT_RATE_US)) return false;
+  if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, IMU_REPORT_RATE_US)) return false;
   return true;
 }
 
+static void recomputeDerivedState() {
+  // R_BI : IMU -> Drone
+  float R_BI[3][3];
+  rotationZDeg(imuData.mount.yawOffset_deg, R_BI);
+
+  // R_IB : Drone -> IMU
+  float R_IB[3][3];
+  matTranspose3(R_BI, R_IB);
+
+  // Rotate IMU-frame accel and gyro into drone body axes
+  float accelAtImu_body[3];
+  float gyro_body[3];
+
+  matVecMul3(R_BI, imuData.imuLinAccel, accelAtImu_body);
+  matVecMul3(R_BI, imuData.imuGyro,     gyro_body);
+
+  vecCopy3(gyro_body, imuData.droneGyro);
+
+  if (imuData.initialized) {
+    imuData.droneGyro[0] -= imuData.bias.droneGyro[0];
+    imuData.droneGyro[1] -= imuData.bias.droneGyro[1];
+    imuData.droneGyro[2] -= imuData.bias.droneGyro[2];
+  }
+
+  // Offset correction to drone center
+  const float r_body[3] = {
+    imuData.mount.xOffset_cm * 0.01f,
+    imuData.mount.yOffset_cm * 0.01f,
+    0.0f
+  };
+
+  float omegaCrossR[3];
+  float omegaCrossOmegaCrossR[3];
+
+  cross3(imuData.droneGyro, r_body, omegaCrossR);
+  cross3(imuData.droneGyro, omegaCrossR, omegaCrossOmegaCrossR);
+
+  float droneLinAccelRaw[3];
+  droneLinAccelRaw[0] = accelAtImu_body[0] - omegaCrossOmegaCrossR[0];
+  droneLinAccelRaw[1] = accelAtImu_body[1] - omegaCrossOmegaCrossR[1];
+  droneLinAccelRaw[2] = accelAtImu_body[2] - omegaCrossOmegaCrossR[2];
+
+  // Orientation
+  float R_WI[3][3];
+  float R_WB[3][3];
+
+  quatToMatrix(imuData.imuQuat, R_WI);
+  matMul3(R_WI, R_IB, R_WB);
+
+  matrixToQuat(R_WB, imuData.droneQuat);
+
+
+  // Apply biases only after initialization
+  if (imuData.initialized) {
+    imuData.droneLinAccel[0] = droneLinAccelRaw[0] - imuData.bias.droneLinAccel[0];
+    imuData.droneLinAccel[1] = droneLinAccelRaw[1] - imuData.bias.droneLinAccel[1];
+    imuData.droneLinAccel[2] = droneLinAccelRaw[2] - imuData.bias.droneLinAccel[2];
+
+  } else {
+    imuData.droneLinAccel[0] = droneLinAccelRaw[0];
+    imuData.droneLinAccel[1] = droneLinAccelRaw[1];
+    imuData.droneLinAccel[2] = droneLinAccelRaw[2];
+  }
+
+  // World-frame accel from corrected drone/body accel
+  float worldAccel[3];
+  matVecMul3(R_WB, imuData.droneLinAccel, worldAccel);
+  imuData.worldLinAccelZ = worldAccel[2];
+}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+void imuSetMounting() {
+  imuData.mount.xOffset_cm = IMU_OFFSET_X_CM;
+  imuData.mount.yOffset_cm = IMU_OFFSET_Y_CM;
+  imuData.mount.yawOffset_deg = IMU_YAW_OFFSET_DEG;
+}
+
 bool imuBegin() {
+  imuSetMounting();
+
   delay(200);
   Wire.begin(D4, D5);
 
@@ -57,7 +232,7 @@ bool imuBegin() {
     return false;
   }
 
-  Wire.setClock(400000);   // move here
+  Wire.setClock(400000);
 
   if (!setReports()) {
     Serial.println("[IMU] FATAL: Failed to set reports!");
@@ -67,44 +242,65 @@ bool imuBegin() {
   pinMode(IMU_INT_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN), imuISR, FALLING);
 
-  Serial.println("[IMU] Ready @ 200Hz with interrupt.");
+  imuData.imuQuat[3]   = 1.0f;
+  imuData.droneQuat[3] = 1.0f;
+
   return true;
 }
 
 void imuUpdate() {
   if (bno08x.wasReset()) {
-    Serial.println("[IMU] Reset detected, re-enabling reports...");
     setReports();
   }
 
   if (!imuInterruptFired) return;
   imuInterruptFired = false;
 
+  bool gotAny = false;
+  bool gotAccel = false;
+
+  const uint32_t now = micros();
 
   while (bno08x.getSensorEvent(&sensorValue)) {
+    gotAny = true;
+
     switch (sensorValue.sensorId) {
-      case SH2_LINEAR_ACCELERATION: {
-          imuData.linAccel[0] = sensorValue.un.linearAcceleration.x;
-          imuData.linAccel[1] = sensorValue.un.linearAcceleration.y;
-          imuData.linAccel[2] = sensorValue.un.linearAcceleration.z;
+      case SH2_LINEAR_ACCELERATION:
+        imuData.imuLinAccel[0] = sensorValue.un.linearAcceleration.x;
+        imuData.imuLinAccel[1] = sensorValue.un.linearAcceleration.y;
+        imuData.imuLinAccel[2] = sensorValue.un.linearAcceleration.z;
+        gotAccel = true;
+        break;
 
-          imuData.fresh = true;
-          break;
-      }
       case SH2_GAME_ROTATION_VECTOR:
-          imuData.quat[0] = sensorValue.un.gameRotationVector.i;
-          imuData.quat[1] = sensorValue.un.gameRotationVector.j;
-          imuData.quat[2] = sensorValue.un.gameRotationVector.k;
-          imuData.quat[3] = sensorValue.un.gameRotationVector.real;
-          quatToEuler(imuData.quat, imuData.euler);
-          break;
+        imuData.imuQuat[0] = sensorValue.un.gameRotationVector.i;
+        imuData.imuQuat[1] = sensorValue.un.gameRotationVector.j;
+        imuData.imuQuat[2] = sensorValue.un.gameRotationVector.k;
+        imuData.imuQuat[3] = sensorValue.un.gameRotationVector.real;
+        quatNormalize(imuData.imuQuat);
+        break;
 
-      case SH2_GRAVITY:
-          gravToEuler(sensorValue.un.gravity.x,
-                      sensorValue.un.gravity.y,
-                      sensorValue.un.gravity.z,
-                      imuData.gravEuler);
-          break;
+      case SH2_GYROSCOPE_CALIBRATED:
+        imuData.imuGyro[0] = sensorValue.un.gyroscope.x;
+        imuData.imuGyro[1] = sensorValue.un.gyroscope.y;
+        imuData.imuGyro[2] = sensorValue.un.gyroscope.z;
+        break;
+
+      default:
+        break;
     }
   }
+
+  if (!gotAny) return;
+
+  // keep internal state up to date with latest available values
+  recomputeDerivedState();
+
+  // only publish a new sample when accel updated
+  if (!gotAccel) return;
+
+  imuData.dt_us        = (lastTimestamp_us == 0) ? 0 : (now - lastTimestamp_us);
+  imuData.timestamp_us = now;
+  lastTimestamp_us     = now;
+  imuData.fresh        = true;
 }

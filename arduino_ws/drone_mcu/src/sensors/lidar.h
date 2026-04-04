@@ -13,24 +13,48 @@
 //   Byte 8:    Checksum (low byte of sum of bytes 0-7)
 //
 // Temperature (°C) = (Temp_H << 8 | Temp_L) / 8 - 256
-// Default baud rate: 115200, output rate: 100 Hz
+#define LIDAR_BAUD        115200
+#define LIDAR_FRAME_LEN   9
+#define LIDAR_HEADER      0x59
+#define LIDAR_RX_PIN      D7   // MCU RX  ← sensor TX (pin 3)
+#define LIDAR_TX_PIN      D6   // MCU TX  → sensor RX (pin 4)
 
-#define LIDAR_BAUD      115200
-#define LIDAR_FRAME_LEN 9
-#define LIDAR_HEADER    0x59
+#define LIDAR_TRIGGER_HZ  5
+#define LIDAR_TRIGGER_US  (1000000UL / LIDAR_TRIGGER_HZ)
+
+#define LIDAR_MIN_RANGE_M   0.05f
+#define LIDAR_MAX_RANGE_M   20.0f
+#define LIDAR_MIN_RANGE_CM  5
+#define LIDAR_MAX_RANGE_CM  2000
+#define LIDAR_MIN_STRENGTH  100
+
+
+// LiDAR position relative to drone center, in BODY frame.
+// x = right, y = front, z = body-Z
+static constexpr float lidarOffsetX_m = 0.00f;   // right +
+static constexpr float lidarOffsetY_m = -0.072f;   // front +
+static constexpr float lidarOffsetZ_m = 0.00f;   // body-Z +
 
 struct LidarData {
     uint16_t distanceCm;   // distance in cm
     uint16_t strength;     // signal strength (arbitrary units)
     float    tempC;        // chip temperature in °C
+    uint32_t timestampMs;
     bool     fresh;
 };
 
 extern LidarData lidarData;
 
-// Call once in setup(). Pass the HardwareSerial to use and its RX/TX pins.
-bool lidarBegin(HardwareSerial &serial, int rxPin, int txPin);
+// Call once in setup(). Configures trigger mode (frame rate = 0).
+bool lidarBegin(HardwareSerial &serial);
+
+// Send a single-measurement trigger command to the sensor.
+void lidarTrigger();
 
 // Call every loop(). Drains available bytes and sets lidarData.fresh when a
 // valid frame is decoded.
 void lidarUpdate();
+
+bool lidarGetVerticalM(float*);  // tilt-corrected vertical distance in metres
+
+float lidarGetAbsR22();

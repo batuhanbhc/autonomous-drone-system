@@ -95,3 +95,13 @@ void baroUpdate() {
     baroData.altitudeM  = pressureToAltitude(baroData.pressurePa, SEA_LEVEL_HPA);
     baroData.fresh      = true;
 }
+
+float baroGetRelativeAltitudeM() {
+    if (baroData.launchPressurePa <= 1000.0f || baroData.pressurePa <= 1000.0f) {
+        return 0.0f;
+    }
+
+    const float p     = baroData.pressurePa / 100.0f;
+    const float p0    = baroData.launchPressurePa / 100.0f;
+    return 44330.0f * (1.0f - powf(p / p0, 0.1903f));
+}

@@ -2,59 +2,233 @@
 #include "src/sensors/imu.h"
 #include "src/sensors/baro.h"
 #include "src/sensors/lidar.h"
-
-// TFS20-L wiring (UART mode — INT pin tied to GND at power-on):
-//   Pin 1  → 3V3
-//   Pin 2  → GND  (3V3GND)
-//   Pin 3  → UART_TX of sensor → RX pin of MCU  (LIDAR_RX_PIN)
-//   Pin 4  → UART_RX of sensor → TX pin of MCU  (LIDAR_TX_PIN)
-//   Pin 5  → GND  (INT tied low to select UART)
-//   Pin 6  → GND
-#define LIDAR_RX_PIN  D7   // MCU RX  ← sensor TX (pin 3)
-#define LIDAR_TX_PIN  D6   // MCU TX  → sensor RX (pin 4)  (unused but required by begin())
-
-void setup() {
-    Serial.begin(460800);
-    delay(1000);
-
-    if (!imuBegin())              { while (1) delay(500); }
-    if (!baroBegin())             { while (1) delay(500); }
-    if (!lidarBegin(Serial1, LIDAR_RX_PIN, LIDAR_TX_PIN)) { while (1) delay(500); }
-}
+#include "src/estimation/altitude_ekf.h"
 
 static uint32_t decim = 0;
 
+static constexpr uint32_t INIT_WARMUP_MS   = 1500;
+static constexpr uint32_t INIT_DURATION_MS = 3000;
+
+struct InitAccum {
+  bool running = false;
+  bool done    = false;
+
+  uint32_t startMs = 0;
+
+  uint32_t imuSamples  = 0;
+  uint32_t baroSamples = 0;
+  uint32_t gyroSamples = 0;
+
+  double accSum[3]    = {0.0, 0.0, 0.0};
+  double gyroSum[3]   = {0.0, 0.0, 0.0};
+  double pressureSum  = 0.0;
+};
+
+static InitAccum initAccum;
+
+static void beginInitializationRoutine() {
+  imuData.initialized = false;
+
+  imuData.bias.droneLinAccel[0] = 0.0f;
+  imuData.bias.droneLinAccel[1] = 0.0f;
+  imuData.bias.droneLinAccel[2] = 0.0f;
+  imuData.bias.droneGyro[0]     = 0.0f;
+  imuData.bias.droneGyro[1]     = 0.0f;
+  imuData.bias.droneGyro[2]     = 0.0f;
+
+  initAccum = {};
+  initAccum.running = true;
+  initAccum.startMs = millis();
+
+  Serial.println("[INIT] Collecting stationary samples...");
+}
+
+static bool updateInitializationRoutine() {
+  if (!initAccum.running || initAccum.done) return initAccum.done;
+
+  // collect IMU-derived data
+  if (imuData.fresh) {
+    imuData.fresh = false;
+
+    initAccum.accSum[0] += imuData.droneLinAccel[0];
+    initAccum.accSum[1] += imuData.droneLinAccel[1];
+    initAccum.accSum[2] += imuData.droneLinAccel[2];
+
+    initAccum.gyroSum[0] += imuData.droneGyro[0];
+    initAccum.gyroSum[1] += imuData.droneGyro[1];
+    initAccum.gyroSum[2] += imuData.droneGyro[2];
+
+    initAccum.imuSamples++;
+    initAccum.gyroSamples++;
+  }
+
+  // collect baro pressure
+  if (baroData.fresh) {
+    baroData.fresh = false;
+
+    initAccum.pressureSum += baroData.pressurePa;
+    initAccum.baroSamples++;
+  }
+
+  if ((millis() - initAccum.startMs) < INIT_DURATION_MS) {
+    return false;
+  }
+
+  initAccum.running = false;
+  initAccum.done    = true;
+
+  if (initAccum.imuSamples > 0) {
+    imuData.bias.droneLinAccel[0] = initAccum.accSum[0] / initAccum.imuSamples;
+    imuData.bias.droneLinAccel[1] = initAccum.accSum[1] / initAccum.imuSamples;
+    imuData.bias.droneLinAccel[2] = initAccum.accSum[2] / initAccum.imuSamples;
+  }
+
+  if (initAccum.gyroSamples > 0) {
+    imuData.bias.droneGyro[0] = initAccum.gyroSum[0] / initAccum.gyroSamples;
+    imuData.bias.droneGyro[1] = initAccum.gyroSum[1] / initAccum.gyroSamples;
+    imuData.bias.droneGyro[2] = initAccum.gyroSum[2] / initAccum.gyroSamples;
+  }
+
+  if (initAccum.baroSamples > 0) {
+    baroData.launchPressurePa = initAccum.pressureSum / initAccum.baroSamples;
+  }
+
+  imuData.initialized = true;
+
+  const float baroRel0 = 0.0f;  // launch-relative by definition
+  float lidar0 = 0.0f;
+  const bool lidarOk = lidarGetVerticalM(&lidar0);
+
+  altitudeEkfInitialize(baroRel0, lidarOk, lidar0);
+
+  Serial.printf("\tNum samples: accel=%lu gyro=%lu baro=%lu\r\n",
+    (unsigned long)initAccum.imuSamples,
+    (unsigned long)initAccum.gyroSamples,
+    (unsigned long)initAccum.baroSamples);
+
+  Serial.printf("\tAccel biases: x=%.6f y=%.6f z=%.6f\r\n",
+    imuData.bias.droneLinAccel[0],
+    imuData.bias.droneLinAccel[1],
+    imuData.bias.droneLinAccel[2]);
+
+  Serial.printf("\tGyro biases: x=%.6f y=%.6f z=%.6f\r\n",
+    imuData.bias.droneGyro[0],
+    imuData.bias.droneGyro[1],
+    imuData.bias.droneGyro[2]);
+
+
+  Serial.printf("\tLaunch Pressure (Pa): %.2f\r\n",
+    (double)baroData.launchPressurePa);
+
+  return true;
+}
+
+
+static bool imuOk   = false;
+static bool baroOk  = false;
+static bool lidarOk = false;
+
+void setup() {
+  Serial.begin(460800);
+  delay(1000);
+
+  // ---- STARTING IMU ----
+  uint8_t attempt_count = 0;
+  Serial.println("[BOOT] STARTING IMU");
+  do {
+    imuOk = imuBegin();
+    attempt_count++;
+    if (!imuOk && attempt_count < 3) delay(500);
+  } while (!imuOk && attempt_count < 3);
+  Serial.printf("[BOOT] IMU   : %s\r\n", imuOk ? "OK" : "FAILED");
+  // -----------------------
+
+  // ---- STARTING BARO ----
+  attempt_count = 0;
+  Serial.println("[BOOT] STARTING BARO");
+  do {
+    baroOk = baroBegin();
+    attempt_count++;
+    if (!baroOk && attempt_count < 3) delay(500);
+  } while (!baroOk && attempt_count < 3);
+  Serial.printf("[BOOT] BARO  : %s\r\n", baroOk ? "OK" : "FAILED");
+  // -----------------------
+
+  // ---- STARTING LIDAR ----
+  attempt_count = 0;
+  Serial.println("[BOOT] STARTING LIDAR");
+  do {
+    lidarOk = lidarBegin(Serial1);
+    attempt_count++;
+    if (!lidarOk && attempt_count < 3) delay(500);
+  } while (!lidarOk && attempt_count < 3);
+  Serial.printf("[BOOT] LIDAR : %s\r\n", lidarOk ? "OK" : "FAILED");
+  // -----------------------
+
+  if (!imuOk && !baroOk && !lidarOk) {
+    Serial.println("[BOOT] No sensors could be started.");
+    while (1) delay(500);
+  }
+
+  Serial.println("[BOOT] Sensor open attempts finished, warming up...");
+  delay(INIT_WARMUP_MS);
+
+  beginInitializationRoutine();
+}
+
+
 void loop() {
-    imuUpdate();
-    baroUpdate();
-    lidarUpdate();
+  imuUpdate();
+  baroUpdate();
+  lidarUpdate();
 
-    if (imuData.fresh) {
-        imuData.fresh  = false;
-        baroData.fresh = false;   // consume together
-        decim++;
-        if (decim >= 40) {        // print at ~5 Hz (200 Hz IMU / 40)
-            decim = 0;
+  if (!imuData.initialized) {
+    updateInitializationRoutine();
+    return;
+  }
 
-            // Snapshot lidar (may be stale if sensor slower than IMU)
-            bool  lidarOk = lidarData.distanceCm > 0 && lidarData.strength > 100;
-            float distM   = lidarData.distanceCm / 100.0f;
+  // 1) Predict on IMU
+  if (imuData.fresh) {
+    imuData.fresh = false;
 
-            Serial.printf(
-                "LinAccel X=%.4f Y=%.4f Z=%.4f | "
-                "Quat  Yaw=%.2f Pit=%.2f Rol=%.2f | "
-                "Grav        Pit=%.2f Rol=%.2f | "
-                "dPit=%.3f dRol=%.3f | "
-                "Press=%.2fhPa Temp=%.2fC Alt=%.2fm | "
-                "Lidar %s=%.3fm Str=%u LidarT=%.1fC\r\n",
-                imuData.linAccel[0], imuData.linAccel[1], imuData.linAccel[2],
-                imuData.euler[0],    imuData.euler[1],    imuData.euler[2],
-                imuData.gravEuler[0], imuData.gravEuler[1],
-                imuData.euler[1] - imuData.gravEuler[0],   // Δpitch
-                imuData.euler[2] - imuData.gravEuler[1],   // Δroll
-                baroData.pressurePa / 100.0f, baroData.tempC, baroData.altitudeM,
-                lidarOk ? "D" : "!",
-                distM, lidarData.strength, lidarData.tempC);
-        }
-    }
+    const float dt_s = imuData.dt_us * 1e-6f;
+    altitudeEkfPredict(imuData.worldLinAccelZ, dt_s);
+  }
+
+  // 2) Update on baro
+  if (baroData.fresh) {
+    baroData.fresh = false;
+
+    const float zBaroRel_m = baroGetRelativeAltitudeM();
+    altitudeEkfUpdateBaro(zBaroRel_m);
+  }
+
+  // 3) Update on lidar
+  if (lidarData.fresh) {
+    lidarData.fresh = false;
+
+    float lidarVertical_m = 0.0f; 
+    lidarGetVerticalM(&lidarVertical_m);
+    const float absR22 = lidarGetAbsR22();
+
+    altitudeEkfUpdateLidar(
+      lidarVertical_m,
+      lidarData.strength,
+      absR22,
+      millis()
+    );
+  }
+
+  // 4) Decimated debug
+  decim++;
+  if (decim >= 50) {
+    decim = 0;
+
+    Serial.printf(
+        "AGL=%.2f vz=%.2f gc=%.2f\r\n",
+        altitudeEkf.s.agl_m,
+        altitudeEkf.s.vz_mps,
+        altitudeEkf.s.groundConfidence
+    );
+  }
 }
