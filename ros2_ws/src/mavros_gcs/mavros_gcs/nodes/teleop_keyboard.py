@@ -32,7 +32,8 @@ from mavros_gcs.teleop_utils.commands import (
     SpeedUpHorizontal, SpeedDownHorizontal,
     SpeedUpVertical, SpeedDownVertical,
     SpeedUpYaw, SpeedDownYaw,
-    VelocityYaw, PressSafetySwitch, RecordVideoToggle, StreamToggle
+    VelocityYaw, PressSafetySwitch, RecordVideoToggle, StreamToggle,
+    AltSupportToggle,
 )
 
 from drone_msgs.msg import TeleopCommand, TeleopAction, Toggle
@@ -294,6 +295,12 @@ class TeleopKeyboardNode(Node):
                 hook_fn=self._publish_stream_toggle,
                 latch=cmd_params["STREAM_TOGGLE"]["latch"],
                 activation_time_s=cmd_params["STREAM_TOGGLE"]["activation_time_s"],
+            ),
+            AltSupportToggle(
+                config=TELEOP_CONFIG["ALT_SUPPORT_TOGGLE"],
+                hook_fn=None,
+                latch=cmd_params["ALT_SUPPORT_TOGGLE"]["latch"],
+                activation_time_s=cmd_params["ALT_SUPPORT_TOGGLE"]["activation_time_s"],
             ),
         ]
 

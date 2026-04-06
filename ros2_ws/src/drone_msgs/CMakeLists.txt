@@ -14,6 +14,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GcsHeartbeat.msg"
   "msg/Toggle.msg"
   "msg/FrameData.msg"
+  "msg/AltitudeControllerInput.msg"
   DEPENDENCIES 
     builtin_interfaces
     sensor_msgs

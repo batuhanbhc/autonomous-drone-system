@@ -41,9 +41,7 @@ echo "[startup] FCU heartbeat received."
 
 
 echo "[startup] FCU connected, starting control_gate..."
-ros2 run mavros_gate control_gate \
-  --ros-args \
-  -p drone_id:=$DRONE_ID \
+ros2 launch mavros_gate mavros_gate.launch.py drone_id:=$DRONE_ID \
   >> "$LOG_DIR/control_gate.log" 2>&1 &
 
 CONTROL_GATE_PID=$! 

@@ -1,0 +1,5 @@
+[console_scripts]
+gcs_heartbeat = mavros_gcs.nodes.heartbeat:main
+info_panel = mavros_gcs.nodes.info_panel:main
+stream_viewer = mavros_gcs.nodes.stream_viewer:main
+teleop_keyboard = mavros_gcs.nodes.teleop_keyboard:main

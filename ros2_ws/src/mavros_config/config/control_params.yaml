@@ -2,8 +2,12 @@ drone_id: 0
 
 flight_params:
   takeoff_m: 2.0
-  gcs_failsafe_s: 10  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
+  gcs_failsafe_s: 5  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
   failsafe_watchdog_hz: 2.0
+  guided_timeout_s:           1.0    # inactivity threshold before guided timeout (s)
+  guided_timeout_watchdog_hz: 10.0   # how often to check guided timeout (Hz)
+  takeoff_reach_threshold_m:  0.20   # ±tolerance to consider takeoff altitude reached (m)
+  takeoff_timeout_s:          10.0   # hard cap on takeoff monitor (s)
   logs_path: "/home/batuhan/shared/recordings"
 
 
@@ -34,10 +38,13 @@ vision_pipeline:
     k3:  0.11999675679075539
 
 custom_topics:
+  mcu_bridge: /mcu_bridge/vertical_estimate
   images: "camera/image/compressed"
   autonomous_action: "/autonomous/action"
   manual_action:  "/teleop/action"
   manual_command: "/teleop/command" 
+  alt_ctrl_input:    /altitude_controller/input    # control_gate → PID node
+  alt_ctrl_output:   /altitude_controller/output   # PID node → control_gate
 
 mavros_topics:
     state: "/mavros/state"
@@ -137,3 +144,6 @@ teleop:
       STREAM_TOGGLE:
         activation_time_s: 0.0
         latch: true
+      ALT_SUPPORT_TOGGLE:
+        latch: true
+        activation_time_s: 0.3

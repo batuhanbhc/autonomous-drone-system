@@ -576,4 +576,28 @@ class StreamToggle(Command):
     def execute(self, state):
         if self._hook_fn is not None:
             self._hook_fn()
-        
+
+
+class AltSupportToggle(Command):
+    """
+    Toggles altitude controller support mode on/off (RightAlt + H).
+    When enabled, vz=0 teleop actions use the PID altitude controller output
+    instead of sending zero vertical velocity.
+    """
+    name = "ALT_SUPPORT_TOGGLE"
+
+    def __init__(self, config, hook_fn, latch, activation_time_s=0.3):
+        self._keys = tuple(config.key_list)
+        self._config = config
+        self.activation_time_s = activation_time_s
+        self.latch = latch
+
+    def is_triggered(self, state):
+        cfg = self._config
+        return command_triggered(
+            state, self._keys,
+            cfg.press_type, cfg.activation_switch, cfg.activation_switch_key,
+        )
+
+    def execute(self, state):
+        publish_command(self.name)

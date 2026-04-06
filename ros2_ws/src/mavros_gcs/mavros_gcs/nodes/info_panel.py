@@ -26,6 +26,7 @@ from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
 from drone_msgs.msg import Toggle
+from geometry_msgs.msg import Vector3Stamped
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -49,6 +50,7 @@ from mavros_gcs.panel_utils.views import (
     DroneInfoView,
     RecordActiveView,
     StreamActiveView,
+    VerticalEstimateView,
 )
 
 from mavros_gcs.panel_utils.helpers import (
@@ -97,6 +99,8 @@ class InfoPanelNode(Node):
         t_gps1_raw       = base + mavros_topics["gps1_raw"]
         t_control_state  = f"/drone_{drone_id}/cmd_gate/state"
         t_drone_info     = f"/drone_{drone_id}/cmd_gate/info"
+        topics_cfg       = root_cfg.get("custom_topics", {})
+        t_vert_est       = base + topics_cfg.get("mcu_bridge", "/mcu_bridge/vertical_estimate")
 
         self._ui_lock = threading.Lock()
 
@@ -110,6 +114,7 @@ class InfoPanelNode(Node):
         self.drone_info    = DroneInfoView(queue_size=self.queue_size)
         self.record_active = RecordActiveView()
         self.stream_active = StreamActiveView()
+        self.vert_est      = VerticalEstimateView()
 
         reliable_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -144,6 +149,12 @@ class InfoPanelNode(Node):
             self._on_stream_active,
             reliable_qos,
         )
+        self.create_subscription(
+            Vector3Stamped,
+            t_vert_est,
+            self._on_vert_est,
+            qos_profile_sensor_data,
+        )
         
         period = 1.0 / float(self.refresh_hz)
         self.create_timer(period, self._on_refresh_tick)
@@ -154,7 +165,7 @@ class InfoPanelNode(Node):
         self._section_names = [
             "State", "Extended State", "Battery", "Odometry",
             "StatusText", "GPS1", "Control Gate", "Drone Info",
-            "Drone Pipeline",
+            "Drone Pipeline", "Vertical Estimate",
         ]
         self._dirty       = {n: True  for n in self._section_names}
         self._last_update = {n: None  for n in self._section_names}
@@ -186,12 +197,12 @@ class InfoPanelNode(Node):
             Layout(name="col_3", ratio=3),   # StatusText + DroneInfo log
         )
 
-        # col_0: just Odometry
-        # col_1: State + ExtState + CtrlGate stacked
+        # col_1: State + ExtState + CtrlGate + VertEst stacked
         self._layout["col_1"].split_column(
             Layout(name="state"),
             Layout(name="ext_state"),
             Layout(name="ctrl_gate"),
+            Layout(name="vert_est"),
         )
         # col_2: GPS1 + Battery + Drone Pipeline stacked
         self._layout["col_2"].split_column(
@@ -264,6 +275,11 @@ class InfoPanelNode(Node):
         with self._ui_lock:
             self.stream_active.update_from_msg(msg)
             self._mark_dirty("Drone Pipeline")
+
+    def _on_vert_est(self, msg: Vector3Stamped):
+        with self._ui_lock:
+            self.vert_est.update_from_msg(msg)
+            self._mark_dirty("Vertical Estimate")
             
     # ------------------------------------------------------------------ #
     #  Snapshots
@@ -299,6 +315,7 @@ class InfoPanelNode(Node):
 
     def _snapshot_control_state(self):
         return {"control_mode": self.control_state.control_mode,
+                "alt_ctrl_mode": self.control_state.alt_ctrl_mode,
                 "velocity_h": self.control_state.velocity_h,
                 "velocity_v": self.control_state.velocity_v,
                 "velocity_yaw": self.control_state.velocity_yaw,
@@ -314,6 +331,12 @@ class InfoPanelNode(Node):
         return {
             "recording": self.record_active.recording,
             "streaming": self.stream_active.streaming,
+        }
+
+    def _snapshot_vert_est(self):
+        return {
+            "agl_m": self.vert_est.agl_m,
+            "vz":    self.vert_est.vz_world_mps,
         }
     
     # ------------------------------------------------------------------ #
@@ -413,11 +436,26 @@ class InfoPanelNode(Node):
 
     def _render_control_state_panel(self, data, stale=False) -> Panel:
         t = self._make_kv_table()
+
         mode = None
         if data["control_mode"] is not None:
             mode = {0: "AUTO", 1: "MANUAL"}.get(data["control_mode"],
                                                   f"UNKNOWN({data['control_mode']})")
         t.add_row("Control Mode",    _format_str_to_str(mode))
+
+        alt_mode = data["alt_ctrl_mode"]
+        if alt_mode is None:
+            alt_str = "[dim]—[/dim]"
+        elif alt_mode == 0:
+            alt_str = "[dim]OFF[/dim]"
+        elif alt_mode == 1:
+            alt_str = "[bold yellow]GUIDED TIMEOUT[/bold yellow]"
+        elif alt_mode == 2:
+            alt_str = "[bold cyan]ALT SUPPORT[/bold cyan]"
+        else:
+            alt_str = f"UNKNOWN({alt_mode})"
+        t.add_row("Alt Ctrl",        alt_str)
+
         t.add_row("Vel H (m/s)",     _format_float_to_str(data["velocity_h"], 2))
         t.add_row("Vel V (m/s)",     _format_float_to_str(data["velocity_v"], 2))
         t.add_row("Yaw Rate (rad/s)", _format_float_to_str(data["velocity_yaw"], 2))
@@ -514,6 +552,11 @@ class InfoPanelNode(Node):
                 snap["Drone Pipeline"], stale=is_stale["Drone Pipeline"]
             )
         )
+        self._layout["vert_est"].update(
+            self._render_vert_est_panel(
+                snap["Vertical Estimate"], stale=is_stale["Vertical Estimate"]
+            )
+        )
 
     # ------------------------------------------------------------------ #
     #  Timer callback
@@ -538,16 +581,17 @@ class InfoPanelNode(Node):
                 self._dirty[k] = False
 
             snap = {
-                "_stale":         dict(self._is_stale),
-                "Battery":        self._snapshot_battery(),
-                "State":          self._snapshot_state(),
-                "Extended State": self._snapshot_ext_state(),
-                "Odometry":       self._snapshot_odom(),
-                "StatusText":     self._snapshot_statustext(),
-                "GPS1":           self._snapshot_gps1(),
-                "Control Gate":   self._snapshot_control_state(),
-                "Drone Info":     self._snapshot_drone_info(),
-                "Drone Pipeline": self._snapshot_drone_pipeline(),
+                "_stale":             dict(self._is_stale),
+                "Battery":            self._snapshot_battery(),
+                "State":              self._snapshot_state(),
+                "Extended State":     self._snapshot_ext_state(),
+                "Odometry":           self._snapshot_odom(),
+                "StatusText":         self._snapshot_statustext(),
+                "GPS1":               self._snapshot_gps1(),
+                "Control Gate":       self._snapshot_control_state(),
+                "Drone Info":         self._snapshot_drone_info(),
+                "Drone Pipeline":     self._snapshot_drone_pipeline(),
+                "Vertical Estimate":  self._snapshot_vert_est(),
             }
 
         # Render outside the lock
@@ -565,6 +609,17 @@ class InfoPanelNode(Node):
         else:
             self._live.update(self._layout, refresh=True)
 
+    def _render_vert_est_panel(self, data, stale=False) -> Panel:
+        t = self._make_kv_table()
+        t.add_row("AGL (m)",   _format_float_to_str(data["agl_m"], 3))
+        t.add_row("Vz (m/s)", _format_float_to_str(data["vz"],    3))
+        title  = "MCU Estimate [STALE]" if stale else "MCU Estimate"
+        border = "bright_red" if stale else "cyan"
+        return Panel(t, title=title, border_style=border)
+
+    # ------------------------------------------------------------------ #
+    #  Shutdown
+    # ------------------------------------------------------------------ #
     def shutdown_ui(self):
         if self._live is not None:
             self._live.stop()

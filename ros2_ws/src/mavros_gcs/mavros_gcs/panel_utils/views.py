@@ -7,6 +7,7 @@ from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
 from drone_msgs.msg import Toggle
+from geometry_msgs.msg import Vector3Stamped
 
 from pymavlink import mavutil
 from tf_transformations import euler_from_quaternion
@@ -66,23 +67,25 @@ class StateView:
 @dataclass
 class DroneStateView:
     control_mode    : int | None = None
+    alt_ctrl_mode   : int | None = None
     velocity_h      : float | None = None
     velocity_v      : float | None = None
-    velocity_yaw    : float | None = None   # ← add
+    velocity_yaw    : float | None = None
     keyboard_on     : bool | None = None
     safety_switch_on: bool | None = None
     system_killed   : bool | None = None
     time_since_action_s: float | None = None
 
     def update_from_msg(self, msg: DroneState):
-        self.control_mode = int(msg.control_mode)
-        self.velocity_h = float(msg.velocity_h)
-        self.velocity_v = float(msg.velocity_v)
-        self.velocity_yaw = float(msg.velocity_yaw)   # ← add
-        self.keyboard_on = bool(msg.keyboard_on)
+        self.control_mode  = int(msg.control_mode)
+        self.alt_ctrl_mode = int(msg.alt_ctrl_mode)
+        self.velocity_h    = float(msg.velocity_h)
+        self.velocity_v    = float(msg.velocity_v)
+        self.velocity_yaw  = float(msg.velocity_yaw)
+        self.keyboard_on      = bool(msg.keyboard_on)
         self.safety_switch_on = bool(msg.safety_switch_on)
-        self.system_killed = bool(msg.system_killed)
-        sec = int(msg.time_since_action.sec)
+        self.system_killed    = bool(msg.system_killed)
+        sec  = int(msg.time_since_action.sec)
         nsec = int(msg.time_since_action.nanosec)
         self.time_since_action_s = float(sec) + float(nsec) * 1e-9
 
@@ -287,3 +290,20 @@ class GPSView:
         # v2 accuracy fields (mm → m). Some stacks may publish 0 if unavailable.
         self.h_acc_m = float(msg.h_acc) / 1000.0 if getattr(msg, "h_acc", 0) not in (0, None) else None
         self.v_acc_m = float(msg.v_acc) / 1000.0 if getattr(msg, "v_acc", 0) not in (0, None) else None
+
+@dataclass
+class VerticalEstimateView:
+    """
+    Receives geometry_msgs/Vector3Stamped from mcu_bridge:
+      vector.x = z_world_m
+      vector.y = vz_world_mps
+      vector.z = agl_m
+    """
+    agl_m: float | None = None
+    vz_world_mps: float | None = None
+    z_world_m: float | None = None
+
+    def update_from_msg(self, msg: Vector3Stamped):
+        self.z_world_m    = float(msg.vector.x)
+        self.vz_world_mps = float(msg.vector.y)
+        self.agl_m        = float(msg.vector.z)

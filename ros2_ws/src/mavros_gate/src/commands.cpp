@@ -341,10 +341,13 @@ ControlGateNode::executeTakeoff(const TeleopCmd&, const InternalState&) {
       const auto resp = fut.get();
       if (resp->success) {
         publishInfo(DroneInfo::LEVEL_INFO, "Takeoff accepted by FCU.");
-        // RCLCPP_INFO(get_logger(), "Takeoff accepted by FCU.");
+        takeoff_start_t_        = std::chrono::steady_clock::now();
+        takeoff_monitor_active_ = true;
+        takeoff_monitor_timer_->reset(); 
+        RCLCPP_INFO(get_logger(), "Takeoff accepted by FCU.");
       } else {
         publishInfo(DroneInfo::LEVEL_WARN, stringf("Takeoff rejected by FCU (result=%u).", resp->result));
-        // RCLCPP_WARN(get_logger(), "Takeoff rejected by FCU (result=%u).", resp->result);
+        RCLCPP_WARN(get_logger(), "Takeoff rejected by FCU (result=%u).", resp->result);
       }
     }
   );

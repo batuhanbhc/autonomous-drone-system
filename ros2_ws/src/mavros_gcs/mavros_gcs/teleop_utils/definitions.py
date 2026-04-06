@@ -147,6 +147,12 @@ TELEOP_CONFIG: Dict[str, COMMAND_CONFIG] = {
         activation_switch_key=COMMAND_SWITCH,
         press_type="ALL",
     ),
+    "ALT_SUPPORT_TOGGLE": COMMAND_CONFIG(
+        key_list=("KEY_H",),
+        activation_switch=True,
+        activation_switch_key=COMMAND_SWITCH,
+        press_type="ALL",
+    ),
 }
 
 
@@ -227,5 +233,3 @@ class KeyState:
         with self._lock:
             # Return an immutable view so callers can’t mutate internal state
             return frozenset(self._pressed), self._last_event_t
-
-

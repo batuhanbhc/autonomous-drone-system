@@ -3,7 +3,6 @@
   <name>mavros_gate</name>
   <version>0.0.0</version>
   <description>Command gating node(s) for MAVROS integrations.</description>
-
   <maintainer email="you@todo.todo">you</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,9 +11,14 @@
   <depend>rclcpp</depend>
   <depend>mavros_msgs</depend>
   <depend>drone_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>
-  
+
+  <!-- launch dependencies -->
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
