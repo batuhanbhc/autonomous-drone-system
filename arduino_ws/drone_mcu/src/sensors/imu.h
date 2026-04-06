@@ -3,14 +3,14 @@
 #include <Wire.h>
 #include <Adafruit_BNO08x.h>
 
-#define IMU_INT_PIN        D1
-#define IMU_RESET_PIN      -1
-#define IMU_ADDR           0x4A
-#define IMU_REPORT_RATE_US 6667  // ~ 150 Hz
+#define IMU_INT_PIN           D1
+#define IMU_RESET_PIN        -1
+#define IMU_ADDR              0x4A
+#define IMU_REPORT_RATE_US    6667 // ~150 hz 
 
-#define IMU_OFFSET_X_CM      -2.0f
-#define IMU_OFFSET_Y_CM       3.5f
-#define IMU_YAW_OFFSET_DEG   -135.0f
+#define IMU_OFFSET_X_CM      -6.0f
+#define IMU_OFFSET_Y_CM       3.0f
+#define IMU_YAW_OFFSET_DEG   -135.0f  // IMU to drone, + is cw, - is ccw
 
 
 struct ImuMounting {
@@ -35,7 +35,7 @@ struct ImuData {
   float droneQuat[4]     = {0,0,0,1};
   float worldLinAccelZ   = 0.0f;
 
-  uint32_t timestamp_us  = 0;
+  uint64_t timestamp_us  = 0;
   uint32_t dt_us         = 0;
   bool fresh             = false;
 

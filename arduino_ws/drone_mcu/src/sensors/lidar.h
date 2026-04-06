@@ -19,14 +19,14 @@
 #define LIDAR_RX_PIN      D7   // MCU RX  ← sensor TX (pin 3)
 #define LIDAR_TX_PIN      D6   // MCU TX  → sensor RX (pin 4)
 
-#define LIDAR_TRIGGER_HZ  5
+#define LIDAR_TRIGGER_HZ  20
 #define LIDAR_TRIGGER_US  (1000000UL / LIDAR_TRIGGER_HZ)
 
 #define LIDAR_MIN_RANGE_M   0.05f
 #define LIDAR_MAX_RANGE_M   20.0f
 #define LIDAR_MIN_RANGE_CM  5
 #define LIDAR_MAX_RANGE_CM  2000
-#define LIDAR_MIN_STRENGTH  100
+#define LIDAR_MIN_STRENGTH  200
 
 
 // LiDAR position relative to drone center, in BODY frame.
@@ -36,11 +36,11 @@ static constexpr float lidarOffsetY_m = -0.072f;   // front +
 static constexpr float lidarOffsetZ_m = 0.00f;   // body-Z +
 
 struct LidarData {
-    uint16_t distanceCm;   // distance in cm
-    uint16_t strength;     // signal strength (arbitrary units)
-    float    tempC;        // chip temperature in °C
-    uint32_t timestampMs;
-    bool     fresh;
+    uint16_t distanceCm = -1;   // distance in cm
+    uint16_t strength = 0;     // signal strength (arbitrary units)
+    float    tempC = 0.0;        // chip temperature in °C
+    uint32_t timestampMs = 0;
+    bool     fresh = false;
 };
 
 extern LidarData lidarData;
@@ -55,6 +55,8 @@ void lidarTrigger();
 // valid frame is decoded.
 void lidarUpdate();
 
-bool lidarGetVerticalM(float*);  // tilt-corrected vertical distance in metres
+bool lidarGetVerticalM(float*, 
+    const float& qx, const float& qy, const float& qz, const float& qw,
+    const uint16_t distanceCm, const uint16_t strength);  // tilt-corrected vertical distance in metres
 
-float lidarGetAbsR22();
+float lidarGetAbsR22(const float& qx, const float& qy, const float& qz, const float& qw);

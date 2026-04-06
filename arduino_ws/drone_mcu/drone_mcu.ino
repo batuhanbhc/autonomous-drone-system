@@ -9,6 +9,34 @@ static uint32_t decim = 0;
 static constexpr uint32_t INIT_WARMUP_MS   = 1500;
 static constexpr uint32_t INIT_DURATION_MS = 3000;
 
+// =========================
+// Companion packet settings
+// =========================
+static constexpr uint8_t  COMPANION_SYNC0        = 0xA5;
+static constexpr uint8_t  COMPANION_SYNC1        = 0x5A;
+static constexpr uint8_t  COMPANION_MSG_VERTICAL = 0x01;
+static constexpr uint32_t COMPANION_SEND_HZ      = 20;
+static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
+
+// Set to 1 if you want to stop text prints after boot and only emit binary.
+static constexpr bool USB_BINARY_ONLY_AFTER_INIT = true;
+
+// Rolling sequence number so the Pi can detect packet loss/reordering.
+static uint8_t companionSeq = 0;
+static uint32_t nextCompanionSendMs = 0;
+
+// Packed payload that the Pi will decode.
+#pragma pack(push, 1)
+struct VerticalEstimatePayload {
+  uint32_t timestamp_ms;
+  float z_world_m;
+  float vz_world_mps;
+  float agl_m;
+  uint8_t ekf_initialized;
+  uint8_t lidar_accepted;
+};
+#pragma pack(pop)
+
 struct InitAccum {
   bool running = false;
   bool done    = false;
@@ -25,6 +53,81 @@ struct InitAccum {
 };
 
 static InitAccum initAccum;
+
+// =========================
+// CRC16-CCITT-FALSE
+// poly = 0x1021, init = 0xFFFF
+// =========================
+static uint16_t crc16CcittFalse(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= (uint16_t)data[i] << 8;
+    for (uint8_t b = 0; b < 8; ++b) {
+      if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
+      else              crc = (crc << 1);
+    }
+  }
+  return crc;
+}
+
+// =========================
+// Companion packet sender
+// Frame:
+//   [0]  SYNC0
+//   [1]  SYNC1
+//   [2]  MSG_ID
+//   [3]  PAYLOAD_LEN
+//   [4]  SEQ
+//   [5..] payload
+//   [N]  CRC low
+//   [N+1] CRC high
+//
+// CRC is computed over:
+//   MSG_ID, PAYLOAD_LEN, SEQ, PAYLOAD...
+// =========================
+static void sendVerticalEstimatePacket() {
+  VerticalEstimatePayload p{};
+  p.timestamp_ms       = millis();
+  p.z_world_m          = altitudeEkf.s.z_m;
+  p.vz_world_mps       = altitudeEkf.s.vz_mps;
+  p.agl_m              = altitudeEkf.s.agl_m;
+  p.ekf_initialized    = altitudeEkf.s.initialized ? 1 : 0;
+  p.lidar_accepted     = altitudeEkf.s.lastLidarAccepted ? 1 : 0;
+
+  const uint8_t payloadLen = (uint8_t)sizeof(VerticalEstimatePayload);
+
+  uint8_t crcBuf[3 + sizeof(VerticalEstimatePayload)];
+  crcBuf[0] = COMPANION_MSG_VERTICAL;
+  crcBuf[1] = payloadLen;
+  crcBuf[2] = companionSeq;
+  memcpy(&crcBuf[3], &p, sizeof(p));
+
+  const uint16_t crc = crc16CcittFalse(crcBuf, sizeof(crcBuf));
+
+  Serial.write(COMPANION_SYNC0);
+  Serial.write(COMPANION_SYNC1);
+  Serial.write(COMPANION_MSG_VERTICAL);
+  Serial.write(payloadLen);
+  Serial.write(companionSeq);
+  Serial.write((const uint8_t*)&p, sizeof(p));
+  Serial.write((uint8_t)(crc & 0xFF));
+  Serial.write((uint8_t)((crc >> 8) & 0xFF));
+
+  companionSeq++;
+}
+
+static void maybeSendCompanionPacket() {
+  const uint32_t nowMs = millis();
+
+  if (nextCompanionSendMs == 0) {
+    nextCompanionSendMs = nowMs;
+  }
+
+  if ((int32_t)(nowMs - nextCompanionSendMs) >= 0) {
+    nextCompanionSendMs += COMPANION_SEND_PERIOD_MS;  // phase-locked 20 Hz
+    sendVerticalEstimatePacket();
+  }
+}
 
 static void beginInitializationRoutine() {
   imuData.initialized = false;
@@ -46,7 +149,6 @@ static void beginInitializationRoutine() {
 static bool updateInitializationRoutine() {
   if (!initAccum.running || initAccum.done) return initAccum.done;
 
-  // collect IMU-derived data
   if (imuData.fresh) {
     imuData.fresh = false;
 
@@ -62,7 +164,6 @@ static bool updateInitializationRoutine() {
     initAccum.gyroSamples++;
   }
 
-  // collect baro pressure
   if (baroData.fresh) {
     baroData.fresh = false;
 
@@ -95,9 +196,12 @@ static bool updateInitializationRoutine() {
 
   imuData.initialized = true;
 
-  const float baroRel0 = 0.0f;  // launch-relative by definition
-  float lidar0 = 0.0f;
-  const bool lidarOk = lidarGetVerticalM(&lidar0);
+  const float baroRel0 = 0.0f;
+  const bool lidarOk = lidarData.fresh &&
+                     lidarData.distanceCm >= LIDAR_MIN_RANGE_CM &&
+                     lidarData.distanceCm <= LIDAR_MAX_RANGE_CM &&
+                     lidarData.strength   >= LIDAR_MIN_STRENGTH;
+  float lidar0 = lidarOk ? lidarData.distanceCm * 0.01f : 0.0f;
 
   altitudeEkfInitialize(baroRel0, lidarOk, lidar0);
 
@@ -116,13 +220,17 @@ static bool updateInitializationRoutine() {
     imuData.bias.droneGyro[1],
     imuData.bias.droneGyro[2]);
 
-
   Serial.printf("\tLaunch Pressure (Pa): %.2f\r\n",
     (double)baroData.launchPressurePa);
 
+  if (USB_BINARY_ONLY_AFTER_INIT) {
+    Serial.println("[COMPANION] Starting binary vertical packets at 20 Hz");
+    delay(20);
+  }
+
+  nextCompanionSendMs = millis();
   return true;
 }
-
 
 static bool imuOk   = false;
 static bool baroOk  = false;
@@ -132,38 +240,32 @@ void setup() {
   Serial.begin(460800);
   delay(1000);
 
-  // ---- STARTING IMU ----
   uint8_t attempt_count = 0;
   Serial.println("[BOOT] STARTING IMU");
   do {
     imuOk = imuBegin();
     attempt_count++;
-    if (!imuOk && attempt_count < 3) delay(500);
-  } while (!imuOk && attempt_count < 3);
+    if (!imuOk && attempt_count < 10) delay(500);
+  } while (!imuOk && attempt_count < 10);
   Serial.printf("[BOOT] IMU   : %s\r\n", imuOk ? "OK" : "FAILED");
-  // -----------------------
 
-  // ---- STARTING BARO ----
   attempt_count = 0;
   Serial.println("[BOOT] STARTING BARO");
   do {
     baroOk = baroBegin();
     attempt_count++;
-    if (!baroOk && attempt_count < 3) delay(500);
-  } while (!baroOk && attempt_count < 3);
+    if (!baroOk && attempt_count < 10) delay(500);
+  } while (!baroOk && attempt_count < 10);
   Serial.printf("[BOOT] BARO  : %s\r\n", baroOk ? "OK" : "FAILED");
-  // -----------------------
 
-  // ---- STARTING LIDAR ----
   attempt_count = 0;
   Serial.println("[BOOT] STARTING LIDAR");
   do {
     lidarOk = lidarBegin(Serial1);
     attempt_count++;
-    if (!lidarOk && attempt_count < 3) delay(500);
-  } while (!lidarOk && attempt_count < 3);
+    if (!lidarOk && attempt_count < 10) delay(500);
+  } while (!lidarOk && attempt_count < 10);
   Serial.printf("[BOOT] LIDAR : %s\r\n", lidarOk ? "OK" : "FAILED");
-  // -----------------------
 
   if (!imuOk && !baroOk && !lidarOk) {
     Serial.println("[BOOT] No sensors could be started.");
@@ -175,7 +277,6 @@ void setup() {
 
   beginInitializationRoutine();
 }
-
 
 void loop() {
   imuUpdate();
@@ -207,28 +308,51 @@ void loop() {
   if (lidarData.fresh) {
     lidarData.fresh = false;
 
-    float lidarVertical_m = 0.0f; 
-    lidarGetVerticalM(&lidarVertical_m);
-    const float absR22 = lidarGetAbsR22();
+    const float qx = imuData.droneQuat[0];
+    const float qy = imuData.droneQuat[1];
+    const float qz = imuData.droneQuat[2];
+    const float qw = imuData.droneQuat[3];
+    const uint16_t dist_cm = lidarData.distanceCm;
+    const uint16_t strength = lidarData.strength;
 
-    altitudeEkfUpdateLidar(
-      lidarVertical_m,
-      lidarData.strength,
-      absR22,
-      millis()
-    );
+    float lidarVertical_m = 0.0f;
+    if (lidarGetVerticalM(&lidarVertical_m, qx, qy, qz, qw, dist_cm, strength)) {
+        const float absR22 = lidarGetAbsR22(qx, qy, qz, qw);
+
+        altitudeEkfUpdateLidar(
+          lidarVertical_m,
+          dist_cm,
+          lidarData.strength,
+          absR22,
+          millis()
+        );
+    };
   }
 
-  // 4) Decimated debug
+  // 4) Send binary packet at 20 Hz
+  maybeSendCompanionPacket();
+
+  /*
+  // 5) Optional debug text, but disable if Pi expects clean binary only
   decim++;
-  if (decim >= 50) {
+  if (decim >= 300) {
     decim = 0;
 
     Serial.printf(
-        "AGL=%.2f vz=%.2f gc=%.2f\r\n",
-        altitudeEkf.s.agl_m,
-        altitudeEkf.s.vz_mps,
-        altitudeEkf.s.groundConfidence
+      "z=%.3f agl=%.3f vz=%.4f est_vz=%.4f | acc x=%.4f y=%.4f z=%.4f | gyro x=%.4f y=%.4f z=%.4f | baro=%.2fPa | lidar=%ucm\r\n",
+      altitudeEkf.s.z_m,
+      altitudeEkf.s.agl_m,
+      altitudeEkf.s.vz_mps,
+      imuData.worldLinAccelZ,
+      imuData.droneLinAccel[0],
+      imuData.droneLinAccel[1],
+      imuData.droneLinAccel[2],
+      imuData.droneGyro[0],
+      imuData.droneGyro[1],
+      imuData.droneGyro[2],
+      (double)baroData.pressurePa,
+      (unsigned)lidarData.distanceCm
     );
   }
+  */
 }

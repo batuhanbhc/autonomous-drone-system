@@ -11,7 +11,6 @@ struct AltitudeEkfState {
 
   // Outputs
   float agl_m              = 0.0f;  // z - groundZ
-  float groundConfidence   = 0.0f;  // 0..1
   bool  initialized        = false;
 
   // Diagnostics
@@ -27,33 +26,29 @@ struct AltitudeEkf {
   float P[5][5] = {};
 
   // Tuning
-  float qAcc_mps2          = 2.0f;     // accel driving noise
-  float qAccelBias         = 0.010f;   // accel bias RW
-  float qBaroBias_m        = 0.003f;   // baro bias RW
-  float qGround_m          = 0.020f;   // ground RW (slow)
+  float qAcc_mps2          = 3.0f;     // accel driving noise
+  float qAccelBias         = 0.005f;   // accel bias RW
+  float qBaroBias_m        = 0.002f;   // baro bias RW
+  float qGround_m          = 0.001f;   // ground RW (slow)
 
   float rBaro_m            = 0.8f;     // baro stddev
-  float rLidarBase_m       = 0.08f;    // lidar stddev base
-  float rLidarWeak_m       = 0.50f;    // lidar stddev in weak conditions
 
   // Lidar acceptance parameters
   float lidarMinRange_m    = 0.05f;
   float lidarMaxRange_m    = 20.0f;
-  uint16_t lidarMinStrength = 100;
+  uint16_t lidarMinStrength = 200;
 
-  float maxTiltDeg         = 30.0f;
-  float maxVzForRateTest   = 4.0f;     // max expected vertical motion
-  float lidarJumpSlack_m   = 0.15f;
-  float obstacleNegJump_m  = 0.35f;    // sudden shorter range threshold
-  float asymRejectNeg_m    = 0.45f;    // reject strong negative residual
+  float maxTiltDeg         = 45.0f;
+  float lidarJumpSlack_m   = 0.10f;
+  float obstacleNegJump_m  = 0.25f;    // sudden shorter range threshold
   float mahaGateSigma      = 3.5f;
 
   // Obstacle cooldown
-  uint32_t rejectCooldownMs = 700;
+  uint32_t rejectCooldownMs = 200;
   uint32_t lidarRejectUntilMs = 0;
 
   // Internal bookkeeping
-  bool   hasLastLidar = false;
+  bool   hasLastAcceptedLidar = false;
   float  lastLidarAccepted_m = 0.0f;
   uint32_t lastLidarAcceptedMs = 0;
 };
@@ -68,6 +63,7 @@ void altitudeEkfInitialize(float initialBaroRel_m,
 void altitudeEkfPredict(float accelWorldZ_mps2, float dt_s);
 void altitudeEkfUpdateBaro(float baroRel_m);
 bool altitudeEkfUpdateLidar(float lidarVertical_m,
+                            uint16_t distanceCm,
                             uint16_t strength,
                             float r22_abs,
                             uint32_t nowMs);
@@ -76,5 +72,4 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
 float altitudeEkfGetAglM();
 float altitudeEkfGetWorldZM();
 float altitudeEkfGetGroundZM();
-float altitudeEkfGetGroundConfidence();
 bool  altitudeEkfIsInitialized();

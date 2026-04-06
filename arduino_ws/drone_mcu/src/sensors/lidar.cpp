@@ -88,25 +88,20 @@ void lidarUpdate() {
     }
 }
 
-bool lidarGetVerticalM(float* out_m) {
+bool lidarGetVerticalM(float* out_m,
+    const float& qx, const float& qy, const float& qz, const float& qw,
+    const uint16_t distanceCm, const uint16_t strength) {
     if (!out_m) return false;
 
-    if (lidarData.distanceCm < LIDAR_MIN_RANGE_CM || 
-        lidarData.distanceCm > LIDAR_MAX_RANGE_CM ||
-        lidarData.strength < LIDAR_MIN_STRENGTH) {
+    if (distanceCm < LIDAR_MIN_RANGE_CM || distanceCm > LIDAR_MAX_RANGE_CM || strength < LIDAR_MIN_STRENGTH) {
         return false;
     }
-
-    const float qx = imuData.droneQuat[0];
-    const float qy = imuData.droneQuat[1];
-    const float qz = imuData.droneQuat[2];
-    const float qw = imuData.droneQuat[3];
 
     const float R20 = 2.0f * (qx * qz - qy * qw);
     const float R21 = 2.0f * (qy * qz + qx * qw);
     const float R22 = 1.0f - 2.0f * (qx * qx + qy * qy);
 
-    const float raw_m = 0.01f * lidarData.distanceCm;
+    const float raw_m = 0.01f * distanceCm;
     const float hLidar = raw_m * fabsf(R22);
 
     const float sensorWorldZ =
@@ -118,12 +113,7 @@ bool lidarGetVerticalM(float* out_m) {
     return true;
 }
 
-float lidarGetAbsR22() {
-    const float qx = imuData.droneQuat[0];
-    const float qy = imuData.droneQuat[1];
-    const float qz = imuData.droneQuat[2];
-    const float qw = imuData.droneQuat[3];
-
+float lidarGetAbsR22(const float& qx, const float& qy, const float& qz, const float& qw) {
     const float R22 = 1.0f - 2.0f * (qx * qx + qy * qy);
     return fabsf(R22);
 }

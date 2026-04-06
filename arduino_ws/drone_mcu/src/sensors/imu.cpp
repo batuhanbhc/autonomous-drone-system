@@ -6,7 +6,9 @@ static sh2_SensorValue_t sensorValue;
 ImuData imuData = {};
 
 static volatile bool imuInterruptFired = false;
-static uint32_t lastTimestamp_us = 0;
+static uint32_t lastAccelRxUs = 0;
+static float prevDroneGyro[3] = {0.0f, 0.0f, 0.0f};
+static bool  prevDroneGyroValid = false;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -173,16 +175,33 @@ static void recomputeDerivedState() {
     0.0f
   };
 
+  float alpha_body[3] = {0.0f, 0.0f, 0.0f};
+  if (prevDroneGyroValid && imuData.dt_us > 0) {
+    const float dt_s = 1e-6f * (float)imuData.dt_us;
+    if (dt_s > 0.0f) {
+      alpha_body[0] = (imuData.droneGyro[0] - prevDroneGyro[0]) / dt_s;
+      alpha_body[1] = (imuData.droneGyro[1] - prevDroneGyro[1]) / dt_s;
+      alpha_body[2] = (imuData.droneGyro[2] - prevDroneGyro[2]) / dt_s;
+    }
+  }
+
+  float alphaCrossR[3];
   float omegaCrossR[3];
   float omegaCrossOmegaCrossR[3];
 
+  cross3(alpha_body,        r_body, alphaCrossR);
   cross3(imuData.droneGyro, r_body, omegaCrossR);
   cross3(imuData.droneGyro, omegaCrossR, omegaCrossOmegaCrossR);
 
   float droneLinAccelRaw[3];
-  droneLinAccelRaw[0] = accelAtImu_body[0] - omegaCrossOmegaCrossR[0];
-  droneLinAccelRaw[1] = accelAtImu_body[1] - omegaCrossOmegaCrossR[1];
-  droneLinAccelRaw[2] = accelAtImu_body[2] - omegaCrossOmegaCrossR[2];
+  droneLinAccelRaw[0] = accelAtImu_body[0] - alphaCrossR[0] - omegaCrossOmegaCrossR[0];
+  droneLinAccelRaw[1] = accelAtImu_body[1] - alphaCrossR[1] - omegaCrossOmegaCrossR[1];
+  droneLinAccelRaw[2] = accelAtImu_body[2] - alphaCrossR[2] - omegaCrossOmegaCrossR[2];
+
+  prevDroneGyro[0] = imuData.droneGyro[0];
+  prevDroneGyro[1] = imuData.droneGyro[1];
+  prevDroneGyro[2] = imuData.droneGyro[2];
+  prevDroneGyroValid = true;
 
   // Orientation
   float R_WI[3][3];
@@ -193,24 +212,21 @@ static void recomputeDerivedState() {
 
   matrixToQuat(R_WB, imuData.droneQuat);
 
-
-  // Apply biases only after initialization
   if (imuData.initialized) {
     imuData.droneLinAccel[0] = droneLinAccelRaw[0] - imuData.bias.droneLinAccel[0];
     imuData.droneLinAccel[1] = droneLinAccelRaw[1] - imuData.bias.droneLinAccel[1];
     imuData.droneLinAccel[2] = droneLinAccelRaw[2] - imuData.bias.droneLinAccel[2];
-
   } else {
     imuData.droneLinAccel[0] = droneLinAccelRaw[0];
     imuData.droneLinAccel[1] = droneLinAccelRaw[1];
     imuData.droneLinAccel[2] = droneLinAccelRaw[2];
   }
 
-  // World-frame accel from corrected drone/body accel
   float worldAccel[3];
   matVecMul3(R_WB, imuData.droneLinAccel, worldAccel);
   imuData.worldLinAccelZ = worldAccel[2];
 }
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -249,8 +265,13 @@ bool imuBegin() {
 }
 
 void imuUpdate() {
+  const uint32_t nowUs = micros();
+
   if (bno08x.wasReset()) {
-    setReports();
+    if (!setReports()) {
+      imuData.fresh = false;
+      return;
+    }
   }
 
   if (!imuInterruptFired) return;
@@ -258,8 +279,6 @@ void imuUpdate() {
 
   bool gotAny = false;
   bool gotAccel = false;
-
-  const uint32_t now = micros();
 
   while (bno08x.getSensorEvent(&sensorValue)) {
     gotAny = true;
@@ -293,14 +312,15 @@ void imuUpdate() {
 
   if (!gotAny) return;
 
-  // keep internal state up to date with latest available values
-  recomputeDerivedState();
-
-  // only publish a new sample when accel updated
   if (!gotAccel) return;
 
-  imuData.dt_us        = (lastTimestamp_us == 0) ? 0 : (now - lastTimestamp_us);
-  imuData.timestamp_us = now;
-  lastTimestamp_us     = now;
-  imuData.fresh        = true;
+  const uint32_t dtUs = (lastAccelRxUs == 0) ? 0 : (uint32_t)(nowUs - lastAccelRxUs);
+
+  imuData.timestamp_us = (uint64_t)nowUs;
+  imuData.dt_us = dtUs;
+  lastAccelRxUs = nowUs;
+
+  recomputeDerivedState();
+
+  imuData.fresh = true;
 }

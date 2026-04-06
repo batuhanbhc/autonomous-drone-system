@@ -34,8 +34,7 @@ __pycache__/
 *.bin
 *.so
 
-# ESP-IDF
-esp_ws/esp-idf/
-esp_ws/**/build/
-esp_ws/**/sdkconfig
-esp_ws/**/managed_components/
+# arduino
+arduino_ws/.venv
+arduino_ws/arduino-ide_2.3.8_Linux_64bit.AppImage
+arduino_ws/.vscode

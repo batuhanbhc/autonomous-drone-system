@@ -79,7 +79,6 @@ void altitudeEkfReset() {
   altitudeEkf.lidarMaxRange_m = LIDAR_MAX_RANGE_M;
   altitudeEkf.lidarMinStrength = LIDAR_MIN_STRENGTH;
   setIdentityScaled(altitudeEkf.P, 10.0f);
-  altitudeEkf.s.groundConfidence = 0.0f;
 }
 
 void altitudeEkfInitialize(float initialBaroRel_m,
@@ -94,21 +93,19 @@ void altitudeEkfInitialize(float initialBaroRel_m,
 
   if (lidarValid) {
     altitudeEkf.s.groundZ_m = altitudeEkf.s.z_m - initialLidarAgl_m;
-    altitudeEkf.s.groundConfidence = 0.7f;
-    altitudeEkf.hasLastLidar = true;
+    altitudeEkf.hasLastAcceptedLidar = true;
     altitudeEkf.lastLidarAccepted_m = initialLidarAgl_m;
     altitudeEkf.lastLidarAcceptedMs = millis();
   } else {
     altitudeEkf.s.groundZ_m = altitudeEkf.s.z_m;
-    altitudeEkf.s.groundConfidence = 0.0f;
-    altitudeEkf.hasLastLidar = false;
+    altitudeEkf.hasLastAcceptedLidar = false;
   }
 
-  // Reasonable initial uncertainty
+  // initial uncertainty
   zeroMat(altitudeEkf.P);
   altitudeEkf.P[IX_Z][IX_Z]   = 1.0f;
   altitudeEkf.P[IX_VZ][IX_VZ] = 1.0f;
-  altitudeEkf.P[IX_BA][IX_BA] = 0.5f;
+  altitudeEkf.P[IX_BA][IX_BA] = 1.0f;
   altitudeEkf.P[IX_BB][IX_BB] = 2.0f;
   altitudeEkf.P[IX_ZG][IX_ZG] = lidarValid ? 0.5f : 4.0f;
 
@@ -185,14 +182,30 @@ static void scalarUpdate(const float H[NX], float meas, float pred, float R, flo
   altitudeEkf.s.baroBias_m += K[IX_BB] * residual;
   altitudeEkf.s.groundZ_m  += K[IX_ZG] * residual;
 
-  // Joseph-stable-ish covariance update in compact scalar form:
-  float newP[NX][NX];
+  // Full Joseph covariance update:
+  // P = (I - K H) P (I - K H)^T + K R K^T
+  float I_KH[NX][NX] = {};
   for (int r = 0; r < NX; ++r) {
     for (int c = 0; c < NX; ++c) {
-      newP[r][c] = altitudeEkf.P[r][c] - K[r] * PHt[c];
+      I_KH[r][c] = (r == c ? 1.0f : 0.0f) - K[r] * H[c];
     }
   }
-  copyMat(newP, altitudeEkf.P);
+
+  float tmp[NX][NX];
+  float I_KH_T[NX][NX];
+  float joseph[NX][NX];
+
+  mulMat(I_KH, altitudeEkf.P, tmp);
+  transposeMat(I_KH, I_KH_T);
+  mulMat(tmp, I_KH_T, joseph);
+
+  for (int r = 0; r < NX; ++r) {
+    for (int c = 0; c < NX; ++c) {
+      joseph[r][c] += K[r] * R * K[c];
+    }
+  }
+
+  copyMat(joseph, altitudeEkf.P);
   symmetrize(altitudeEkf.P);
   updateDerivedOutputs();
 }
@@ -222,15 +235,16 @@ static bool lidarMahalanobisPass(const float H[NX], float residual, float R) {
 }
 
 bool altitudeEkfUpdateLidar(float lidarVertical_m,
+                            uint16_t distanceCm,
                             uint16_t strength,
                             float r22_abs,
                             uint32_t nowMs) {
   altitudeEkf.s.lastLidarAccepted = false;
   if (!altitudeEkf.s.initialized) return false;
-
+  
+  
   // Cooldown after strong obstacle suspicion
   if ((int32_t)(nowMs - altitudeEkf.lidarRejectUntilMs) < 0) {
-    altitudeEkf.s.groundConfidence = clampf(altitudeEkf.s.groundConfidence - 0.03f, 0.0f, 1.0f);
     return false;
   }
 
@@ -244,57 +258,57 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
   const float residual = lidarVertical_m - predAgl;
 
   // Stage 2: frame-to-frame motion bound
-  if (altitudeEkf.hasLastLidar) {
+  if (altitudeEkf.hasLastAcceptedLidar) {
     const float dt = (nowMs - altitudeEkf.lastLidarAcceptedMs) * 1e-3f;
     if (dt > 0.0f && dt < 1.0f) {
-      const float maxDelta = altitudeEkf.maxVzForRateTest * dt + altitudeEkf.lidarJumpSlack_m;
+      const float vzAbs = fabsf(altitudeEkf.s.vz_mps);
+      const float vzGate = clampf(vzAbs + 0.2f, 1.0f, 3.0f);
+      const float maxDelta = vzGate * dt + altitudeEkf.lidarJumpSlack_m;
       const float jump = fabsf(lidarVertical_m - altitudeEkf.lastLidarAccepted_m);
       if (jump > maxDelta) {
         // Strong sudden shortening -> likely obstacle
         if ((lidarVertical_m - altitudeEkf.lastLidarAccepted_m) < -altitudeEkf.obstacleNegJump_m) {
           altitudeEkf.lidarRejectUntilMs = nowMs + altitudeEkf.rejectCooldownMs;
-          altitudeEkf.s.groundConfidence = clampf(altitudeEkf.s.groundConfidence - 0.15f, 0.0f, 1.0f);
         }
         return false;
       }
     }
   }
 
-  // Strong asymmetric rejection for unexpectedly shorter range
-  if (residual < -altitudeEkf.asymRejectNeg_m) {
-    altitudeEkf.lidarRejectUntilMs = nowMs + altitudeEkf.rejectCooldownMs;
-    altitudeEkf.s.groundConfidence = clampf(altitudeEkf.s.groundConfidence - 0.12f, 0.0f, 1.0f);
-    return false;
+  // Datasheet-grounded lidarStd (TFS-20L)
+  // Repeatability: 2cm (1σ) up to 6m; assumed ~0.5% of range beyond 6m
+  // Tilt: vertical = slant * |R22|, so σ_vertical = σ_slant / |R22|
+
+  const float raw_m = 0.01f * distanceCm;  // slant range in meters
+
+  // Shot noise on slant range from datasheet
+  float slantStd;
+  if (raw_m <= 6.0f) {
+      slantStd = 0.02f;                  // 2cm (1σ), datasheet repeatability
+  } else {
+      slantStd = 0.005f * raw_m;         // ~0.5% of range, conservative extrapolation
   }
 
-  // Dynamic R: weaker return / more tilt -> less trust
-  float tiltPenalty = (1.0f - r22_abs);   // 0 when near vertical
-  float strengthScale = 1.0f;
-  if (strength < 200) strengthScale = 2.5f;
-  else if (strength < 400) strengthScale = 1.5f;
+  // Tilt amplifies range noise onto vertical axis
+  // σ_vertical = σ_slant / |R22|  (exact geometric relationship)
+  // Clamp r22_abs to avoid division blowup at extreme tilts
+  const float r22_safe = fmaxf(r22_abs, cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD));
+  const float lidarStd = slantStd / r22_safe;
 
-  float lidarStd = altitudeEkf.rLidarBase_m
-                 + 0.25f * tiltPenalty
-                 + 0.02f * fabsf(residual);
-
-  lidarStd *= strengthScale;
-  lidarStd = clampf(lidarStd, altitudeEkf.rLidarBase_m, altitudeEkf.rLidarWeak_m);
   const float R = sqf(lidarStd);
 
   // Stage 3: Mahalanobis gate
   const float H[NX] = {1.0f, 0.0f, 0.0f, 0.0f, -1.0f};
   if (!lidarMahalanobisPass(H, residual, R)) {
-    altitudeEkf.s.groundConfidence = clampf(altitudeEkf.s.groundConfidence - 0.04f, 0.0f, 1.0f);
     return false;
   }
 
   scalarUpdate(H, lidarVertical_m, predAgl, R, &altitudeEkf.s.lastLidarResidual_m);
 
   altitudeEkf.s.lastLidarAccepted = true;
-  altitudeEkf.hasLastLidar = true;
+  altitudeEkf.hasLastAcceptedLidar = true;
   altitudeEkf.lastLidarAccepted_m = lidarVertical_m;
   altitudeEkf.lastLidarAcceptedMs = nowMs;
-  altitudeEkf.s.groundConfidence = clampf(altitudeEkf.s.groundConfidence + 0.05f, 0.0f, 1.0f);
 
   return true;
 }
@@ -302,5 +316,4 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
 float altitudeEkfGetAglM()              { return altitudeEkf.s.agl_m; }
 float altitudeEkfGetWorldZM()           { return altitudeEkf.s.z_m; }
 float altitudeEkfGetGroundZM()          { return altitudeEkf.s.groundZ_m; }
-float altitudeEkfGetGroundConfidence()  { return altitudeEkf.s.groundConfidence; }
 bool  altitudeEkfIsInitialized()        { return altitudeEkf.s.initialized; }
