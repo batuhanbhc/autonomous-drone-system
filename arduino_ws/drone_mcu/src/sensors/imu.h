@@ -30,6 +30,9 @@ struct ImuData {
   float imuGyro[3]       = {0};
   float imuQuat[4]       = {0,0,0,1};
 
+  float levelCorrQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // q_corr
+  bool  levelCorrValid   = false;
+
   float droneLinAccel[3] = {0};
   float droneGyro[3]     = {0};
   float droneQuat[4]     = {0,0,0,1};
@@ -50,3 +53,4 @@ extern ImuData imuData;
 void imuSetMounting();
 bool imuBegin();
 void imuUpdate();
+void imuComputeLevelCorrection();

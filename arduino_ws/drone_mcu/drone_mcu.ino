@@ -7,7 +7,7 @@
 static uint32_t decim = 0;
 
 static constexpr uint32_t INIT_WARMUP_MS   = 1500;
-static constexpr uint32_t INIT_DURATION_MS = 3000;
+static constexpr uint32_t INIT_DURATION_MS = 5000;
 
 // =========================
 // Companion packet settings
@@ -15,7 +15,7 @@ static constexpr uint32_t INIT_DURATION_MS = 3000;
 static constexpr uint8_t  COMPANION_SYNC0        = 0xA5;
 static constexpr uint8_t  COMPANION_SYNC1        = 0x5A;
 static constexpr uint8_t  COMPANION_MSG_VERTICAL = 0x01;
-static constexpr uint32_t COMPANION_SEND_HZ      = 20;
+static constexpr uint32_t COMPANION_SEND_HZ      = 30;
 static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
 
 // Set to 1 if you want to stop text prints after boot and only emit binary.
@@ -195,7 +195,8 @@ static bool updateInitializationRoutine() {
   }
 
   imuData.initialized = true;
-
+  imuComputeLevelCorrection();
+  
   const float baroRel0 = 0.0f;
   const bool lidarOk = lidarData.fresh &&
                      lidarData.distanceCm >= LIDAR_MIN_RANGE_CM &&
@@ -329,30 +330,6 @@ void loop() {
     };
   }
 
-  // 4) Send binary packet at 20 Hz
+  // 4) Send binary packet
   maybeSendCompanionPacket();
-
-  /*
-  // 5) Optional debug text, but disable if Pi expects clean binary only
-  decim++;
-  if (decim >= 300) {
-    decim = 0;
-
-    Serial.printf(
-      "z=%.3f agl=%.3f vz=%.4f est_vz=%.4f | acc x=%.4f y=%.4f z=%.4f | gyro x=%.4f y=%.4f z=%.4f | baro=%.2fPa | lidar=%ucm\r\n",
-      altitudeEkf.s.z_m,
-      altitudeEkf.s.agl_m,
-      altitudeEkf.s.vz_mps,
-      imuData.worldLinAccelZ,
-      imuData.droneLinAccel[0],
-      imuData.droneLinAccel[1],
-      imuData.droneLinAccel[2],
-      imuData.droneGyro[0],
-      imuData.droneGyro[1],
-      imuData.droneGyro[2],
-      (double)baroData.pressurePa,
-      (unsigned)lidarData.distanceCm
-    );
-  }
-  */
 }

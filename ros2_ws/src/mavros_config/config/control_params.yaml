@@ -13,20 +13,20 @@ flight_params:
 altitude_controller:
   kp: 1.0
   ki: 0.05
-  kd: 0.5
+  kd: 0.4
   output_min: -2.0
   output_max:  2.0
   integral_min: -0.5
   integral_max:  0.5
-  max_accel_mps2: 2.0
-  command_hz: 4.0
+  max_accel_mps2: 1.0
+  command_hz: 30.0
 
 camera:
   device_path: "/dev/video0"
   width: 800
   height: 600
   fps: 30
-  gimbal_pitch_angle: 15.0  # degrees, positive downwards
+  gimbal_pitch_angle: 10.0  # degrees, positive downwards
   
 vision_pipeline:
   obj_det_hef_path: "/usr/share/hailo-models/yolov8s_h8l.hef"

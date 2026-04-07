@@ -31,7 +31,7 @@ struct AltitudeEkf {
   float qBaroBias_m        = 0.002f;   // baro bias RW
   float qGround_m          = 0.001f;   // ground RW (slow)
 
-  float rBaro_m            = 0.8f;     // baro stddev
+  float rBaro_m            = 0.5f;     // baro stddev
 
   // Lidar acceptance parameters
   float lidarMinRange_m    = 0.05f;
