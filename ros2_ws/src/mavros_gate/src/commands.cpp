@@ -343,6 +343,7 @@ ControlGateNode::executeTakeoff(const TeleopCmd&, const InternalState&) {
         publishInfo(DroneInfo::LEVEL_INFO, "Takeoff accepted by FCU.");
         takeoff_start_t_        = std::chrono::steady_clock::now();
         takeoff_monitor_active_ = true;
+        updateLastAct(std::chrono::steady_clock::now());  // prevent immediate guided timeout
         takeoff_monitor_timer_->reset(); 
         RCLCPP_INFO(get_logger(), "Takeoff accepted by FCU.");
       } else {
@@ -502,4 +503,28 @@ ControlGateNode::executePressSafetySwitch(const TeleopCmd&, const InternalState&
   );
 
   return {true, "Safety switch command request sent."};
+}
+
+ControlGateNode::CommandResult
+ControlGateNode::executeAltSupportToggle(const TeleopCmd&, const InternalState& st)
+{
+  if (!st.armed || !st.guided) {
+    return {false, "AltHold toggle rejected: must be armed and guided."};
+  }
+
+  if (!has_taken_off_) {
+    return {false, "AltHold toggle rejected: takeoff not complete."};
+  }
+
+  if (alt_ctrl_mode_ == AltCtrlMode::Off) {
+    const VerticalEstimateCache ve = snapshotVertEst();
+    if (!ve.valid) {
+      return {false, "AltHold toggle rejected: no valid vertical estimate."};
+    }
+    enterAltHold(ve.agl_m, ve.agl_m, ve.vz_mps);
+    return {true, "AltHold enabled."};
+  } else {
+    exitAltHold();
+    return {true, "AltHold disabled."};
+  }
 }

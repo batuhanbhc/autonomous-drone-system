@@ -58,10 +58,36 @@ ament_target_dependencies(mcu_bridge
 
 target_link_libraries(mcu_bridge yaml-cpp)
 
+# ── altitude_controller ───────────────────────────────────────────────────────
+#
+# Soft-PID controller node.
+# Subscribes:  <ns>/altitude_controller/input  (drone_msgs/AltitudeControllerInput)
+# Publishes:   <ns>/altitude_controller/output (std_msgs/Float32)
+# Service:     <ns>/altitude_controller/set_pid_gains (drone_msgs/srv/SetPidGains)
+#
+add_executable(altitude_controller
+  src/altitude_controller.cpp
+)
+
+target_include_directories(altitude_controller PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(altitude_controller
+  rclcpp
+  drone_msgs
+  std_msgs
+  ament_index_cpp
+)
+
+target_link_libraries(altitude_controller yaml-cpp)
+
 # ── install ───────────────────────────────────────────────────────────────────
 install(TARGETS
   control_gate
   mcu_bridge
+  altitude_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 

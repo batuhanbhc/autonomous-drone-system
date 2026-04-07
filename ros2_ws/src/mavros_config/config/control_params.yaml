@@ -10,6 +10,16 @@ flight_params:
   takeoff_timeout_s:          10.0   # hard cap on takeoff monitor (s)
   logs_path: "/home/batuhan/shared/recordings"
 
+altitude_controller:
+  kp: 1.0
+  ki: 0.05
+  kd: 0.5
+  output_min: -2.0
+  output_max:  2.0
+  integral_min: -0.5
+  integral_max:  0.5
+  max_accel_mps2: 2.0
+  command_hz: 4.0
 
 camera:
   device_path: "/dev/video0"

@@ -18,6 +18,7 @@
 #include <atomic>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/msg/position_target.hpp>
@@ -27,6 +28,7 @@
 #include <drone_msgs/msg/drone_info.hpp>
 #include <drone_msgs/msg/gcs_heartbeat.hpp>
 #include <drone_msgs/msg/altitude_controller_input.hpp>
+#include <drone_msgs/srv/set_target_height.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <std_msgs/msg/float32.hpp>
@@ -52,15 +54,16 @@ public:
   };
 
 private:
-  using TeleopCmd          = drone_msgs::msg::TeleopCommand;
-  using TeleopAct          = drone_msgs::msg::TeleopAction;
-  using DroneInfo          = drone_msgs::msg::DroneInfo;
-  using DroneState         = drone_msgs::msg::DroneState;
-  using GcsHeartbeat       = drone_msgs::msg::GcsHeartbeat;
+  using TeleopCmd           = drone_msgs::msg::TeleopCommand;
+  using TeleopAct           = drone_msgs::msg::TeleopAction;
+  using DroneInfo           = drone_msgs::msg::DroneInfo;
+  using DroneState          = drone_msgs::msg::DroneState;
+  using GcsHeartbeat        = drone_msgs::msg::GcsHeartbeat;
   using MavrosExtendedState = mavros_msgs::msg::ExtendedState;
-  using VerticalEstimate   = geometry_msgs::msg::Vector3Stamped;
-  using AltCtrlInput       = drone_msgs::msg::AltitudeControllerInput;
-  using AltCtrlOutput      = std_msgs::msg::Float32;  // vz m/s from PID
+  using VerticalEstimate    = geometry_msgs::msg::Vector3Stamped;
+  using AltCtrlInput        = drone_msgs::msg::AltitudeControllerInput;
+  using AltCtrlOutput       = std_msgs::msg::Float32;   // vz m/s from PID
+  using SetTargetHeight     = drone_msgs::srv::SetTargetHeight;
 
   using MonotonicTime = std::chrono::steady_clock::time_point;
 
@@ -69,20 +72,21 @@ private:
     Manual = 1
   };
 
-  // ── Altitude controller state machine ──────────────────────────────────
+  // ── Altitude hold state machine ────────────────────────────────────────
   //
-  //  GuidedTimeout  – mandatory, auto-triggered when no teleop action for
-  //                   guided_timeout_s_. Sends vx=vy=yaw=0, vz=ctrl_output.
-  //                   Cancelled by any incoming teleop action.
+  //  Off      – controller not running (before takeoff, failsafe, disarmed)
   //
-  //  AltSupport     – optional, command-toggled (ALT_SUPPORT_TOGGLE).
-  //                   Incoming teleop action with vz==0 → vz replaced by
-  //                   ctrl_output. vz!=0 → bool=false, pass through.
-  //                   Target agl snapshot on first vz==0 after each vz!=0.
+  //  AltHold  – single mode, always active after takeoff while in guided.
+  //               • operator vz != 0  → pass vz through, controller deactivated
+  //               • operator vz == 0  → controller holds alt_ctrl_target_agl_
+  //               • timed_out == true → additionally zero out xy and yaw
+  //
+  //  timed_out flag (inside AltHold):
+  //               false → operator is actively flying; xy/yaw pass through
+  //               true  → no teleop for guided_timeout_s_; force hover
   enum class AltCtrlMode : uint8_t {
-    Off           = 0,
-    GuidedTimeout = 1,
-    AltSupport    = 2,
+    Off     = 0,
+    AltHold = 1,
   };
 
   struct TopicPaths {
@@ -90,8 +94,8 @@ private:
     std::string manual_action;
     std::string manual_command;
     std::string mcu_bridge;
-    std::string alt_ctrl_input;   // publish target
-    std::string alt_ctrl_output;  // subscribe source
+    std::string alt_ctrl_input;    // publish target
+    std::string alt_ctrl_output;   // subscribe source
   };
 
   struct VelocityLevel {
@@ -113,20 +117,19 @@ private:
   };
 
   struct InternalStateUpdate {
-    std::optional<ControlMode> control_mode;
-    std::optional<VelocityLevel> vel;
-    std::optional<bool> keyboard_on;
-    std::optional<bool> safety_switch_on;
-    std::optional<bool> connected;
-    std::optional<bool> armed;
-    std::optional<bool> guided;
-    std::optional<bool> kill_switch_window;
-    std::optional<bool> system_killed;
+    std::optional<ControlMode>    control_mode;
+    std::optional<VelocityLevel>  vel;
+    std::optional<bool>           keyboard_on;
+    std::optional<bool>           safety_switch_on;
+    std::optional<bool>           connected;
+    std::optional<bool>           armed;
+    std::optional<bool>           guided;
+    std::optional<bool>           kill_switch_window;
+    std::optional<bool>           system_killed;
   };
 
   // Latest MCU vertical estimate — written from onVerticalEstimate,
-  // read from timer callbacks and onTeleopAction (all on same executor thread
-  // with single-threaded spin, but guarded by mutex for clarity / future safety)
+  // read from timer callbacks and onTeleopAction.  Guarded by vert_est_mtx_.
   struct VerticalEstimateCache {
     float agl_m{0.0f};
     float z_world_m{0.0f};
@@ -146,7 +149,10 @@ private:
   }
 
   // command dispatch map
-  std::unordered_map<uint8_t, std::function<CommandResult(const TeleopCmd&, const InternalState&)>> cmd_handlers_;
+  std::unordered_map<
+    uint8_t,
+    std::function<CommandResult(const TeleopCmd&, const InternalState&)>
+  > cmd_handlers_;
   static const char* commandName(int8_t);
 
   // ── Command handlers ──────────────────────────────────────────────────────
@@ -169,7 +175,7 @@ private:
   void initCommandHandlers();
 
   // ── Config / flight params ────────────────────────────────────────────────
-  TopicPaths topics_;
+  TopicPaths  topics_;
   std::string base_ns_;
   float  takeoff_m_{1.5f};
   float  failsafe_watchdog_hz_{1.0f};
@@ -199,21 +205,25 @@ private:
   VerticalEstimateCache vert_est_;
 
   // ── Altitude controller runtime ───────────────────────────────────────────
-  // All of these are only accessed on the ROS executor thread
+  // All fields below are accessed only on the ROS executor thread
   // (single-threaded spin), so no extra mutex is needed.
   AltCtrlMode alt_ctrl_mode_{AltCtrlMode::Off};
+  bool        alt_hold_timed_out_{false};   // true → force xy/yaw=0 as well
 
-  float alt_ctrl_fixed_agl_{0.0f};    // target snapshot when mode activates
-  float alt_ctrl_fixed_z_{0.0f};
+  // The altitude the controller is trying to hold.
+  // Updated by: enterAltHold (snapshot), onSetTargetHeight (service override).
+  float alt_ctrl_target_agl_{0.0f};
 
   float alt_ctrl_vz_output_{0.0f};    // latest vz from PID (m/s)
   bool  alt_ctrl_output_fresh_{false};
 
-  // AltSupport: remember last vz direction to detect nonzero→zero transition
-  bool alt_support_last_vz_nonzero_{false};
+  // Track whether operator last sent nonzero vz, to detect the transition
+  // back to vz==0 so we can snapshot a fresh hold altitude.
+  bool alt_hold_last_vz_nonzero_{false};
 
   // Takeoff monitor
   bool          takeoff_monitor_active_{false};
+  bool          has_taken_off_{false};   // set true when takeoff is accepted; gates guided timeout
   MonotonicTime takeoff_start_t_;
 
   // ── General helpers ───────────────────────────────────────────────────────
@@ -230,12 +240,22 @@ private:
   VerticalEstimateCache snapshotVertEst() const;
   bool isAnyFailsafeActive() const;
 
-  // Altitude controller helpers
-  void enterGuidedTimeout(const VerticalEstimateCache& ve);
-  void exitGuidedTimeout();   // transitions to AltSupport or Off
-  void enterAltSupport(float agl, float vz_mps);
-  void exitAltSupport();
-  void publishAltCtrlInput(bool active, float agl, float vz_mps);
+  // ── Altitude controller helpers ───────────────────────────────────────────
+  void enterAltHold(float target_agl, float current_agl, float current_vz_mps);
+  void exitAltHold();
+  void enterTimedOut(const VerticalEstimateCache& ve);
+  void exitTimedOut();
+
+  // publishAltCtrlInput: all four fields the PID node needs
+  //   active          – start/stop signal
+  //   target_agl_m    – desired altitude [m]
+  //   current_agl_m   – measured altitude [m]  (from MCU estimate)
+  //   current_vz_mps  – measured vertical velocity [m/s]
+  void publishAltCtrlInput(bool active,
+                           float target_agl_m,
+                           float current_agl_m,
+                           float current_vz_mps,
+                           bool reset_integral = false);
   void publishSetpoint(float vx, float vy, float vz, float yaw_rate);
 
   // ── Subscriber callbacks ──────────────────────────────────────────────────
@@ -248,7 +268,12 @@ private:
   void onVerticalEstimate(const VerticalEstimate::SharedPtr);
   void onAltCtrlOutput(const AltCtrlOutput::SharedPtr);
 
-  // Timer callbacks
+  // ── Service callbacks ─────────────────────────────────────────────────────
+  void onSetTargetHeight(
+    const std::shared_ptr<SetTargetHeight::Request>  req,
+    std::shared_ptr<SetTargetHeight::Response>       res);
+
+  // ── Timer callbacks ───────────────────────────────────────────────────────
   void onGuidedTimeoutWatchdog();
   void onTakeoffMonitorTick();
 
@@ -277,7 +302,10 @@ private:
   rclcpp::Publisher<DroneInfo>::SharedPtr     pub_drone_info_;
   rclcpp::Publisher<AltCtrlInput>::SharedPtr  pub_alt_ctrl_input_;
 
-  // ── Services ──────────────────────────────────────────────────────────────
+  // ── Service servers ────────────────────────────────────────────────────────
+  rclcpp::Service<SetTargetHeight>::SharedPtr srv_set_target_height_;
+
+  // ── MAVROS service clients ────────────────────────────────────────────────
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr     arming_client_;
   rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedPtr     command_long_client_;
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr         set_mode_client_;

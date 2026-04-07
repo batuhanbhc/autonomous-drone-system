@@ -1,0 +1,17 @@
+# drone_msgs/srv/SetPidGains.srv
+#
+# Live-tune the altitude controller PID gains without restarting the node.
+# Call: /drone_N/altitude_controller/set_pid_gains
+#
+# Example (ros2 cli):
+#   ros2 service call /drone_0/altitude_controller/set_pid_gains drone_msgs/srv/SetPidGains "{kp: 1.5, ki: 0.04, kd: 0.35}"
+#
+# All gains must be >= 0.  The integral accumulator is reset on every
+# successful call to avoid windup artefacts from the old gains.
+
+float32 kp
+float32 ki
+float32 kd
+---
+bool   success
+string message

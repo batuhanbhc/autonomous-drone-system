@@ -1,9 +1,10 @@
 #include "mavros_gate/control_gate.hpp"
 
 
-using Cmd       = drone_msgs::msg::TeleopCommand;
-using DroneInfo = drone_msgs::msg::DroneInfo;
+using Cmd           = drone_msgs::msg::TeleopCommand;
+using DroneInfo     = drone_msgs::msg::DroneInfo;
 using MonotonicTime = std::chrono::steady_clock::time_point;
+
 
 // ============================================================================
 // commandName / isCommandAlwaysEnabled
@@ -49,6 +50,7 @@ bool ControlGateNode::isCommandAlwaysEnabled(int8_t id) {
   }
 }
 
+
 // ============================================================================
 // Internal state helpers
 // ============================================================================
@@ -84,6 +86,7 @@ bool ControlGateNode::isAnyFailsafeActive() const {
          critical_state_.load(std::memory_order_relaxed);
 }
 
+
 // ============================================================================
 // Vertical estimate cache
 // ============================================================================
@@ -92,6 +95,7 @@ ControlGateNode::VerticalEstimateCache ControlGateNode::snapshotVertEst() const 
   std::lock_guard<std::mutex> lk(vert_est_mtx_);
   return vert_est_;
 }
+
 
 // ============================================================================
 // last_action helpers
@@ -106,6 +110,7 @@ MonotonicTime ControlGateNode::readLastAct() const {
   std::lock_guard<std::mutex> lk(last_act_mtx_);
   return last_action_t_;
 }
+
 
 // ============================================================================
 // loadConfig
@@ -162,6 +167,7 @@ bool ControlGateNode::loadConfig() {
   return ok;
 }
 
+
 // ============================================================================
 // initCommandHandlers
 // ============================================================================
@@ -203,73 +209,114 @@ void ControlGateNode::initCommandHandlers() {
     return executePressSafetySwitch(c, s); };
   cmd_handlers_[TeleopCmd::ALT_SUPPORT_TOGGLE] = [this](const TeleopCmd& c, const InternalState& s) {
     return executeAltSupportToggle(c, s); };
+  // ALT_SUPPORT_TOGGLE removed — AltHold is always active after takeoff
 }
+
 
 // ============================================================================
 // initializationRoutine
 // ============================================================================
 
 bool ControlGateNode::initializationRoutine() {
-  updateLastAct(std::chrono::steady_clock::now());
+  // ── Service clients ────────────────────────────────────────────────────
+  arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>(
+    base_ns_ + "/mavros/cmd/arming");
+  command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>(
+    base_ns_ + "/mavros/cmd/command");
+  set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>(
+    base_ns_ + "/mavros/set_mode");
+  takeoff_client_ = this->create_client<mavros_msgs::srv::CommandTOL>(
+    base_ns_ + "/mavros/cmd/takeoff");
+  msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>(
+    base_ns_ + "/mavros/set_message_interval");
 
-  const std::string arming_path       = base_ns_ + "/mavros/cmd/arming";
-  const std::string command_long_path = base_ns_ + "/mavros/cmd/command";
-  const std::string set_mode_path     = base_ns_ + "/mavros/set_mode";
-  const std::string takeoff_path      = base_ns_ + "/mavros/cmd/takeoff";
-  const std::string msg_interval_path = base_ns_ + "/mavros/set_message_interval";
+  // ── SetTargetHeight service server ────────────────────────────────────
+  const std::string srv_name = base_ns_ + "/control_gate/set_target_height";
+  srv_set_target_height_ = this->create_service<SetTargetHeight>(
+    srv_name,
+    std::bind(&ControlGateNode::onSetTargetHeight, this,
+              std::placeholders::_1, std::placeholders::_2));
+  RCLCPP_INFO(get_logger(),
+    "Target height service ready at: %s", srv_name.c_str());
 
-  RCLCPP_INFO(get_logger(), "Waiting for mavros to come online...");
-  auto arming_probe = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
-  if (!arming_probe->wait_for_service(std::chrono::seconds(60))) {
-    RCLCPP_FATAL(get_logger(), "mavros arming service not available after 60s");
-    return false;
-  }
-  RCLCPP_INFO(get_logger(), "mavros is online.");
-  arming_probe.reset();
-
-  arming_client_       = this->create_client<mavros_msgs::srv::CommandBool>(arming_path);
-  command_long_client_ = this->create_client<mavros_msgs::srv::CommandLong>(command_long_path);
-  set_mode_client_     = this->create_client<mavros_msgs::srv::SetMode>(set_mode_path);
-  takeoff_client_      = this->create_client<mavros_msgs::srv::CommandTOL>(takeoff_path);
-  msg_interval_client_ = this->create_client<mavros_msgs::srv::MessageInterval>(msg_interval_path);
-
-  auto requestMsgInterval = [&](int id, float rate_hz, const char* label) -> bool {
-    if (!msg_interval_client_->wait_for_service(std::chrono::seconds(30))) {
-      RCLCPP_ERROR(get_logger(), "set_message_interval not available (%s)", label);
-      return false;
-    }
-    auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
-    req->message_id   = id;
-    req->message_rate = rate_hz;
-    int retries = 5;
-    while (retries-- > 0) {
-      auto result = msg_interval_client_->async_send_request(req);
-      if (rclcpp::spin_until_future_complete(
-            this->get_node_base_interface(), result,
-            std::chrono::seconds(3)) == rclcpp::FutureReturnCode::SUCCESS) {
-        RCLCPP_INFO(get_logger(), "Requested %s stream: success=%s",
-          label, result.get()->success ? "true" : "false");
-        break;
+  // ── Wait for MAVROS services ───────────────────────────────────────────
+  // wait_for_service() is safe to call before spin() — it does not need
+  // the executor to be running; it just checks the ROS graph.
+  const auto timeout = std::chrono::seconds(5);
+  auto wait = [&](auto& client, const char* label) -> bool {
+    RCLCPP_INFO(get_logger(), "Waiting for service: %s", label);
+    while (!client->wait_for_service(timeout)) {
+      if (!rclcpp::ok()) {
+        RCLCPP_FATAL(get_logger(), "Interrupted waiting for %s", label);
+        return false;
       }
-      RCLCPP_WARN(get_logger(), "set_message_interval timed out, retrying... (%d left)", retries);
-      std::this_thread::sleep_for(std::chrono::seconds(2));
+      RCLCPP_WARN(get_logger(), "Service %s not ready yet, retrying...", label);
     }
-    if (retries <= 0) {
-      RCLCPP_FATAL(get_logger(), "set_message_interval failed after all retries: %s", label);
-      throw std::runtime_error("control_gate init failed");
-    }
+    RCLCPP_INFO(get_logger(), "Service ready: %s", label);
     return true;
   };
 
-  if (!requestMsgInterval(245, 2.0f,  "EXTENDED_SYS_STATE")) return false;
-  if (!requestMsgInterval(147, 1.0f,  "BATTERY_STATUS"))      return false;
-  if (!requestMsgInterval(32,  30.0f, "LOCAL_POSITION_NED"))  return false;
-  if (!requestMsgInterval(24,  5.0f,  "GPS_RAW_INT"))         return false;
-  if (!requestMsgInterval(31,  30.0f, "ATTITUDE_QUATERNION")) return false;
+  if (!wait(arming_client_,       "arming"))        return false;
+  if (!wait(command_long_client_,  "command_long"))  return false;
+  if (!wait(set_mode_client_,      "set_mode"))      return false;
+  if (!wait(takeoff_client_,       "takeoff"))       return false;
+  if (!wait(msg_interval_client_,  "msg_interval"))  return false;
+
+  // ── Request MAVLink message intervals ────────────────────────────────────
+  // async_send_request() + wait_for() deadlocks when the node has not started
+  // spinning yet, because the response callback can never be dispatched.
+  // Fix: spin a temporary single-threaded executor on a side thread just long
+  // enough to drive the service round-trip, then shut it down.
+  auto requestMsgInterval = [&](uint32_t msg_id, float hz, const char* label) {
+    auto req = std::make_shared<mavros_msgs::srv::MessageInterval::Request>();
+    req->message_id   = msg_id;
+    req->message_rate = hz;
+
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+      // Spin a temporary executor on a background thread so the response
+      // callback can be dispatched while we block on the future here.
+      auto temp_exec = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+      temp_exec->add_node(this->get_node_base_interface());
+
+      auto fut = msg_interval_client_->async_send_request(req);
+
+      // Drive the executor until the future is ready or we time out.
+      const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (fut.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+        if (std::chrono::steady_clock::now() > deadline) break;
+        temp_exec->spin_some(std::chrono::milliseconds(10));
+      }
+
+      temp_exec->remove_node(this->get_node_base_interface());
+
+      if (fut.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        if (fut.get()->success) {
+          RCLCPP_INFO(get_logger(), "msg_interval OK: %s @ %.1f Hz", label, hz);
+        } else {
+          RCLCPP_WARN(get_logger(),
+            "msg_interval rejected for %s — FCU may not support this message ID", label);
+        }
+        return;
+      }
+      RCLCPP_WARN(get_logger(),
+        "msg_interval timeout for %s (attempt %d/3)", label, attempt);
+    }
+    RCLCPP_WARN(get_logger(),
+      "msg_interval gave up for %s after 3 attempts.", label);
+  };
+
+  requestMsgInterval(245, 2.0f,  "EXTENDED_SYS_STATE");
+  requestMsgInterval(147, 1.0f,  "BATTERY_STATUS");
+  requestMsgInterval(32,  30.0f, "LOCAL_POSITION_NED");
+  requestMsgInterval(24,  5.0f,  "GPS_RAW_INT");
+  requestMsgInterval(31,  30.0f, "ATTITUDE_QUATERNION");
 
   initCommandHandlers();
   return true;
 }
+
+
 
 // ============================================================================
 // isSetpointBlocked / updateSetpointBlockStateAndMaybePublish
@@ -284,9 +331,11 @@ bool ControlGateNode::isSetpointBlocked(const InternalState& st) const {
   return !enabled;
 }
 
-void ControlGateNode::updateSetpointBlockStateAndMaybePublish(bool blocked, bool initial_publish) {
+void ControlGateNode::updateSetpointBlockStateAndMaybePublish(
+  bool blocked, bool initial_publish)
+{
   if (!setpoint_blocked_initialized_) {
-    setpoint_blocked_ = blocked;
+    setpoint_blocked_             = blocked;
     setpoint_blocked_initialized_ = true;
     if (initial_publish) {
       publishInfo(blocked ? DroneInfo::LEVEL_WARN : DroneInfo::LEVEL_INFO,
@@ -305,78 +354,72 @@ void ControlGateNode::updateSetpointBlockStateAndMaybePublish(bool blocked, bool
 
 
 // ============================================================================
-// Altitude controller state transitions
+// Altitude controller state transitions  (unified AltHold design)
+//
+//  AltHold is entered automatically after takeoff whenever in guided mode.
+//  It has two sub-states controlled by alt_hold_timed_out_:
+//    false → operator flying; only vz is controlled, xy/yaw pass through
+//    true  → no teleop for guided_timeout_s_; full hover (xy/yaw zeroed too)
 // ============================================================================
 
-void ControlGateNode::enterGuidedTimeout(const VerticalEstimateCache& ve) {
-  alt_ctrl_mode_      = AltCtrlMode::GuidedTimeout;
-  alt_ctrl_fixed_agl_ = ve.agl_m;
-
-  RCLCPP_WARN(get_logger(),
-    "[alt_ctrl] Guided timeout triggered — hover at agl=%.3f m",
-    alt_ctrl_fixed_agl_);
-  publishInfo(DroneInfo::LEVEL_WARN,
-    stringf("Guided timeout. Hovering at agl=%.2f m", alt_ctrl_fixed_agl_));
-
-  publishAltCtrlInput(true, alt_ctrl_fixed_agl_, ve.vz_mps);
-}
-
-void ControlGateNode::exitGuidedTimeout() {
-  // Always publish stop first, then decide next mode.
-  publishAltCtrlInput(false, 0.0f, 0.0f);
-  alt_ctrl_mode_ = AltCtrlMode::Off;
-
-  RCLCPP_INFO(get_logger(), "[alt_ctrl] Guided timeout cleared.");
-  publishInfo(DroneInfo::LEVEL_INFO, "Guided timeout cleared.");
-
-  // Note: if the user had AltSupport toggled on before the timeout occurred,
-  // onTeleopAction handles the AltSupport entry on the same callback pass,
-  // since alt_ctrl_mode_ is now Off and the vz==0 branch will re-enter it.
-}
-
-void ControlGateNode::enterAltSupport(float agl, float vz_mps) {
-  alt_ctrl_mode_      = AltCtrlMode::AltSupport;
-  alt_ctrl_fixed_agl_ = agl;
+void ControlGateNode::enterAltHold(
+  float target_agl, float current_agl, float current_vz_mps)
+{
+  alt_ctrl_mode_             = AltCtrlMode::AltHold;
+  alt_ctrl_target_agl_       = target_agl;
+  alt_hold_timed_out_        = false;
+  alt_hold_last_vz_nonzero_  = false;
 
   RCLCPP_INFO(get_logger(),
-    "[alt_ctrl] AltSupport active — target agl=%.3f m", agl);
+    "[alt_hold] Entered AltHold — target=%.3f m, current=%.3f m",
+    target_agl, current_agl);
+  publishInfo(DroneInfo::LEVEL_INFO,
+    stringf("AltHold active. Holding %.2f m", target_agl));
 
-  publishAltCtrlInput(true, alt_ctrl_fixed_agl_, vz_mps);
+  publishAltCtrlInput(true, alt_ctrl_target_agl_, current_agl, current_vz_mps);
 }
 
-void ControlGateNode::exitAltSupport() {
-  alt_ctrl_mode_ = AltCtrlMode::Off;
-  publishAltCtrlInput(false, 0.0f, 0.0f);
-
-  RCLCPP_INFO(get_logger(), "[alt_ctrl] AltSupport deactivated (vz override).");
-}
-
-// ============================================================================
-// executeAltSupportToggle  (command handler)
-// ============================================================================
-
-ControlGateNode::CommandResult ControlGateNode::executeAltSupportToggle(
-  const TeleopCmd&, const InternalState&)
+void ControlGateNode::exitAltHold()
 {
-  if (alt_ctrl_mode_ == AltCtrlMode::AltSupport) {
-    exitAltSupport();
-    return {true, "AltSupport disabled."};
-  }
+  alt_ctrl_mode_      = AltCtrlMode::Off;
+  alt_hold_timed_out_ = false;
+  publishAltCtrlInput(false, 0.0f, 0.0f, 0.0f);
 
-  if (alt_ctrl_mode_ == AltCtrlMode::GuidedTimeout) {
-    return {false, "Cannot toggle AltSupport while guided timeout is active."};
-  }
-
-  // Mode is Off — arm AltSupport. Actual activation (snapshot + controller
-  // start) happens on the first vz==0 teleop action in onTeleopAction.
-  alt_ctrl_mode_ = AltCtrlMode::AltSupport;
-  alt_support_last_vz_nonzero_ = true;  // force snapshot on next vz==0 action
-
-  return {true, "AltSupport enabled. Will activate on next vz=0 action."};
+  RCLCPP_INFO(get_logger(), "[alt_hold] Exited AltHold.");
+  publishInfo(DroneInfo::LEVEL_INFO, "AltHold deactivated.");
 }
+
+void ControlGateNode::enterTimedOut(const VerticalEstimateCache& ve)
+{
+  // Snapshot current agl as the hold target — "stay exactly where you are".
+  // A subsequent set_target_height service call can override this.
+  alt_ctrl_target_agl_ = ve.agl_m;
+  alt_hold_timed_out_  = true;
+
+  RCLCPP_WARN(get_logger(),
+    "[alt_hold] Timed out — full hover at %.3f m", alt_ctrl_target_agl_);
+  publishInfo(DroneInfo::LEVEL_WARN,
+    stringf("AltHold timed out. Hovering at %.2f m", alt_ctrl_target_agl_));
+
+  publishAltCtrlInput(true, alt_ctrl_target_agl_, ve.agl_m, ve.vz_mps);
+}
+
+void ControlGateNode::exitTimedOut()
+{
+  alt_hold_timed_out_ = false;
+
+  RCLCPP_INFO(get_logger(), "[alt_hold] Timeout cleared — operator resumed.");
+  publishInfo(DroneInfo::LEVEL_INFO, "AltHold timeout cleared.");
+}
+
 
 // ============================================================================
 // onGuidedTimeoutWatchdog  (timer callback, ~10 Hz)
+//
+// Responsibilities:
+//   1. Enter AltHold when conditions are met (taken off, guided, no failsafe)
+//   2. Exit AltHold when conditions are lost
+//   3. Flip timed_out flag when operator goes quiet for guided_timeout_s_
 // ============================================================================
 
 void ControlGateNode::onGuidedTimeoutWatchdog() {
@@ -384,32 +427,27 @@ void ControlGateNode::onGuidedTimeoutWatchdog() {
 
   const InternalState st = snapshotState();
 
-  // If FCU left guided or a failsafe is active, clean up any active alt ctrl
-  if (!st.guided || isAnyFailsafeActive()) {
-    if (alt_ctrl_mode_ == AltCtrlMode::GuidedTimeout) {
-      publishAltCtrlInput(false, 0.0f, 0.0f);
-      alt_ctrl_mode_ = AltCtrlMode::Off;
-      RCLCPP_INFO(get_logger(),
-        "[alt_ctrl] Guided timeout cleared — FCU no longer in guided.");
+  // Exit AltHold if conditions are lost
+  if (!st.guided || !st.armed || isAnyFailsafeActive()) {
+    if (alt_ctrl_mode_ == AltCtrlMode::AltHold) {
+      exitAltHold();
     }
     return;
   }
 
-  // Already in guided timeout — nothing more to trigger here
-  if (alt_ctrl_mode_ == AltCtrlMode::GuidedTimeout) return;
+  if (alt_ctrl_mode_ == AltCtrlMode::Off) return;  // ← nothing to do, user hasn't toggled it on
 
+  // Inside AltHold: manage timed_out sub-state
   const double elapsed =
     std::chrono::duration<double>(
       std::chrono::steady_clock::now() - readLastAct()).count();
 
-  if (elapsed >= guided_timeout_s_) {
+  if (!alt_hold_timed_out_ && elapsed >= guided_timeout_s_) {
     const VerticalEstimateCache ve = snapshotVertEst();
-    if (!ve.valid) {
-      RCLCPP_WARN(get_logger(),
-        "[alt_ctrl] Guided timeout elapsed but no MCU data yet — skipping.");
-      return;
-    }
-    enterGuidedTimeout(ve);
+    if (!ve.valid) return;
+    enterTimedOut(ve);
+  } else if (alt_hold_timed_out_ && elapsed < guided_timeout_s_) {
+    exitTimedOut();
   }
 }
 
@@ -423,7 +461,7 @@ void ControlGateNode::onTakeoffMonitorTick() {
     return;
   }
 
-  const auto now     = std::chrono::steady_clock::now();
+  const auto  now     = std::chrono::steady_clock::now();
   const float elapsed =
     std::chrono::duration<float>(now - takeoff_start_t_).count();
 
@@ -432,6 +470,7 @@ void ControlGateNode::onTakeoffMonitorTick() {
       "[takeoff_monitor] Hard timeout after %.1f s — stopping.", elapsed);
     publishInfo(DroneInfo::LEVEL_WARN, "Takeoff monitor timed out.");
     takeoff_monitor_active_ = false;
+    has_taken_off_ = true;  
     takeoff_monitor_timer_->cancel();
     return;
   }
@@ -445,6 +484,7 @@ void ControlGateNode::onTakeoffMonitorTick() {
     publishInfo(DroneInfo::LEVEL_INFO,
       stringf("Takeoff complete: agl=%.2f m", ve.agl_m));
     takeoff_monitor_active_ = false;
+    has_taken_off_ = true;   // ← MOVE it here
     takeoff_monitor_timer_->cancel();
     return;
   }

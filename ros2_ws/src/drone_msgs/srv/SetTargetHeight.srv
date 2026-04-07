@@ -1,0 +1,16 @@
+# drone_msgs/srv/SetTargetHeight.srv
+#
+# Override the altitude hold target while the controller is running.
+# Call: /drone_N/control_gate/set_target_height
+#
+# Example (ros2 cli):
+#   ros2 service call /drone_0/control_gate/set_target_height drone_msgs/srv/SetTargetHeight "{target_agl_m: 2.5}"
+#
+# The new target takes effect on the very next PID tick.
+# An info message is published to /drone_N/cmd_gate/info on success.
+# Rejected if target_agl_m < 0.
+
+float32 target_agl_m    # desired altitude above ground level [m]
+---
+bool   success
+string message

@@ -3,8 +3,9 @@
 
 using DroneInfo = drone_msgs::msg::DroneInfo;
 
+
 // ============================================================================
-// onTeleopCommand  (unchanged logic, same as before)
+// onTeleopCommand
 // ============================================================================
 
 void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::SharedPtr msg) {
@@ -57,8 +58,9 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
   }
 }
 
+
 // ============================================================================
-// onTeleopAction  — rewritten to integrate alt ctrl modes
+// onTeleopAction
 // ============================================================================
 
 void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::SharedPtr msg) {
@@ -69,7 +71,7 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
   updateSetpointBlockStateAndMaybePublish(blocked, false);
   if (blocked) return;
 
-  // Always reset guided timeout clock on any teleop action
+  // Every teleop action resets the timeout clock
   updateLastAct(std::chrono::steady_clock::now());
 
   float eff_vx       = static_cast<float>(msg->vx);
@@ -77,51 +79,48 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
   float eff_vz       = static_cast<float>(msg->vz);
   float eff_yaw_rate = static_cast<float>(msg->yaw_rate);
 
-  // ── State 1: Guided timeout — mandatory hover ───────────────────────────
-  // Any teleop action cancels it. We exit first, then re-evaluate AltSupport
-  // on the same pass so there is no transient frame of uncontrolled vz.
-  if (alt_ctrl_mode_ == AltCtrlMode::GuidedTimeout) {
-    exitGuidedTimeout();
-    // alt_ctrl_mode_ is now Off. Fall through to AltSupport check below.
-  }
-
-  // ── State 2: AltSupport — optional vz replacement ──────────────────────
-  if (alt_ctrl_mode_ == AltCtrlMode::AltSupport) {
+  if (alt_ctrl_mode_ == AltCtrlMode::AltHold) {
     const bool vz_nonzero = (eff_vz != 0.0f);
 
+    // ── If timed out, any input cancels the full-hover sub-state ──────────
+    // (exitTimedOut is already called by the watchdog when it sees elapsed < timeout,
+    //  but we also call updateLastAct above so it will clear on next watchdog tick.
+    //  No explicit action needed here — the watchdog handles it.)
+
     if (vz_nonzero) {
-      // Operator commanding vz — stop controller, pass through as-is.
-      // Keep mode as AltSupport (armed but inactive) so that when vz returns
-      // to zero the controller re-engages with a fresh snapshot.
-      if (!alt_support_last_vz_nonzero_) {
-        // Transition: vz was zero → now nonzero. Stop controller.
-        exitAltSupport();
-        // Re-arm mode flag so we stay in AltSupport state (just inactive now)
-        alt_ctrl_mode_ = AltCtrlMode::AltSupport;
-        alt_support_last_vz_nonzero_ = true;
+      // Operator pushing vz — stop controller, pass through operator value.
+      // We stay in AltHold so it re-engages on the next vz==0 input.
+      if (!alt_hold_last_vz_nonzero_) {
+        // Transition: vz was zero → now nonzero. Deactivate PID.
+        publishAltCtrlInput(false, 0.0f, 0.0f, 0.0f);
+        alt_ctrl_output_fresh_    = false;
+        alt_hold_last_vz_nonzero_ = true;
       }
-      // eff_vz unchanged — operator's value passes through
+      // eff_vz passes through unchanged
 
     } else {
-      // vz == 0: use controller output
-      if (alt_support_last_vz_nonzero_) {
-        // Transition: vz was nonzero → now zero. Snapshot altitude and activate.
+      // vz == 0: controller holds altitude
+      if (alt_hold_last_vz_nonzero_) {
+        // Transition: vz was nonzero → now zero.
+        // Snapshot current agl as the new hold target.
         const VerticalEstimateCache ve = snapshotVertEst();
         if (ve.valid) {
-          enterAltSupport(ve.agl_m, ve.z_world_m);
+          alt_ctrl_target_agl_ = ve.agl_m;
+          publishAltCtrlInput(true, alt_ctrl_target_agl_, ve.agl_m, ve.vz_mps);
         }
-        alt_support_last_vz_nonzero_ = false;
+        alt_hold_last_vz_nonzero_ = false;
       }
 
       if (alt_ctrl_output_fresh_) {
         eff_vz = alt_ctrl_vz_output_;
       }
-      // If no controller output yet, eff_vz stays 0 — safe hover
+      // No controller output yet → eff_vz stays 0, safe hover
     }
   }
 
   publishSetpoint(eff_vx, eff_vy, eff_vz, eff_yaw_rate);
 }
+
 
 // ============================================================================
 // onMavrosState
@@ -139,6 +138,7 @@ void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg
   fcu_state_.store(msg->system_status, std::memory_order_relaxed);
 }
 
+
 // ============================================================================
 // onGcsHeartbeat
 // ============================================================================
@@ -146,7 +146,9 @@ void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg
 void ControlGateNode::onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg) {
   const auto now_ns   = this->now().nanoseconds();
   const auto stamp_ns = rclcpp::Time(msg->stamp).nanoseconds();
-  const int64_t diff_ns = (now_ns > stamp_ns) ? (now_ns - stamp_ns) : (stamp_ns - now_ns);
+  const int64_t diff_ns = (now_ns > stamp_ns)
+                          ? (now_ns - stamp_ns)
+                          : (stamp_ns - now_ns);
 
   if (diff_ns > 3'000'000'000LL) return;  // stale heartbeat
 
@@ -167,6 +169,7 @@ void ControlGateNode::onGcsHeartbeat(const GcsHeartbeat::SharedPtr msg) {
 
   time_since_heartbeat_ns_.store(this->now().nanoseconds(), std::memory_order_relaxed);
 }
+
 
 // ============================================================================
 // onFailsafeWatchdog
@@ -226,8 +229,17 @@ void ControlGateNode::onFailsafeWatchdog() {
   }
 }
 
+
 // ============================================================================
-// onVerticalEstimate  — update cache and forward to altitude controller
+// onVerticalEstimate  — update cache and forward ALL fields to altitude controller
+//
+// FIX: previously only (active, agl, vz_mps) were forwarded; the PID node
+// received only the current velocity and the fixed target but not the live
+// current_agl_m needed to compute the error.  Now we send all four fields:
+//   active          = true  (controller stays running while mode is active)
+//   target_agl_m    = alt_ctrl_target_agl_   (operator-set or snapshotted)
+//   current_agl_m   = vert_est_.agl_m        (live measurement from MCU)
+//   current_vz_mps  = vert_est_.vz_mps       (live velocity from MCU)
 // ============================================================================
 
 void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) {
@@ -235,19 +247,24 @@ void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) 
 
   {
     std::lock_guard<std::mutex> lk(vert_est_mtx_);
-    vert_est_.z_world_m    = static_cast<float>(msg->vector.x);
-    vert_est_.vz_mps       = static_cast<float>(msg->vector.y);
-    vert_est_.agl_m        = static_cast<float>(msg->vector.z);
-    vert_est_.valid        = true;
+    vert_est_.z_world_m = static_cast<float>(msg->vector.x);
+    vert_est_.vz_mps    = static_cast<float>(msg->vector.y);
+    vert_est_.agl_m     = static_cast<float>(msg->vector.z);
+    vert_est_.valid     = true;
   }
 
-  // Keep controller updated at MCU rate while any mode is active.
-  // The fixed target never changes — only the controller's internal state
-  // needs the fresh timestamp implied by repeated messages.
+  // Forward to controller at MCU rate while any mode is active.
+  // current_agl_m and current_vz_mps are now passed so the PID node
+  // has everything it needs to compute error = target - current.
   if (alt_ctrl_mode_ != AltCtrlMode::Off) {
-    publishAltCtrlInput(true, alt_ctrl_fixed_agl_, vert_est_.vz_mps);
+    publishAltCtrlInput(
+      /*active=*/        true,
+      /*target_agl_m=*/  alt_ctrl_target_agl_,
+      /*current_agl_m=*/ vert_est_.agl_m,
+      /*current_vz_mps=*/vert_est_.vz_mps);
   }
 }
+
 
 // ============================================================================
 // onAltCtrlOutput  — receive vz from PID node
@@ -259,11 +276,53 @@ void ControlGateNode::onAltCtrlOutput(const AltCtrlOutput::SharedPtr msg) {
   alt_ctrl_vz_output_    = msg->data;
   alt_ctrl_output_fresh_ = true;
 
-  // In GuidedTimeout we drive setpoints directly here (no teleop action needed)
-  // so hover is maintained even with no operator input.
-  if (alt_ctrl_mode_ == AltCtrlMode::GuidedTimeout) {
+  // When timed out, drive setpoints directly from here (no teleop action
+  // arriving) so the drone hovers even with no operator input.
+  if (alt_ctrl_mode_ == AltCtrlMode::AltHold && alt_hold_timed_out_) {
     const InternalState st = snapshotState();
     if (isSetpointBlocked(st)) return;
     publishSetpoint(0.0f, 0.0f, alt_ctrl_vz_output_, 0.0f);
   }
+}
+
+
+// ============================================================================
+// onSetTargetHeight  — service callback
+//
+// Lets an operator set a specific hold altitude on-the-fly.
+// The new target is stored in alt_ctrl_target_agl_ and, if the controller
+// is currently active, a fresh message is immediately pushed to it so the
+// next PID tick uses the updated target.
+// ============================================================================
+
+void ControlGateNode::onSetTargetHeight(
+  const std::shared_ptr<SetTargetHeight::Request>  req,
+  std::shared_ptr<SetTargetHeight::Response>       res)
+{
+  if (req->target_agl_m < 0.0f) {
+    res->success = false;
+    res->message = "target_agl_m must be >= 0.";
+    RCLCPP_WARN(get_logger(), "SetTargetHeight rejected: %s", res->message.c_str());
+    return;
+  }
+
+  const float old_target = alt_ctrl_target_agl_;
+  alt_ctrl_target_agl_   = req->target_agl_m;
+
+  const std::string info_msg = stringf(
+    "Target height updated: %.2f m → %.2f m", old_target, alt_ctrl_target_agl_);
+  RCLCPP_INFO(get_logger(), "[set_target_height] %s", info_msg.c_str());
+  publishInfo(DroneInfo::LEVEL_INFO, info_msg);
+
+  // If the controller is running, push a new message immediately so the PID
+  // node picks up the changed target before the next MCU packet arrives.
+  if (alt_ctrl_mode_ != AltCtrlMode::Off) {
+      const VerticalEstimateCache ve = snapshotVertEst();
+      if (ve.valid) {
+          publishAltCtrlInput(true, alt_ctrl_target_agl_, ve.agl_m, ve.vz_mps, true);
+      }
+  }
+
+  res->success = true;
+  res->message = info_msg;
 }

@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
 project(drone_msgs)
-
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(builtin_interfaces REQUIRED)
@@ -15,7 +14,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Toggle.msg"
   "msg/FrameData.msg"
   "msg/AltitudeControllerInput.msg"
-  DEPENDENCIES 
+  "srv/SetPidGains.srv"
+  "srv/SetTargetHeight.srv"
+  DEPENDENCIES
     builtin_interfaces
     sensor_msgs
 )
