@@ -43,11 +43,13 @@ endif()
 message(STATUS "HailoRT: ${HAILORT_LIBRARY}  includes: ${HAILORT_INCLUDE_DIR}")
 
 # ── Shared library (components) ───────────────────────────────────────────────
+# NOTE: record_video.cpp has been retired — its functionality (H264/MP4 recording,
+#       detection CSV, record toggle topics) is now part of vision_pipeline.cpp.
+#       The retired sources are kept in src/record_video_RETIRED.cpp for reference.
 add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
   src/mjpeg_writer.cpp
   src/h264_encoder.cpp
-  src/record_video.cpp
   src/vision_pipeline.cpp
 )
 
@@ -84,10 +86,7 @@ rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::CameraCapture"
   EXECUTABLE camera_capture_node
 )
-rclcpp_components_register_node(drone_pipeline_components
-  PLUGIN "drone_pipeline::RecordVideo"
-  EXECUTABLE record_video_node
-)
+# NOTE: drone_pipeline::RecordVideo has been retired; no longer registered.
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::VisionPipeline"
   EXECUTABLE vision_pipeline_node

@@ -3,6 +3,11 @@
 #include <stdexcept>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "yaml-cpp/yaml.h"
@@ -11,6 +16,13 @@
 
 // OpenCV for letterbox resize
 #include <opencv2/imgproc.hpp>
+
+extern "C" {
+#include <libavutil/opt.h>
+#include <libavutil/avutil.h>
+}
+
+namespace fs = std::filesystem;
 
 namespace drone_pipeline
 {
@@ -39,27 +51,23 @@ VisionConfig VisionPipeline::loadConfig()
                      "/" + root["custom_topics"]["images"].as<std::string>();
 
   const auto cam = root["camera"];
-  cfg.width  = cam["width"].as<int>();
-  cfg.height = cam["height"].as<int>();
-  cfg.fps    = cam["fps"].as<int>();
+  cfg.width              = cam["width"].as<int>();
+  cfg.height             = cam["height"].as<int>();
+  cfg.fps                = cam["fps"].as<int>();
   cfg.gimbal_pitch_angle = cam["gimbal_pitch_angle"].as<double>();
 
-  
-  
   const auto vp = root["vision_pipeline"];
-  cfg.hef_path        = vp["obj_det_hef_path"].as<std::string>();
-  cfg.score_threshold = vp["obj_det_score_thresh"].as<float>();
+  cfg.hef_path         = vp["obj_det_hef_path"].as<std::string>();
+  cfg.score_threshold  = vp["obj_det_score_thresh"].as<float>();
   cfg.model_input_size = vp["obj_det_model_input_size"].as<int>();
   cfg.person_class_idx = vp["obj_det_person_class_idx"].as<int>();
 
-  // Camera intrinsics
   const auto intr = vp["camera_intrinsics"];
   cfg.fx = intr["fx"].as<double>();
   cfg.fy = intr["fy"].as<double>();
   cfg.cx = intr["cx"].as<double>();
   cfg.cy = intr["cy"].as<double>();
 
-  // Distortion coefficients
   const auto dist = vp["distortion"];
   cfg.k1 = dist["k1"].as<double>();
   cfg.k2 = dist["k2"].as<double>();
@@ -67,13 +75,16 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.p2 = dist["p2"].as<double>();
   cfg.k3 = dist["k3"].as<double>();
 
+  cfg.logs_path = root["flight_params"]["logs_path"].as<std::string>();
+
   RCLCPP_INFO(get_logger(),
-    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  score_thresh=%.2f  model_input=%d  person_class=%d",
+    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  score_thresh=%.2f  "
+    "model_input=%d  person_class=%d",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
     cfg.hef_path.c_str(), cfg.score_threshold, cfg.model_input_size, cfg.person_class_idx);
 
-  RCLCPP_INFO(get_logger(), "Gimbal pitch angle= %.2f deg)", cfg.gimbal_pitch_angle);
+  RCLCPP_INFO(get_logger(), "Gimbal pitch angle=%.2f deg", cfg.gimbal_pitch_angle);
 
   RCLCPP_INFO(get_logger(),
     "Camera intrinsics → fx=%.4f fy=%.4f cx=%.4f cy=%.4f",
@@ -84,6 +95,32 @@ VisionConfig VisionPipeline::loadConfig()
     cfg.k1, cfg.k2, cfg.p1, cfg.p2, cfg.k3);
 
   return cfg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Session directory (mirrors RecordVideo::resolveSessionDir logic)
+//  Joins the existing highest-numbered session directory created by
+//  FlightLogger so all artefacts for one flight share one folder.
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::string VisionPipeline::resolveSessionDir(const std::string & logs_path)
+{
+  fs::create_directories(logs_path);
+
+  std::size_t dir_count = 0;
+  for (const auto & entry : fs::directory_iterator(logs_path))
+    if (entry.is_directory()) ++dir_count;
+
+  std::size_t session_num = (dir_count == 0) ? 1 : dir_count;
+
+  std::ostringstream oss;
+  oss << std::setw(4) << std::setfill('0') << session_num;
+  std::string candidate = logs_path + "/" + oss.str();
+
+  if (!fs::exists(candidate)) fs::create_directory(candidate);
+
+  RCLCPP_INFO(get_logger(), "Session directory: %s", candidate.c_str());
+  return candidate;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,9 +156,8 @@ void VisionPipeline::initHailo()
     }
   }
 
-  if (hailo_output_frame_size_ == 0) {
+  if (hailo_output_frame_size_ == 0)
     throw std::runtime_error("Failed to determine Hailo output frame size");
-  }
 
   auto configured_exp = infer_model->configure();
   if (!configured_exp) {
@@ -133,8 +169,8 @@ void VisionPipeline::initHailo()
 
   const size_t nms_output_floats = hailo_output_frame_size_ / sizeof(float);
 
-  const auto &input_names  = infer_model->get_input_names();
-  const auto &output_names = infer_model->get_output_names();
+  const auto & input_names  = infer_model->get_input_names();
+  const auto & output_names = infer_model->get_output_names();
 
   if (input_names.empty())  throw std::runtime_error("Hailo model has no inputs");
   if (output_names.empty()) throw std::runtime_error("Hailo model has no outputs");
@@ -150,8 +186,8 @@ void VisionPipeline::initHailo()
     auto bindings_exp = hailo_infer_model_.create_bindings();
     if (!bindings_exp) {
       throw std::runtime_error(
-        "create_bindings failed for slot " + std::to_string(i) +
-        ": " + std::to_string(static_cast<int>(bindings_exp.status())));
+        "create_bindings failed for slot " + std::to_string(i) + ": " +
+        std::to_string(static_cast<int>(bindings_exp.status())));
     }
 
     auto bindings = bindings_exp.release();
@@ -160,18 +196,18 @@ void VisionPipeline::initHailo()
       hailort::MemoryView(buffer_[i].letterbox_buf.data(), buffer_[i].letterbox_buf.size()));
     if (in_status != HAILO_SUCCESS) {
       throw std::runtime_error(
-        "Failed to set input buffer for slot " + std::to_string(i) +
-        ": " + std::to_string(static_cast<int>(in_status)));
+        "Failed to set input buffer for slot " + std::to_string(i) + ": " +
+        std::to_string(static_cast<int>(in_status)));
     }
 
     auto out_status = bindings.output(output_name)->set_buffer(
       hailort::MemoryView(
-        reinterpret_cast<uint8_t*>(buffer_[i].nms_output_buf.data()),
+        reinterpret_cast<uint8_t *>(buffer_[i].nms_output_buf.data()),
         buffer_[i].nms_output_buf.size() * sizeof(float)));
     if (out_status != HAILO_SUCCESS) {
       throw std::runtime_error(
-        "Failed to set output buffer for slot " + std::to_string(i) +
-        ": " + std::to_string(static_cast<int>(out_status)));
+        "Failed to set output buffer for slot " + std::to_string(i) + ": " +
+        std::to_string(static_cast<int>(out_status)));
     }
 
     hailo_bindings_[i] = std::move(bindings);
@@ -216,7 +252,6 @@ void VisionPipeline::runYawCalibration()
 
     yaw_samples.push_back(yaw);
 
-    // Mark consumed so we don't re-read the same quaternion
     {
       std::lock_guard<std::mutex> lk(latest_quat_mtx_);
       latest_quat_.valid = false;
@@ -229,7 +264,6 @@ void VisionPipeline::runYawCalibration()
       kYawCalibTimeout);
     yaw_offset_ = 0.0;
   } else {
-    // Circular mean to handle wrap-around correctly at ±π
     double sum_sin = 0.0, sum_cos = 0.0;
     for (double y : yaw_samples) { sum_sin += std::sin(y); sum_cos += std::cos(y); }
     yaw_offset_ = std::atan2(sum_sin / static_cast<double>(yaw_samples.size()),
@@ -256,7 +290,7 @@ void VisionPipeline::runYawCalibration()
 VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 : Node("vision_pipeline", options)
 {
-  config_ = loadConfig();
+  config_          = loadConfig();
   gimbal_pitch_rad_ = config_.gimbal_pitch_angle * M_PI / 180.0;
 
   // ── De-letterbox constants ────────────────────────────────────────────────
@@ -264,8 +298,8 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
               static_cast<float>(std::max(config_.width, config_.height));
   const int scaled_w = static_cast<int>(std::round(config_.width  * lb_scale_));
   const int scaled_h = static_cast<int>(std::round(config_.height * lb_scale_));
-  lb_pad_left_  = (config_.model_input_size - scaled_w) / 2;
-  lb_pad_top_   = (config_.model_input_size - scaled_h) / 2;
+  lb_pad_left_ = (config_.model_input_size - scaled_w) / 2;
+  lb_pad_top_  = (config_.model_input_size - scaled_h) / 2;
 
   RCLCPP_INFO(get_logger(),
     "Letterbox: scale=%.4f  scaled=%dx%d  pad_left=%d  pad_top=%d",
@@ -285,6 +319,13 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
     projector_ = std::make_unique<GroundProjector>(cp, dc);
   }
 
+  // ── Session directory for recording ──────────────────────────────────────
+  session_dir_ = resolveSessionDir(config_.logs_path);
+  videos_dir_  = session_dir_ + "/videos";
+  data_dir_    = session_dir_ + "/data";
+  fs::create_directories(videos_dir_);
+  fs::create_directories(data_dir_);
+
   // ── libjpeg-turbo ────────────────────────────────────────────────────────
   tj_decompress_ = tjInitDecompress();
   if (!tj_decompress_) throw std::runtime_error("VisionPipeline: tjInitDecompress failed");
@@ -303,15 +344,11 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 
   frame_sub_ = create_subscription<drone_msgs::msg::FrameData>(
     config_.frames_topic, sensor_qos,
-    [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) {
-      frameCallback(msg);
-    });
+    [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); });
 
   stream_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
     dp + "/camera/stream/cmd", reliable_qos,
-    [this](const drone_msgs::msg::Toggle::SharedPtr msg) {
-      streamCmdCallback(msg);
-    });
+    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); });
 
   stream_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     dp + "/camera/stream/active", reliable_qos);
@@ -319,9 +356,18 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   stream_out_pub_ = create_publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>(
     dp + "/camera/stream/out", sensor_qos);
 
-  publishStreamState();
+  // Recording command / state (ownership migrated from RecordVideo node)
+  record_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
+    dp + "/camera/record/cmd", reliable_qos,
+    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { recordCmdCallback(msg); });
 
-  // ── Yaw calibration thread (starts after subscriptions are live) ─────────
+  record_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
+    dp + "/camera/record/active", reliable_qos);
+
+  publishStreamState();
+  publishRecordState();
+
+  // ── Yaw calibration thread ────────────────────────────────────────────────
   yaw_calib_thread_ = std::thread(&VisionPipeline::runYawCalibration, this);
 
   // ── Worker threads ────────────────────────────────────────────────────────
@@ -332,6 +378,18 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   // ── Encoder thread ────────────────────────────────────────────────────────
   encoder_running_.store(true);
   encoder_thread_ = std::thread(&VisionPipeline::encoderLoop, this);
+
+  // ── Detection CSV periodic flush timer (every 3 s) ───────────────────────
+  det_flush_timer_ = create_wall_timer(
+    std::chrono::seconds(3),
+    [this]() {
+      std::lock_guard<std::mutex> lk(det_csv_mtx_);
+      if (!det_csv_file_.is_open()) return;
+      for (const auto & line : det_csv_buffer_)
+        det_csv_file_ << line;
+      det_csv_buffer_.clear();
+      det_csv_file_.flush();
+    });
 
   RCLCPP_INFO(get_logger(), "vision_pipeline ready.");
 }
@@ -360,11 +418,164 @@ VisionPipeline::~VisionPipeline()
     slot.cv.notify_all();
   if (encoder_thread_.joinable()) encoder_thread_.join();
 
-  // Calibration thread will have long finished in normal operation
+  // Flush and close detection CSV
+  {
+    std::lock_guard<std::mutex> lk(det_csv_mtx_);
+    if (det_csv_file_.is_open()) {
+      for (const auto & line : det_csv_buffer_) det_csv_file_ << line;
+      det_csv_buffer_.clear();
+      det_csv_file_.flush();
+      det_csv_file_.close();
+    }
+  }
+
+  // Close any open recording clip
+  if (rec_fmt_ctx_) closeRecordClip();
+
   if (yaw_calib_thread_.joinable()) yaw_calib_thread_.join();
 
-  std::lock_guard<std::mutex> lk(encoder_mtx_);
-  if (h264_encoder_.isOpen()) h264_encoder_.close();
+  {
+    std::lock_guard<std::mutex> lk(encoder_mtx_);
+    if (h264_encoder_.isOpen()) h264_encoder_.close();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Recording — clip open / close / write
+// ─────────────────────────────────────────────────────────────────────────────
+
+void VisionPipeline::openRecordClip()
+{
+  ++clip_index_;
+
+  std::ostringstream idx;
+  idx << std::setw(3) << std::setfill('0') << clip_index_;
+
+  const std::string video_path = videos_dir_ + "/" + idx.str() + ".mp4";
+  const std::string csv_path   = data_dir_   + "/" + idx.str() + "_detections.csv";
+
+  // ── FFmpeg MP4 muxer ──────────────────────────────────────────────────────
+  if (avformat_alloc_output_context2(
+        &rec_fmt_ctx_, nullptr, "mp4", video_path.c_str()) < 0)
+    throw std::runtime_error("VisionPipeline: cannot allocate MP4 output context");
+
+  const AVCodec * h264_codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+  if (!h264_codec)
+    throw std::runtime_error("VisionPipeline: H264 codec descriptor not found in FFmpeg");
+
+  rec_video_stream_ = avformat_new_stream(rec_fmt_ctx_, h264_codec);
+  if (!rec_video_stream_)
+    throw std::runtime_error("VisionPipeline: cannot allocate video stream for MP4");
+
+  AVCodecParameters * par = rec_video_stream_->codecpar;
+  par->codec_type = AVMEDIA_TYPE_VIDEO;
+  par->codec_id   = AV_CODEC_ID_H264;
+  par->width      = config_.width;
+  par->height     = config_.height;
+  par->format     = AV_PIX_FMT_YUV420P;
+
+  rec_video_stream_->time_base      = AVRational{1, config_.fps};
+  rec_video_stream_->avg_frame_rate = AVRational{config_.fps, 1};
+
+  // Enable faststart (moov atom at front) for easier playback
+  AVDictionary * opts = nullptr;
+  av_dict_set(&opts, "movflags", "faststart", 0);
+
+  if (!(rec_fmt_ctx_->oformat->flags & AVFMT_NOFILE)) {
+    if (avio_open(&rec_fmt_ctx_->pb, video_path.c_str(), AVIO_FLAG_WRITE) < 0) {
+      av_dict_free(&opts);
+      throw std::runtime_error("VisionPipeline: cannot open MP4 file " + video_path);
+    }
+  }
+
+  if (avformat_write_header(rec_fmt_ctx_, &opts) < 0) {
+    av_dict_free(&opts);
+    throw std::runtime_error("VisionPipeline: avformat_write_header failed");
+  }
+  av_dict_free(&opts);
+  rec_pts_ = 0;
+
+  // ── Detection CSV ─────────────────────────────────────────────────────────
+  {
+    std::lock_guard<std::mutex> lk(det_csv_mtx_);
+    det_csv_file_.open(csv_path, std::ios::out | std::ios::trunc);
+    if (!det_csv_file_.is_open())
+      throw std::runtime_error("VisionPipeline: cannot open detection CSV: " + csv_path);
+
+    det_csv_file_ <<
+      "frame_sec,frame_nanosec,"
+      "frame_idx,"
+      "id,"
+      "x_min,y_min,x_max,y_max,"
+      "score,"
+      "world_x,world_y\n";
+  }
+
+  RCLCPP_INFO(get_logger(), "Recording started → %s | %s",
+    video_path.c_str(), csv_path.c_str());
+}
+
+void VisionPipeline::closeRecordClip()
+{
+  if (!rec_fmt_ctx_) return;
+
+  av_write_trailer(rec_fmt_ctx_);
+
+  if (!(rec_fmt_ctx_->oformat->flags & AVFMT_NOFILE))
+    avio_closep(&rec_fmt_ctx_->pb);
+
+  avformat_free_context(rec_fmt_ctx_);
+  rec_fmt_ctx_       = nullptr;
+  rec_video_stream_  = nullptr;
+  rec_pts_           = 0;
+
+  // Flush detection CSV
+  {
+    std::lock_guard<std::mutex> lk(det_csv_mtx_);
+    if (det_csv_file_.is_open()) {
+      for (const auto & line : det_csv_buffer_) det_csv_file_ << line;
+      det_csv_buffer_.clear();
+      det_csv_file_.flush();
+      det_csv_file_.close();
+    }
+  }
+
+  std::ostringstream idx;
+  idx << std::setw(3) << std::setfill('0') << clip_index_;
+  RCLCPP_INFO(get_logger(), "Recording stopped → clip %s finalized.", idx.str().c_str());
+}
+
+int64_t VisionPipeline::writeRecordPacket(
+  const H264Encoder::EncodeResult & result,
+  uint32_t stamp_sec,
+  uint32_t stamp_nanosec)
+{
+  if (!rec_fmt_ctx_ || result.data.empty()) return -1;
+
+  const int64_t used_pts = rec_pts_;   // capture before increment — this is the MP4 frame index
+
+  AVPacket * pkt = av_packet_alloc();
+  if (!pkt) return -1;
+
+  uint8_t * buf = static_cast<uint8_t *>(av_malloc(result.data.size()));
+  if (!buf) { av_packet_free(&pkt); return -1; }
+  std::memcpy(buf, result.data.data(), result.data.size());
+
+  av_packet_from_data(pkt, buf, static_cast<int>(result.data.size()));
+
+  pkt->stream_index = rec_video_stream_->index;
+  pkt->pts          = used_pts;
+  pkt->dts          = used_pts;
+  pkt->duration     = 1;
+  if (result.is_key_frame) pkt->flags |= AV_PKT_FLAG_KEY;
+  ++rec_pts_;
+
+  (void)stamp_sec;
+  (void)stamp_nanosec;
+
+  av_interleaved_write_frame(rec_fmt_ctx_, pkt);
+  av_packet_free(&pkt);
+  return used_pts;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,7 +603,7 @@ int VisionPipeline::acquireSlot()
 
 void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg)
 {
-  // ── Feed latest quaternion to calibration thread (non-blocking) ───────────
+  // Feed latest quaternion to calibration thread (non-blocking)
   if (!yaw_calibrated_.load() && msg->odom_valid) {
     std::lock_guard<std::mutex> lk(latest_quat_mtx_);
     latest_quat_ = {msg->quat_x, msg->quat_y, msg->quat_z, msg->quat_w, true};
@@ -405,11 +616,10 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
     return;
   }
 
-  FrameSlot & slot = buffer_[idx];
+  FrameSlot & slot   = buffer_[idx];
   slot.stamp_sec     = msg->image.header.stamp.sec;
   slot.stamp_nanosec = msg->image.header.stamp.nanosec;
 
-  // ── Odometry snapshot ─────────────────────────────────────────────────────
   slot.pos_x      = msg->pos_x;
   slot.pos_y      = msg->pos_y;
   slot.pos_z      = msg->pos_z;
@@ -419,14 +629,15 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   slot.quat_w     = msg->quat_w;
   slot.odom_valid = msg->odom_valid;
 
+  slot.detections.clear();
+
   const int ret = tjDecompress2(
     tj_decompress_,
     msg->image.data.data(),
     static_cast<unsigned long>(msg->image.data.size()),
     slot.rgb.data(),
     config_.width, 0, config_.height,
-    TJPF_RGB, TJFLAG_FASTDCT
-  );
+    TJPF_RGB, TJFLAG_FASTDCT);
 
   if (ret != 0) {
     slot.state.store(SlotState::FREE, std::memory_order_release);
@@ -484,8 +695,8 @@ void VisionPipeline::workerLoop()
     cv::Mat resized;
     cv::resize(src, resized, cv::Size(scaled_w, scaled_h), 0, 0, cv::INTER_LINEAR);
 
-   cv::Mat letterbox(config_.model_input_size, config_.model_input_size,
-                    CV_8UC3, slot.letterbox_buf.data());
+    cv::Mat letterbox(config_.model_input_size, config_.model_input_size,
+                      CV_8UC3, slot.letterbox_buf.data());
     letterbox.setTo(cv::Scalar(0, 0, 0));
 
     const cv::Rect roi(lb_pad_left_, lb_pad_top_, scaled_w, scaled_h);
@@ -513,27 +724,30 @@ void VisionPipeline::workerLoop()
       static constexpr int kMaxBboxPerClass = 100;
       static constexpr int kClassStride     = 1 + kMaxBboxPerClass * 5;
 
-      const float * nms      = cb_slot.nms_output_buf.data();
-      const float * cls_ptr  = nms + config_.person_class_idx * kClassStride;
+      const float * nms     = cb_slot.nms_output_buf.data();
+      const float * cls_ptr = nms + config_.person_class_idx * kClassStride;
       const int     num_dets = static_cast<int>(cls_ptr[0]);
 
-      if (num_dets > 0) {
-        cv::Mat frame(config_.height, config_.width, CV_8UC3, cb_slot.rgb.data());
+      cb_slot.detections.clear();
 
+      if (num_dets > 0) {
         // ── Decode pose for ground projection ─────────────────────────
-        double roll = 0.0, pitch = 0.0, yaw = 0.0;
-        const bool can_project = cb_slot.odom_valid;
+        bool can_project = cb_slot.odom_valid;
+        double yaw = 0.0;
         if (can_project) {
           tf2::Quaternion tf_q(
             cb_slot.quat_x, cb_slot.quat_y,
             cb_slot.quat_z, cb_slot.quat_w);
-          tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);  // keep for yaw only
+          double roll_unused, pitch_unused;
+          tf2::Matrix3x3(tf_q).getRPY(roll_unused, pitch_unused, yaw);
           yaw -= yaw_offset_;
           projector_->setPose(
             cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
             yaw, gimbal_pitch_rad_, 0.0);
         }
-        
+
+        cb_slot.detections.reserve(num_dets);
+
         for (int d = 0; d < num_dets; ++d) {
           const float * det      = cls_ptr + 1 + d * 5;
           const float y_min_norm = det[0];
@@ -558,47 +772,32 @@ void VisionPipeline::workerLoop()
           const int ix1 = std::min(config_.width  - 1, static_cast<int>(x_max));
           const int iy1 = std::min(config_.height - 1, static_cast<int>(y_max));
 
-          // Bounding box — bright green
-          cv::rectangle(frame,
-            cv::Point(ix0, iy0), cv::Point(ix1, iy1),
-            cv::Scalar(0, 255, 0), 2);
-
-          // Detection score — bottom-left of top edge
-          char score_label[16];
-          std::snprintf(score_label, sizeof(score_label), "%.2f", score);
-          cv::putText(frame, score_label,
-            cv::Point(ix0, std::max(iy0 - 4, 0)),
-            cv::FONT_HERSHEY_SIMPLEX, 0.5,
-            cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
-
-          // ── Ground position label — centred above bbox top edge ──────
-          // Foot point = bottom-centre of bounding box
+          // ── Ground projection (foot point = bottom-centre of bbox) ─────
           const int foot_u = (ix0 + ix1) / 2;
           const int foot_v = iy1;
 
-          char pos_label[48];
+          double world_x = std::numeric_limits<double>::quiet_NaN();
+          double world_y = std::numeric_limits<double>::quiet_NaN();
+
           if (can_project) {
             const auto res = projector_->projectOne(Pixel{foot_u, foot_v});
             if (res.valid) {
-              std::snprintf(pos_label, sizeof(pos_label),
-                "x=%.1f y=%.1f", res.world_x, res.world_y);
-            } else {
-              std::snprintf(pos_label, sizeof(pos_label), "ABOVE GROUND");
+              world_x = res.world_x;
+              world_y = res.world_y;
             }
-          } else {
-            std::snprintf(pos_label, sizeof(pos_label), "NO ODOM");
           }
 
-          int baseline = 0;
-          const cv::Size text_sz = cv::getTextSize(
-            pos_label, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &baseline);
-          const int label_x = std::max(0, (ix0 + ix1) / 2 - text_sz.width / 2);
-          const int label_y = std::max(text_sz.height + 2, iy0 - 6);
+          Detection det_obj;
+          det_obj.x_min   = x_min;
+          det_obj.y_min   = y_min;
+          det_obj.x_max   = x_max;
+          det_obj.y_max   = y_max;
+          det_obj.score   = score;
+          det_obj.id      = 0;      // placeholder; tracker will assign real IDs
+          det_obj.world_x = world_x;
+          det_obj.world_y = world_y;
 
-          cv::putText(frame, pos_label,
-            cv::Point(label_x, label_y),
-            cv::FONT_HERSHEY_SIMPLEX, 0.45,
-            cv::Scalar(255, 255, 0), 1, cv::LINE_AA);
+          cb_slot.detections.push_back(det_obj);
         }
       }
 
@@ -629,6 +828,8 @@ void VisionPipeline::workerLoop()
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Encoder loop
+//  Runs for both streaming and recording — the H264 encoder is opened when
+//  either streaming or recording is active, and closed when both are off.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VisionPipeline::encoderLoop()
@@ -647,6 +848,7 @@ void VisionPipeline::encoderLoop()
 
     FrameSlot & slot = buffer_[idx];
 
+    // Wait until Hailo inference has finished for this slot
     {
       std::unique_lock<std::mutex> lk(slot.cv_mtx);
       slot.cv.wait(lk, [&slot, this] {
@@ -660,25 +862,70 @@ void VisionPipeline::encoderLoop()
       break;
     }
 
-    if (streaming_.load()) {
+    const bool do_stream = streaming_.load();
+    const bool do_record = recording_.load();
+    int64_t written_pts = -1;
+
+    if (do_stream || do_record) {
       H264Encoder::EncodeResult result;
       {
         std::lock_guard<std::mutex> lk(encoder_mtx_);
-        result = h264_encoder_.encode(
-          slot.rgb.data(), config_.width, config_.height);
+        result = h264_encoder_.encode(slot.rgb.data(), config_.width, config_.height);
       }
 
       if (!result.data.empty()) {
-        auto out = std::make_unique<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>();
-        out->header.stamp.sec     = slot.stamp_sec;
-        out->header.stamp.nanosec = slot.stamp_nanosec;
-        out->width                = config_.width;
-        out->height               = config_.height;
-        out->encoding             = "h264";
-        out->pts                  = result.pts;
-        out->flags                = result.is_key_frame ? 1 : 0;
-        out->data                 = std::move(result.data);
-        stream_out_pub_->publish(std::move(out));
+        // ── Publish stream packet ─────────────────────────────────────────
+        if (do_stream) {
+          auto out = std::make_unique<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>();
+          out->header.stamp.sec     = slot.stamp_sec;
+          out->header.stamp.nanosec = slot.stamp_nanosec;
+          out->width                = config_.width;
+          out->height               = config_.height;
+          out->encoding             = "h264";
+          out->pts                  = result.pts;
+          out->flags                = result.is_key_frame ? 1 : 0;
+          out->data                 = result.data;     // copy; recording may also need it
+          stream_out_pub_->publish(std::move(out));
+        }
+
+        // ── Write to MP4 recording; capture the frame index used ──────────
+        if (do_record) {
+          written_pts = writeRecordPacket(result, slot.stamp_sec, slot.stamp_nanosec);
+        }
+      }
+    }
+
+    // ── Detection CSV — one row per detection, buffered ───────────────────
+    // Guard on written_pts >= 0 so frame_idx in the CSV always matches a real
+    // written MP4 frame (encoder may return empty data on the first few frames).
+    if (do_record && written_pts >= 0 && !slot.detections.empty()) {
+      std::lock_guard<std::mutex> lk(det_csv_mtx_);
+
+      for (const auto & det : slot.detections) {
+        std::ostringstream oss;
+        oss << slot.stamp_sec     << ','
+            << slot.stamp_nanosec << ','
+            << written_pts        << ','   // MP4 frame index — use with cap.set(CAP_PROP_POS_FRAMES, frame_idx)
+            << det.id             << ','
+            << det.x_min          << ','
+            << det.y_min          << ','
+            << det.x_max          << ','
+            << det.y_max          << ','
+            << det.score          << ',';
+
+        if (std::isnan(det.world_x)) oss << "nan"; else oss << det.world_x;
+        oss << ',';
+        if (std::isnan(det.world_y)) oss << "nan"; else oss << det.world_y;
+        oss << '\n';
+
+        det_csv_buffer_.push_back(oss.str());
+      }
+
+      // Eager flush if buffer is large
+      if (det_csv_buffer_.size() >= kDetFlushSize && det_csv_file_.is_open()) {
+        for (const auto & line : det_csv_buffer_) det_csv_file_ << line;
+        det_csv_buffer_.clear();
+        det_csv_file_.flush();
       }
     }
 
@@ -692,22 +939,29 @@ void VisionPipeline::encoderLoop()
 
 void VisionPipeline::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
 {
-  if (!streaming_.load()) {
-    try {
-      std::lock_guard<std::mutex> lk(encoder_mtx_);
-      h264_encoder_.open(config_.width, config_.height,
-                         config_.fps, config_.fps / 2);
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(get_logger(), "Failed to open H264 encoder: %s", e.what());
-      return;
+  const bool was_streaming = streaming_.load();
+  const bool is_recording  = recording_.load();
+
+  if (!was_streaming) {
+    // Open encoder only if it isn't already open (recording may have opened it)
+    if (!is_recording) {
+      try {
+        std::lock_guard<std::mutex> lk(encoder_mtx_);
+        h264_encoder_.open(config_.width, config_.height, config_.fps, config_.fps / 2);
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Failed to open H264 encoder: %s", e.what());
+        return;
+      }
     }
     streaming_.store(true);
-    RCLCPP_INFO(get_logger(), "Stream → ON  (%dx%d @ %d fps)",
-      config_.width, config_.height, config_.fps);
+    RCLCPP_INFO(get_logger(), "Stream → ON  (%dx%d @ %d fps)", config_.width, config_.height, config_.fps);
   } else {
     streaming_.store(false);
-    std::lock_guard<std::mutex> lk(encoder_mtx_);
-    h264_encoder_.close();
+    // Close encoder only if recording is also off
+    if (!is_recording) {
+      std::lock_guard<std::mutex> lk(encoder_mtx_);
+      h264_encoder_.close();
+    }
     RCLCPP_INFO(get_logger(), "Stream → OFF");
   }
   publishStreamState();
@@ -718,6 +972,62 @@ void VisionPipeline::publishStreamState()
   drone_msgs::msg::Toggle msg;
   msg.state = streaming_.load();
   stream_state_pub_->publish(msg);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Record toggle (migrated from RecordVideo node)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void VisionPipeline::recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
+{
+  const bool was_recording = recording_.load();
+  const bool is_streaming  = streaming_.load();
+
+  if (!was_recording) {
+    // Open encoder if not already open (streaming may have done it already)
+    if (!is_streaming) {
+      try {
+        std::lock_guard<std::mutex> lk(encoder_mtx_);
+        h264_encoder_.open(config_.width, config_.height, config_.fps, config_.fps / 2);
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Failed to open H264 encoder: %s", e.what());
+        return;
+      }
+    }
+
+    try {
+      openRecordClip();
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(get_logger(), "Failed to open recording clip: %s", e.what());
+      // Roll back encoder if we opened it just now
+      if (!is_streaming) {
+        std::lock_guard<std::mutex> lk(encoder_mtx_);
+        h264_encoder_.close();
+      }
+      return;
+    }
+
+    recording_.store(true);
+    RCLCPP_INFO(get_logger(), "Record → ON  (clip %03d)", clip_index_);
+  } else {
+    recording_.store(false);
+    closeRecordClip();
+
+    // Close encoder if streaming is also off
+    if (!is_streaming) {
+      std::lock_guard<std::mutex> lk(encoder_mtx_);
+      h264_encoder_.close();
+    }
+    RCLCPP_INFO(get_logger(), "Record → OFF");
+  }
+  publishRecordState();
+}
+
+void VisionPipeline::publishRecordState()
+{
+  drone_msgs::msg::Toggle msg;
+  msg.state = recording_.load();
+  record_state_pub_->publish(msg);
 }
 
 }  // namespace drone_pipeline

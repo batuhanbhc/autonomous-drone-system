@@ -15,12 +15,15 @@ def generate_launch_description():
                 name="camera_capture",
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
-            ComposableNode(
-                package="drone_pipeline",
-                plugin="drone_pipeline::RecordVideo",
-                name="record_video",
-                extra_arguments=[{"use_intra_process_comms": True}],
-            ),
+            # RETIRED: RecordVideo node has been retired.
+            # Video recording (H264/MP4), detection CSV, and record toggle topics
+            # are now owned by VisionPipeline.
+            # ComposableNode(
+            #     package="drone_pipeline",
+            #     plugin="drone_pipeline::RecordVideo",
+            #     name="record_video",
+            #     extra_arguments=[{"use_intra_process_comms": True}],
+            # ),
             ComposableNode(
                 package="drone_pipeline",
                 plugin="drone_pipeline::VisionPipeline",
