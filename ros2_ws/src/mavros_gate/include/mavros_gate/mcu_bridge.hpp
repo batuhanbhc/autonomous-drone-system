@@ -30,7 +30,7 @@
 class McuBridgeNode : public rclcpp::Node
 {
 public:
-  McuBridgeNode();
+  explicit McuBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~McuBridgeNode() override;
 
 private:

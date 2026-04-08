@@ -26,12 +26,12 @@ struct AltitudeEkf {
   float P[5][5] = {};
 
   // Tuning
-  float qAcc_mps2          = 3.0f;     // accel driving noise
+  float qAcc_mps2          = 1.0f;     // accel driving noise
   float qAccelBias         = 0.005f;   // accel bias RW
-  float qBaroBias_m        = 0.002f;   // baro bias RW
+  float qBaroBias_m        = 0.01f;   // baro bias RW
   float qGround_m          = 0.001f;   // ground RW (slow)
 
-  float rBaro_m            = 0.5f;     // baro stddev
+  float rBaro_m            = 0.8f;     // baro stddev
 
   // Lidar acceptance parameters
   float lidarMinRange_m    = 0.05f;

@@ -5,7 +5,9 @@
 #include <stdexcept>
 
 
-ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
+ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
+: rclcpp::Node("control_gate", options)
+{
   RCLCPP_INFO(get_logger(), "control_gate started");
   initialization_phase_ = true;
 
@@ -66,6 +68,9 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
     topic_gcs_heartbeat, qos_sensor_data,
     std::bind(&ControlGateNode::onGcsHeartbeat, this, std::placeholders::_1));
 
+  // control_gate still subscribes to mcu_bridge to cache vertical estimates
+  // (needed for hover-target snapshots, takeoff monitor, etc.)
+  // It does NOT forward these to altitude_controller anymore.
   sub_vertical_estimate_ = this->create_subscription<VerticalEstimate>(
     topics_.mcu_bridge, qos_best_effort,
     std::bind(&ControlGateNode::onVerticalEstimate, this, std::placeholders::_1));
@@ -118,8 +123,6 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
 
   // Takeoff monitor timer — created here but immediately cancelled;
   // it is re-armed by executeTakeoff() after a successful takeoff service call.
-  // We use a one-shot pattern: the timer is cancelled inside its own callback
-  // once the condition is met or the timeout expires.
   takeoff_monitor_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(100),   // 10 Hz check
     std::bind(&ControlGateNode::onTakeoffMonitorTick, this));
@@ -131,9 +134,11 @@ ControlGateNode::ControlGateNode(): rclcpp::Node("control_gate") {
   initialization_phase_ = false;
 }
 
+#ifndef BUILDING_COMPOSITOR
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<ControlGateNode>());
   rclcpp::shutdown();
   return 0;
 }
+#endif

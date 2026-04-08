@@ -6,7 +6,7 @@
 #define IMU_INT_PIN           D1
 #define IMU_RESET_PIN        -1
 #define IMU_ADDR              0x4A
-#define IMU_REPORT_RATE_US    6667 // ~150 hz 
+#define IMU_REPORT_RATE_US    10000 // ~100 hz 
 
 #define IMU_OFFSET_X_CM      -6.0f
 #define IMU_OFFSET_Y_CM       3.0f

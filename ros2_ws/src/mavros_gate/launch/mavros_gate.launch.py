@@ -1,3 +1,12 @@
+"""
+mavros_gate.launch.py  (legacy — separate processes)
+
+Launches control_gate, mcu_bridge, and altitude_controller as three
+independent OS processes.  Prefer mavros_gate_compositor.launch.py for
+production; use this file only when process isolation is explicitly required
+(e.g. separate coredumps, independent restart policies).
+"""
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -33,7 +42,7 @@ def generate_launch_description():
         name="mcu_bridge",
         output="screen",
         parameters=[
-            {"drone_id": LaunchConfiguration("drone_id")},
+            {"drone_id":    LaunchConfiguration("drone_id")},
             {"serial_port": LaunchConfiguration("serial_port")},
         ],
     )

@@ -228,7 +228,20 @@ class StatusTextView:
         })
 
 
+from std_msgs.msg import Float32
+
 from dataclasses import dataclass
+
+@dataclass
+class AltCtrlOutputView:
+    """
+    Receives std_msgs/Float32 from altitude_controller output topic.
+    Carries the commanded vertical velocity [m/s] produced by the PID node.
+    """
+    vz_cmd_mps: float | None = None
+
+    def update_from_msg(self, msg: Float32):
+        self.vz_cmd_mps = float(msg.data)
 
 @dataclass
 class GPSView:

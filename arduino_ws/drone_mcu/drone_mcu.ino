@@ -7,7 +7,7 @@
 static uint32_t decim = 0;
 
 static constexpr uint32_t INIT_WARMUP_MS   = 1500;
-static constexpr uint32_t INIT_DURATION_MS = 5000;
+static constexpr uint32_t INIT_DURATION_MS = 3000;
 
 // =========================
 // Companion packet settings
@@ -15,7 +15,7 @@ static constexpr uint32_t INIT_DURATION_MS = 5000;
 static constexpr uint8_t  COMPANION_SYNC0        = 0xA5;
 static constexpr uint8_t  COMPANION_SYNC1        = 0x5A;
 static constexpr uint8_t  COMPANION_MSG_VERTICAL = 0x01;
-static constexpr uint32_t COMPANION_SEND_HZ      = 30;
+static constexpr uint32_t COMPANION_SEND_HZ      = 20;
 static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
 
 // Set to 1 if you want to stop text prints after boot and only emit binary.
@@ -332,4 +332,17 @@ void loop() {
 
   // 4) Send binary packet
   maybeSendCompanionPacket();
+
+  /*
+  if (++decim % 500 == 0) {
+    Serial.printf("[EKF] z=%.3fm vz=%.3fmps agl=%.3fm baro_res=%.3fm lidar_acc=%d lidar_cm=%u str=%u\r\n",
+      altitudeEkf.s.z_m,
+      altitudeEkf.s.vz_mps,
+      altitudeEkf.s.agl_m,
+      altitudeEkf.s.lastBaroResidual_m,
+      altitudeEkf.s.lastLidarAccepted ? 1 : 0,
+      lidarData.distanceCm,
+      lidarData.strength);
+  }*/
+  
 }

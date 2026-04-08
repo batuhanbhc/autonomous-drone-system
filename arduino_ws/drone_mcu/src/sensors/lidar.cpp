@@ -22,13 +22,16 @@ bool lidarBegin(HardwareSerial& port) {
     port.begin(115200, SERIAL_8N1, LIDAR_RX_PIN, LIDAR_TX_PIN);
     delay(50);
 
-    // Enable data output (required on every power-on for TFS20-L)
     const uint8_t enableOutput[] = {0x5A, 0x05, 0x07, 0x01, 0x67};
     port.write(enableOutput, sizeof(enableOutput));
     port.flush();
     delay(20);
 
-    // Switch to trigger mode: frame rate = 0
+    const uint8_t lowStrengthCfg[] = {0x5A, 0x07, 0x22, 0x0A, 0xC4, 0x09, 0x5A};
+    port.write(lowStrengthCfg, sizeof(lowStrengthCfg));
+    port.flush();
+    delay(20);
+
     sendFrameRate(0);
     delay(20);
 

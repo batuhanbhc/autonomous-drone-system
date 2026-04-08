@@ -376,14 +376,14 @@ void ControlGateNode::enterAltHold(
   publishInfo(DroneInfo::LEVEL_INFO,
     stringf("AltHold active. Holding %.2f m", target_agl));
 
-  publishAltCtrlInput(true, alt_ctrl_target_agl_, current_agl, current_vz_mps);
+  publishAltCtrlInput(/*active=*/true, alt_ctrl_target_agl_);
 }
 
 void ControlGateNode::exitAltHold()
 {
   alt_ctrl_mode_      = AltCtrlMode::Off;
   alt_hold_timed_out_ = false;
-  publishAltCtrlInput(false, 0.0f, 0.0f, 0.0f);
+  publishAltCtrlInput(/*active=*/false, /*target_agl_m=*/0.0f);
 
   RCLCPP_INFO(get_logger(), "[alt_hold] Exited AltHold.");
   publishInfo(DroneInfo::LEVEL_INFO, "AltHold deactivated.");
@@ -401,7 +401,7 @@ void ControlGateNode::enterTimedOut(const VerticalEstimateCache& ve)
   publishInfo(DroneInfo::LEVEL_WARN,
     stringf("AltHold timed out. Hovering at %.2f m", alt_ctrl_target_agl_));
 
-  publishAltCtrlInput(true, alt_ctrl_target_agl_, ve.agl_m, ve.vz_mps);
+  publishAltCtrlInput(/*active=*/true, alt_ctrl_target_agl_);
 }
 
 void ControlGateNode::exitTimedOut()

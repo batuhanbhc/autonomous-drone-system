@@ -1,27 +1,21 @@
-# drone_msgs/msg/AltitudeControllerInput.msg
+# AltitudeControllerInput.msg
 #
-# Published by control_gate → subscribed by altitude_controller.
+# Field semantics
+# ───────────────
+#  active         – true  → controller should run and publish output
+#                   false → controller must stop, reset integral, and ignore MCU data
 #
-# active=true  : controller should run; first reception initialises PID state.
-# active=false : controller must stop and reset all internal state.
+#  target_agl_m   – desired altitude above ground [m]
+#                   Meaningful only when active == true.
+#                   Ignored (but may be pre-loaded) when active == false.
 #
-bool    active
+#  reset_integral – when true the PID integral accumulator is zeroed before the
+#                   next compute cycle (used when a new target altitude is set
+#                   mid-flight to prevent windup carry-over).
+#                   The flag is edge-triggered: the controller clears it internally
+#                   after acting on it; the sender does not need to follow up with
+#                   a false message.
 
-# Desired altitude above ground level [m].
-# Set by:
-#   • mode entry (enterGuidedTimeout / enterAltSupport) — snapshotted from
-#     current agl at the moment the mode activates, unless a higher-priority
-#     SetTargetHeight service call has already set a value.
-#   • /drone_N/control_gate/set_target_height service call (on-air tuning).
+bool   active
 float32 target_agl_m
-
-# Live measurement from the MCU (via mcu_bridge → onVerticalEstimate).
-# The PID node computes:  error = target_agl_m - current_agl_m
-float32 current_agl_m
-
-# Live vertical velocity from the MCU [m/s], positive = upward.
-# Used as derivative-on-measurement:  D_term = -kd * current_vz_mps
-float32 current_vz_mps
-
-
-bool reset_integral     # When set to true, resets integral windup
+bool   reset_integral

@@ -11,8 +11,8 @@
 // constructor
 // ============================================================================
 
-AltitudeControllerNode::AltitudeControllerNode()
-: rclcpp::Node("altitude_controller")
+AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & options)
+: rclcpp::Node("altitude_controller", options)
 {
   RCLCPP_INFO(get_logger(), "altitude_controller starting");
 
@@ -30,29 +30,37 @@ AltitudeControllerNode::AltitudeControllerNode()
   }
 
   // Prepend namespace to topic paths loaded from config
-  topic_input_  = base_ns + topic_input_;
+  topic_cmd_    = base_ns + topic_cmd_;
   topic_output_ = base_ns + topic_output_;
+  topic_mcu_    = base_ns + topic_mcu_;
 
   RCLCPP_INFO(get_logger(), "PID gains — kp=%.3f  ki=%.3f  kd=%.3f", kp_, ki_, kd_);
   RCLCPP_INFO(get_logger(), "Output clamp  [%.2f, %.2f] m/s", output_min_, output_max_);
   RCLCPP_INFO(get_logger(), "Integral clamp[%.2f, %.2f]",      integral_min_, integral_max_);
   RCLCPP_INFO(get_logger(), "Motion model  accel=%.2f m/s²  cmd_hz=%.2f", max_accel_mps2_, command_hz_);
-  RCLCPP_INFO(get_logger(), "Subscribing  input : %s", topic_input_.c_str());
-  RCLCPP_INFO(get_logger(), "Publishing   output: %s", topic_output_.c_str());
+  RCLCPP_INFO(get_logger(), "Subscribing  cmd    : %s", topic_cmd_.c_str());
+  RCLCPP_INFO(get_logger(), "Subscribing  mcu    : %s", topic_mcu_.c_str());
+  RCLCPP_INFO(get_logger(), "Publishing   output : %s", topic_output_.c_str());
 
   // ── QoS ──────────────────────────────────────────────────────────────────
-  //  input:  reliable — we must not miss active/inactive transitions
+  //  cmd:    reliable — must not miss active/inactive/target transitions
+  //  mcu:    sensor QoS (best-effort) — matches mcu_bridge publisher
   //  output: sensor QoS (best-effort) — matches control_gate subscription
-  const auto qos_input  = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
-  const auto qos_output = rclcpp::SensorDataQoS();
+  const auto qos_cmd    = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+  const auto qos_sensor = rclcpp::SensorDataQoS();
 
-  // ── subscriber ──────────────────────────────────────────────────────────
-  sub_input_ = this->create_subscription<AltCtrlInput>(
-    topic_input_, qos_input,
-    std::bind(&AltitudeControllerNode::onInput, this, std::placeholders::_1));
+  // ── command subscriber (control_gate → altitude_controller) ──────────────
+  sub_cmd_ = this->create_subscription<AltCtrlInput>(
+    topic_cmd_, qos_cmd,
+    std::bind(&AltitudeControllerNode::onCommand, this, std::placeholders::_1));
 
-  // ── publisher ────────────────────────────────────────────────────────────
-  pub_output_ = this->create_publisher<AltCtrlOutput>(topic_output_, qos_output);
+  // ── measurement subscriber (mcu_bridge → altitude_controller, direct) ────
+  sub_mcu_ = this->create_subscription<VerticalEst>(
+    topic_mcu_, qos_sensor,
+    std::bind(&AltitudeControllerNode::onMcuEstimate, this, std::placeholders::_1));
+
+  // ── output publisher ─────────────────────────────────────────────────────
+  pub_output_ = this->create_publisher<AltCtrlOutput>(topic_output_, qos_sensor);
 
   // ── on-air tuning service ────────────────────────────────────────────────
   const std::string srv_name = base_ns + "/altitude_controller/set_pid_gains";
@@ -61,8 +69,7 @@ AltitudeControllerNode::AltitudeControllerNode()
     std::bind(&AltitudeControllerNode::onSetPidGains, this,
               std::placeholders::_1, std::placeholders::_2));
 
-  RCLCPP_INFO(get_logger(),
-    "PID gain tuning service ready at: %s", srv_name.c_str());
+  RCLCPP_INFO(get_logger(), "PID gain tuning service ready at: %s", srv_name.c_str());
   RCLCPP_INFO(get_logger(), "altitude_controller ready.");
 }
 
@@ -91,7 +98,7 @@ bool AltitudeControllerNode::loadConfig()
     return false;
   }
 
-  // ── topic paths (reuse custom_topics block used by control_gate) ──────────
+  // ── topic paths ───────────────────────────────────────────────────────────
   bool ok = true;
   auto get_topic = [&](const char* key, std::string& out) {
     try {
@@ -101,8 +108,9 @@ bool AltitudeControllerNode::loadConfig()
       ok = false;
     }
   };
-  get_topic("alt_ctrl_input",  topic_input_);
-  get_topic("alt_ctrl_output", topic_output_);
+  get_topic("alt_ctrl_input",  topic_cmd_);     // command from control_gate
+  get_topic("alt_ctrl_output", topic_output_);  // output to control_gate
+  get_topic("mcu_bridge",      topic_mcu_);     // direct MCU measurements
   if (!ok) return false;
 
   // ── controller parameters ────────────────────────────────────────────────
@@ -155,7 +163,7 @@ void AltitudeControllerNode::resetPid()
 {
   integral_        = 0.0f;
   pid_initialized_ = false;
-  RCLCPP_DEBUG(get_logger(), "[alt_ctrl_pid] state reset.");
+  RCLCPP_DEBUG(get_logger(), "[alt_ctrl_pid] State reset.");
 }
 
 float AltitudeControllerNode::computeMotionAwareAltitude(
@@ -178,9 +186,9 @@ float AltitudeControllerNode::computeCommandDt(double measured_dt_s) const
 float AltitudeControllerNode::slewVelocityCommand(
   float current_vz, float target_vz_cmd, double dt_s) const
 {
-  const float cmd_dt_s = computeCommandDt(dt_s);
+  const float cmd_dt_s  = computeCommandDt(dt_s);
   const float max_delta = max_accel_mps2_ * cmd_dt_s;
-  const float delta = std::clamp(target_vz_cmd - current_vz, -max_delta, max_delta);
+  const float delta     = std::clamp(target_vz_cmd - current_vz, -max_delta, max_delta);
   return std::clamp(current_vz + delta, output_min_, output_max_);
 }
 
@@ -195,8 +203,7 @@ float AltitudeControllerNode::computeDesiredVelocity(
     kd = kd_;
   }
 
-  const float error = target_agl - motion_aware_agl;
-
+  const float error  = target_agl - motion_aware_agl;
   const float p_term = kp * error;
 
   integral_ += ki * error * static_cast<float>(dt_s);
@@ -217,32 +224,78 @@ float AltitudeControllerNode::computeDesiredVelocity(
 
 
 // ============================================================================
-// onInput  — main control callback
+// onCommand  — receives control commands from control_gate (reliable QoS)
+//
+// This callback is COMMAND-ONLY: it never performs a PID tick itself.
+// It updates active_, target_agl_, and resets integral when asked.
+// The actual PID computation is driven by onMcuEstimate().
 // ============================================================================
 
-void AltitudeControllerNode::onInput(const AltCtrlInput::SharedPtr msg)
+void AltitudeControllerNode::onCommand(const AltCtrlInput::SharedPtr msg)
 {
   if (!msg->active) {
-    if (pid_initialized_) {
+    // Deactivate: stop producing output and reset all state.
+    if (active_) {
       RCLCPP_INFO(get_logger(), "[alt_ctrl_pid] Deactivated. Resetting state.");
+      active_ = false;
       resetPid();
     }
     return;
   }
 
+  // Controller should be (or remain) active.
+  if (!active_) {
+    // Activation edge: log and initialise state.
+    active_ = true;
+    RCLCPP_INFO(get_logger(),
+      "[alt_ctrl_pid] Activated. target_agl=%.3f m", msg->target_agl_m);
+    // PID state will be initialised on the first MCU callback (pid_initialized_ == false).
+    resetPid();
+  }
+
+  // Update target — always honour the latest command.
+  const bool target_changed = (msg->target_agl_m != target_agl_);
+  target_agl_ = msg->target_agl_m;
+
+  if (target_changed) {
+    RCLCPP_DEBUG(get_logger(),
+      "[alt_ctrl_pid] Target updated to %.3f m", target_agl_);
+  }
+
+  // Handle explicit integral reset request.
   if (msg->reset_integral && pid_initialized_) {
     integral_ = 0.0f;
     RCLCPP_INFO(get_logger(),
-      "[alt_ctrl_pid] Integral reset (new target: %.3f m)", msg->target_agl_m);
+      "[alt_ctrl_pid] Integral reset (target: %.3f m)", target_agl_);
   }
+}
+
+
+// ============================================================================
+// onMcuEstimate  — measurement callback from mcu_bridge (sensor QoS)
+//
+// This is the PID tick: runs at MCU rate (~20 Hz) while the controller is
+// active.  Measurement fields:
+//   msg->vector.x  = z_world_m      (unused here)
+//   msg->vector.y  = vz_world_mps   (vertical velocity, m/s)
+//   msg->vector.z  = agl_m          (above-ground-level, m)
+// ============================================================================
+
+void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
+{
+  // Ignore all measurements while the controller is inactive.
+  if (!active_) return;
+
+  const float current_agl = static_cast<float>(msg->vector.z);  // agl_m
+  const float current_vz  = static_cast<float>(msg->vector.y);  // vz_world_mps
 
   const auto now = std::chrono::steady_clock::now();
   double dt_s = 1.0 / static_cast<double>(command_hz_);
 
   if (!pid_initialized_) {
     RCLCPP_INFO(get_logger(),
-      "[alt_ctrl_pid] Activated. target_agl=%.3f m, current_agl=%.3f m, current_vz=%.3f m/s",
-      msg->target_agl_m, msg->current_agl_m, msg->current_vz_mps);
+      "[alt_ctrl_pid] First measurement: agl=%.3f m, vz=%.3f m/s — PID running.",
+      current_agl, current_vz);
     integral_        = 0.0f;
     pid_initialized_ = true;
   } else {
@@ -256,13 +309,12 @@ void AltitudeControllerNode::onInput(const AltCtrlInput::SharedPtr msg)
   last_stamp_ = now;
 
   const float motion_aware_agl =
-    computeMotionAwareAltitude(msg->current_agl_m, msg->current_vz_mps);
+    computeMotionAwareAltitude(current_agl, current_vz);
 
   const float desired_vz_steady = computeDesiredVelocity(
-    msg->target_agl_m, motion_aware_agl, msg->current_vz_mps, dt_s);
+    target_agl_, motion_aware_agl, current_vz, dt_s);
 
-  const float vz_cmd = slewVelocityCommand(
-    msg->current_vz_mps, desired_vz_steady, dt_s);
+  const float vz_cmd = slewVelocityCommand(current_vz, desired_vz_steady, dt_s);
 
   AltCtrlOutput out;
   out.data = vz_cmd;
@@ -270,8 +322,7 @@ void AltitudeControllerNode::onInput(const AltCtrlInput::SharedPtr msg)
 
   RCLCPP_DEBUG(get_logger(),
     "[alt_ctrl_pid] tgt=%.3f cur=%.3f motion_agl=%.3f vz=%.3f dt=%.4f desired=%.3f cmd=%.3f",
-    msg->target_agl_m, msg->current_agl_m, motion_aware_agl,
-    msg->current_vz_mps, dt_s, desired_vz_steady, vz_cmd);
+    target_agl_, current_agl, motion_aware_agl, current_vz, dt_s, desired_vz_steady, vz_cmd);
 }
 
 
@@ -332,9 +383,10 @@ void AltitudeControllerNode::onSetPidGains(
 
 
 // ============================================================================
-// main
+// main  (standalone fallback — normally composed by mavros_gate_compositor)
 // ============================================================================
 
+#ifndef BUILDING_COMPOSITOR
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
@@ -342,3 +394,4 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return 0;
 }
+#endif

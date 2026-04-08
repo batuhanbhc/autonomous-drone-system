@@ -14,8 +14,8 @@
 // constructor / destructor
 // ============================================================================
 
-McuBridgeNode::McuBridgeNode()
-: rclcpp::Node("mcu_bridge")
+McuBridgeNode::McuBridgeNode(const rclcpp::NodeOptions & options)
+: rclcpp::Node("mcu_bridge", options)
 {
   RCLCPP_INFO(get_logger(), "mcu_bridge starting");
 
@@ -294,6 +294,7 @@ void McuBridgeNode::serialReadLoop()
 // main
 // ============================================================================
 
+#ifndef BUILDING_COMPOSITOR
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
@@ -301,3 +302,4 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return 0;
 }
+#endif

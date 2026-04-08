@@ -46,7 +46,8 @@
 
 class ControlGateNode : public rclcpp::Node {
 public:
-  ControlGateNode();
+  explicit ControlGateNode(
+    const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   struct CommandResult {
     bool success{false};
@@ -246,15 +247,11 @@ private:
   void enterTimedOut(const VerticalEstimateCache& ve);
   void exitTimedOut();
 
-  // publishAltCtrlInput: all four fields the PID node needs
-  //   active          – start/stop signal
-  //   target_agl_m    – desired altitude [m]
-  //   current_agl_m   – measured altitude [m]  (from MCU estimate)
-  //   current_vz_mps  – measured vertical velocity [m/s]
+  // publishAltCtrlInput: command-only — sends active, target_agl_m, reset_integral.
+  // Measurements (current_agl_m, current_vz_mps) are NO LONGER sent here;
+  // altitude_controller subscribes directly to the mcu_bridge topic for those.
   void publishAltCtrlInput(bool active,
                            float target_agl_m,
-                           float current_agl_m,
-                           float current_vz_mps,
                            bool reset_integral = false);
   void publishSetpoint(float vx, float vy, float vz, float yaw_rate);
 

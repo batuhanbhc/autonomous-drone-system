@@ -61,9 +61,13 @@ target_link_libraries(mcu_bridge yaml-cpp)
 # ── altitude_controller ───────────────────────────────────────────────────────
 #
 # Soft-PID controller node.
-# Subscribes:  <ns>/altitude_controller/input  (drone_msgs/AltitudeControllerInput)
-# Publishes:   <ns>/altitude_controller/output (std_msgs/Float32)
-# Service:     <ns>/altitude_controller/set_pid_gains (drone_msgs/srv/SetPidGains)
+# Subscribes:
+#   <ns>/altitude_controller/input  (drone_msgs/AltitudeControllerInput) — COMMANDS
+#   <ns>/<mcu_bridge_topic>         (geometry_msgs/Vector3Stamped)        — MEASUREMENTS
+# Publishes:
+#   <ns>/altitude_controller/output (std_msgs/Float32)
+# Service:
+#   <ns>/altitude_controller/set_pid_gains (drone_msgs/srv/SetPidGains)
 #
 add_executable(altitude_controller
   src/altitude_controller.cpp
@@ -78,16 +82,57 @@ ament_target_dependencies(altitude_controller
   rclcpp
   drone_msgs
   std_msgs
+  geometry_msgs
   ament_index_cpp
 )
 
 target_link_libraries(altitude_controller yaml-cpp)
+
+# ── compositor ────────────────────────────────────────────────────────────────
+#
+# Single-process entry-point that runs all three nodes under a
+# MultiThreadedExecutor with intra-process communication enabled.
+# Use this executable (via mavros_gate_compositor.launch.py) in production
+# for the lowest possible IPC latency between mcu_bridge, control_gate, and
+# altitude_controller.
+#
+add_executable(mavros_gate_compositor
+  src/compositor.cpp
+  src/control_gate.cpp
+  src/utils.cpp
+  src/subscriptions.cpp
+  src/commands.cpp
+  src/publishers.cpp
+  src/mcu_bridge.cpp
+  src/altitude_controller.cpp
+)
+
+target_include_directories(mavros_gate_compositor PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(mavros_gate_compositor
+  rclcpp
+  mavros_msgs
+  drone_msgs
+  geometry_msgs
+  std_msgs
+  ament_index_cpp
+)
+
+target_link_libraries(mavros_gate_compositor yaml-cpp)
+
+# Suppress the standalone main() in each node file when building the compositor.
+# Each node's main() is guarded with #ifndef BUILDING_COMPOSITOR.
+target_compile_definitions(mavros_gate_compositor PRIVATE BUILDING_COMPOSITOR)
 
 # ── install ───────────────────────────────────────────────────────────────────
 install(TARGETS
   control_gate
   mcu_bridge
   altitude_controller
+  mavros_gate_compositor
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -23,9 +23,9 @@ void ControlGateNode::onPublishStateTimer() {
   if (alt_ctrl_mode_ == AltCtrlMode::Off) {
     msg.alt_ctrl_mode = DroneState::ALT_CTRL_OFF;
   } else if (alt_hold_timed_out_) {
-    msg.alt_ctrl_mode = DroneState::ALT_CTRL_GUIDED_TIMEOUT;  // reuse existing constant
+    msg.alt_ctrl_mode = DroneState::ALT_CTRL_GUIDED_TIMEOUT;
   } else {
-    msg.alt_ctrl_mode = DroneState::ALT_CTRL_SUPPORT;         // reuse: AltHold active
+    msg.alt_ctrl_mode = DroneState::ALT_CTRL_SUPPORT;
   }
 
   msg.velocity_h       = st.vel.hv;
@@ -93,31 +93,32 @@ void ControlGateNode::publishSetpoint(float vx, float vy, float vz, float yaw_ra
 
 
 // ============================================================================
-// publishAltCtrlInput  — sends all four fields the PID node needs
+// publishAltCtrlInput  — sends COMMAND fields only (no measurement data)
 //
-//   active          – true  → controller should run; false → stop & reset
-//   target_agl_m    – desired altitude above ground [m]
-//   current_agl_m   – measured altitude above ground [m]  (from MCU)
-//   current_vz_mps  – measured vertical velocity [m/s]    (from MCU)
+// The AltitudeControllerInput message is now a pure command channel:
+//   active         – true  → controller should run; false → stop & reset
+//   target_agl_m   – desired altitude above ground [m]
+//   reset_integral – edge-triggered: zero integral before next PID tick
 //
-// Previously only three values (active, agl, vz_mps) were sent and the
-// meaning of the fields was ambiguous.  The PID node needs to know both
-// the *target* and the *current* altitude to compute the error; without
-// current_agl_m it cannot produce a meaningful output.
+// Measurement data (current_agl_m, current_vz_mps) are no longer sent here.
+// The altitude_controller node subscribes directly to the mcu_bridge topic
+// for those values at sensor QoS, decoupling command latency from data rate.
+//
+// This function is called ONLY on state transitions:
+//   • activate  (enterAltHold, enterTimedOut)
+//   • deactivate (exitAltHold)
+//   • new target (onSetTargetHeight, vz-zero transition snapshot)
+//   • integral reset request (onSetTargetHeight)
 // ============================================================================
 
 void ControlGateNode::publishAltCtrlInput(
   bool  active,
   float target_agl_m,
-  float current_agl_m,
-  float current_vz_mps,
-  bool reset_integral)
+  bool  reset_integral)
 {
   AltCtrlInput msg;
   msg.active         = active;
   msg.target_agl_m   = target_agl_m;
-  msg.current_agl_m  = current_agl_m;
-  msg.current_vz_mps = current_vz_mps;
-  msg.reset_integral  = reset_integral;
+  msg.reset_integral = reset_integral;
   pub_alt_ctrl_input_->publish(msg);
 }

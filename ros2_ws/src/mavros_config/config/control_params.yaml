@@ -11,15 +11,15 @@ flight_params:
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 1.0
-  ki: 0.05
-  kd: 0.4
-  output_min: -2.0
-  output_max:  2.0
-  integral_min: -0.5
-  integral_max:  0.5
+  kp: 1.2
+  ki: 0.01
+  kd: 0.7
+  output_min: -1.0
+  output_max:  1.0
+  integral_min: -0.2
+  integral_max:  0.2
   max_accel_mps2: 1.0
-  command_hz: 30.0
+  command_hz: 20.0
 
 camera:
   device_path: "/dev/video0"
@@ -65,7 +65,7 @@ mavros_topics:
     gps1_raw: "/mavros/gpsstatus/gps1/raw"
 
 panel:
-  refresh_hz: 4.0
+  refresh_hz: 10.0
   queue_size: 10
   stale_threshold_s: 5.0
 

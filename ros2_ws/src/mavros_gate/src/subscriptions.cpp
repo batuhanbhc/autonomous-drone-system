@@ -82,31 +82,28 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
   if (alt_ctrl_mode_ == AltCtrlMode::AltHold) {
     const bool vz_nonzero = (eff_vz != 0.0f);
 
-    // ── If timed out, any input cancels the full-hover sub-state ──────────
-    // (exitTimedOut is already called by the watchdog when it sees elapsed < timeout,
-    //  but we also call updateLastAct above so it will clear on next watchdog tick.
-    //  No explicit action needed here — the watchdog handles it.)
-
     if (vz_nonzero) {
-      // Operator pushing vz — stop controller, pass through operator value.
-      // We stay in AltHold so it re-engages on the next vz==0 input.
+      // Operator pushing vz — deactivate the PID (command transition only).
+      // We stay in AltHold so the PID re-engages on the next vz==0 input.
       if (!alt_hold_last_vz_nonzero_) {
-        // Transition: vz was zero → now nonzero. Deactivate PID.
-        publishAltCtrlInput(false, 0.0f, 0.0f, 0.0f);
+        // Transition: vz was zero → now nonzero.  Send deactivate command.
+        publishAltCtrlInput(/*active=*/false, /*target_agl_m=*/0.0f);
         alt_ctrl_output_fresh_    = false;
         alt_hold_last_vz_nonzero_ = true;
       }
       // eff_vz passes through unchanged
 
     } else {
-      // vz == 0: controller holds altitude
+      // vz == 0: controller should hold altitude
       if (alt_hold_last_vz_nonzero_) {
         // Transition: vz was nonzero → now zero.
-        // Snapshot current agl as the new hold target.
+        // Snapshot current agl as the new hold target and send activate command.
         const VerticalEstimateCache ve = snapshotVertEst();
         if (ve.valid) {
           alt_ctrl_target_agl_ = ve.agl_m;
-          publishAltCtrlInput(true, alt_ctrl_target_agl_, ve.agl_m, ve.vz_mps);
+          // Send activate command with new target; altitude_controller reads
+          // current measurements directly from mcu_bridge.
+          publishAltCtrlInput(/*active=*/true, alt_ctrl_target_agl_);
         }
         alt_hold_last_vz_nonzero_ = false;
       }
@@ -231,43 +228,32 @@ void ControlGateNode::onFailsafeWatchdog() {
 
 
 // ============================================================================
-// onVerticalEstimate  — update cache and forward ALL fields to altitude controller
+// onVerticalEstimate  — update internal cache ONLY
 //
-// FIX: previously only (active, agl, vz_mps) were forwarded; the PID node
-// received only the current velocity and the fixed target but not the live
-// current_agl_m needed to compute the error.  Now we send all four fields:
-//   active          = true  (controller stays running while mode is active)
-//   target_agl_m    = alt_ctrl_target_agl_   (operator-set or snapshotted)
-//   current_agl_m   = vert_est_.agl_m        (live measurement from MCU)
-//   current_vz_mps  = vert_est_.vz_mps       (live velocity from MCU)
+// control_gate caches the MCU vertical estimates so it can:
+//   • snapshot a hold altitude when the operator releases the throttle stick
+//   • monitor takeoff progress
+//   • enter/exit the timed-out sub-state
+//
+// It NO LONGER forwards this data to the altitude_controller.
+// The altitude_controller subscribes directly to the mcu_bridge topic at
+// sensor QoS for measurements, eliminating the extra hop and the associated
+// serialization overhead (especially valuable on intra-process comms).
 // ============================================================================
 
 void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
-  {
-    std::lock_guard<std::mutex> lk(vert_est_mtx_);
-    vert_est_.z_world_m = static_cast<float>(msg->vector.x);
-    vert_est_.vz_mps    = static_cast<float>(msg->vector.y);
-    vert_est_.agl_m     = static_cast<float>(msg->vector.z);
-    vert_est_.valid     = true;
-  }
-
-  // Forward to controller at MCU rate while any mode is active.
-  // current_agl_m and current_vz_mps are now passed so the PID node
-  // has everything it needs to compute error = target - current.
-  if (alt_ctrl_mode_ != AltCtrlMode::Off) {
-    publishAltCtrlInput(
-      /*active=*/        true,
-      /*target_agl_m=*/  alt_ctrl_target_agl_,
-      /*current_agl_m=*/ vert_est_.agl_m,
-      /*current_vz_mps=*/vert_est_.vz_mps);
-  }
+  std::lock_guard<std::mutex> lk(vert_est_mtx_);
+  vert_est_.z_world_m = static_cast<float>(msg->vector.x);
+  vert_est_.vz_mps    = static_cast<float>(msg->vector.y);
+  vert_est_.agl_m     = static_cast<float>(msg->vector.z);
+  vert_est_.valid     = true;
 }
 
 
 // ============================================================================
-// onAltCtrlOutput  — receive vz from PID node
+// onAltCtrlOutput  — receive vz command from PID node
 // ============================================================================
 
 void ControlGateNode::onAltCtrlOutput(const AltCtrlOutput::SharedPtr msg) {
@@ -290,9 +276,9 @@ void ControlGateNode::onAltCtrlOutput(const AltCtrlOutput::SharedPtr msg) {
 // onSetTargetHeight  — service callback
 //
 // Lets an operator set a specific hold altitude on-the-fly.
-// The new target is stored in alt_ctrl_target_agl_ and, if the controller
-// is currently active, a fresh message is immediately pushed to it so the
-// next PID tick uses the updated target.
+// Sends a command to altitude_controller with the new target and an integral
+// reset request; the altitude_controller will pick up current measurements
+// independently from mcu_bridge.
 // ============================================================================
 
 void ControlGateNode::onSetTargetHeight(
@@ -314,13 +300,14 @@ void ControlGateNode::onSetTargetHeight(
   RCLCPP_INFO(get_logger(), "[set_target_height] %s", info_msg.c_str());
   publishInfo(DroneInfo::LEVEL_INFO, info_msg);
 
-  // If the controller is running, push a new message immediately so the PID
-  // node picks up the changed target before the next MCU packet arrives.
+  // If the controller is running, push a new command with reset_integral so
+  // the PID node picks up the new target cleanly.  Current measurements come
+  // from mcu_bridge directly, so we only need to send the command.
   if (alt_ctrl_mode_ != AltCtrlMode::Off) {
-      const VerticalEstimateCache ve = snapshotVertEst();
-      if (ve.valid) {
-          publishAltCtrlInput(true, alt_ctrl_target_agl_, ve.agl_m, ve.vz_mps, true);
-      }
+    publishAltCtrlInput(
+      /*active=*/        true,
+      /*target_agl_m=*/  alt_ctrl_target_agl_,
+      /*reset_integral=*/true);
   }
 
   res->success = true;
