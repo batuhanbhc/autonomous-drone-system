@@ -40,12 +40,12 @@ done
 echo "[startup] FCU heartbeat received."
 
 
-echo "[startup] FCU connected, starting control_gate..."
+echo "[startup] FCU connected, starting mavros_gate..."
 ros2 launch mavros_gate mavros_gate.launch.py drone_id:=$DRONE_ID \
-  >> "$LOG_DIR/control_gate.log" 2>&1 &
+  >> "$LOG_DIR/mavros_gate.log" 2>&1 &
 
-CONTROL_GATE_PID=$! 
-echo "[startup] control_gate started with PID $CONTROL_GATE_PID."
+MAVROS_GATE_PID=$! 
+echo "[startup] mavros_gate started with PID $MAVROS_GATE_PID."
 
 
 
@@ -55,6 +55,6 @@ ros2 launch drone_pipeline drone_pipeline.launch.py \
 echo "[startup] drone_pipeline started with PID $!."
 
 
-wait -n $MAVROS_PID $CONTROL_GATE_PID
+wait -n $MAVROS_PID $MAVROS_GATE_PID
 echo "[startup] A critical node exited. Shutting down container."
 exit 1

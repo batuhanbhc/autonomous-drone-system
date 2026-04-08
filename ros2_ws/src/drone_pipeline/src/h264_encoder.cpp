@@ -58,14 +58,15 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
   codec_ctx_->framerate    = AVRational{fps, 1};
   codec_ctx_->gop_size     = gop_size;
   codec_ctx_->max_b_frames = 0;
-
+  
   av_opt_set(codec_ctx_->priv_data, "preset",       "ultrafast",  0);
   av_opt_set(codec_ctx_->priv_data, "tune",         "zerolatency",0);
   av_opt_set(codec_ctx_->priv_data, "crf",          "18",         0);
   av_opt_set(codec_ctx_->priv_data, "cabac",        "0",          0);
-  av_opt_set(codec_ctx_->priv_data, "x264-params",  "annexb=1",   0);
-  av_opt_set_int(codec_ctx_->priv_data, "repeat_headers", 1,      0);
-
+  av_opt_set_int(codec_ctx_->priv_data, "rc-lookahead", 0, 0);
+  
+  codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+  
   if (avcodec_open2(codec_ctx_, h264_enc, nullptr) < 0)
     throw std::runtime_error("H264Encoder: cannot open libx264");
 

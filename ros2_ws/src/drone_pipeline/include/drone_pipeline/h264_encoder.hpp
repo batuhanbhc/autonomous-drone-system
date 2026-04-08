@@ -30,6 +30,8 @@ public:
 
   bool isOpen() const { return codec_ctx_ != nullptr; }
 
+  const uint8_t* extradata()      const { return codec_ctx_ ? codec_ctx_->extradata: nullptr;}
+  int extradata_size() const { return codec_ctx_ ? codec_ctx_->extradata_size : 0;}
 private:
   AVCodecContext * codec_ctx_{nullptr};
   SwsContext     * sws_ctx_{nullptr};

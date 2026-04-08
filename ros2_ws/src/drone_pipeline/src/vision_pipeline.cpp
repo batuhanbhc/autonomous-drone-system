@@ -474,10 +474,31 @@ void VisionPipeline::openRecordClip()
   par->height     = config_.height;
   par->format     = AV_PIX_FMT_YUV420P;
 
-  rec_video_stream_->time_base      = AVRational{1, config_.fps};
+  rec_video_stream_->time_base      = AVRational{1, 90000};   // standard MP4 video timescale
   rec_video_stream_->avg_frame_rate = AVRational{config_.fps, 1};
 
-  // Enable faststart (moov atom at front) for easier playback
+  // Copy SPS/PPS extradata from encoder into codecpar.
+  // AV_CODEC_FLAG_GLOBAL_HEADER makes libx264 populate codec_ctx_->extradata
+  // after avcodec_open2. Without this the moov atom has no codec config
+  // and the file cannot be played back.
+  {
+    std::lock_guard<std::mutex> lk(encoder_mtx_);
+    const uint8_t * ed    = h264_encoder_.extradata();
+    const int       ed_sz = h264_encoder_.extradata_size();
+    if (ed && ed_sz > 0) {
+      par->extradata = static_cast<uint8_t *>(
+        av_mallocz(ed_sz + AV_INPUT_BUFFER_PADDING_SIZE));
+      if (par->extradata) {
+        std::memcpy(par->extradata, ed, ed_sz);
+        par->extradata_size = ed_sz;
+      }
+    } else {
+      RCLCPP_WARN(get_logger(),
+        "openRecordClip: encoder extradata empty — MP4 may not play. "
+        "Is AV_CODEC_FLAG_GLOBAL_HEADER set before avcodec_open2?");
+    }
+  }
+
   AVDictionary * opts = nullptr;
   av_dict_set(&opts, "movflags", "faststart", 0);
 
@@ -502,7 +523,7 @@ void VisionPipeline::openRecordClip()
     if (!det_csv_file_.is_open())
       throw std::runtime_error("VisionPipeline: cannot open detection CSV: " + csv_path);
 
-    det_csv_file_ <<
+    det_csv_file_  << 
       "frame_sec,frame_nanosec,"
       "frame_idx,"
       "id,"
@@ -552,7 +573,7 @@ int64_t VisionPipeline::writeRecordPacket(
 {
   if (!rec_fmt_ctx_ || result.data.empty()) return -1;
 
-  const int64_t used_pts = rec_pts_;   // capture before increment — this is the MP4 frame index
+  const int64_t used_pts = rec_pts_;
 
   AVPacket * pkt = av_packet_alloc();
   if (!pkt) return -1;
@@ -562,11 +583,12 @@ int64_t VisionPipeline::writeRecordPacket(
   std::memcpy(buf, result.data.data(), result.data.size());
 
   av_packet_from_data(pkt, buf, static_cast<int>(result.data.size()));
-
   pkt->stream_index = rec_video_stream_->index;
-  pkt->pts          = used_pts;
-  pkt->dts          = used_pts;
-  pkt->duration     = 1;
+
+  // Rescale PTS from 1/fps units to 1/90000 units
+  pkt->pts      = av_rescale_q(used_pts, AVRational{1, config_.fps}, rec_video_stream_->time_base);
+  pkt->dts      = pkt->pts;
+  pkt->duration = av_rescale_q(1,        AVRational{1, config_.fps}, rec_video_stream_->time_base);
   if (result.is_key_frame) pkt->flags |= AV_PKT_FLAG_KEY;
   ++rec_pts_;
 
@@ -577,6 +599,7 @@ int64_t VisionPipeline::writeRecordPacket(
   av_packet_free(&pkt);
   return used_pts;
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Slot acquisition
@@ -768,7 +791,7 @@ void VisionPipeline::workerLoop()
           const float y_max = (y_max_lb - lb_pad_top_)  / lb_scale_;
 
           const int ix0 = std::max(0,                  static_cast<int>(x_min));
-          const int iy0 = std::max(0,                  static_cast<int>(y_min));
+          //const int iy0 = std::max(0,                  static_cast<int>(y_min));
           const int ix1 = std::min(config_.width  - 1, static_cast<int>(x_max));
           const int iy1 = std::min(config_.height - 1, static_cast<int>(y_max));
 
@@ -788,10 +811,10 @@ void VisionPipeline::workerLoop()
           }
 
           Detection det_obj;
-          det_obj.x_min   = x_min;
-          det_obj.y_min   = y_min;
-          det_obj.x_max   = x_max;
-          det_obj.y_max   = y_max;
+          det_obj.x_min   = std::max(0.0f, (x_min_lb - lb_pad_left_) / lb_scale_);
+          det_obj.y_min   = std::max(0.0f, (y_min_lb - lb_pad_top_)  / lb_scale_);
+          det_obj.x_max   = std::min((float)(config_.width  - 1), (x_max_lb - lb_pad_left_) / lb_scale_);
+          det_obj.y_max   = std::min((float)(config_.height - 1), (y_max_lb - lb_pad_top_)  / lb_scale_);
           det_obj.score   = score;
           det_obj.id      = 0;      // placeholder; tracker will assign real IDs
           det_obj.world_x = world_x;

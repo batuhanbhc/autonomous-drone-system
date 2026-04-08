@@ -217,6 +217,7 @@ private:
   std::string         data_dir_;
 
   AVFormatContext * rec_fmt_ctx_{nullptr};
+  AVBSFContext *     rec_bsf_ctx_{nullptr};
   AVStream        * rec_video_stream_{nullptr};
   int64_t           rec_pts_{0};
 
