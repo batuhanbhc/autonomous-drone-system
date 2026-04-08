@@ -66,6 +66,7 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
   av_opt_set_int(codec_ctx_->priv_data, "rc-lookahead", 0, 0);
   
   codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+  av_opt_set(codec_ctx_->priv_data, "x264opts", "repeat-headers=1", 0);
   
   if (avcodec_open2(codec_ctx_, h264_enc, nullptr) < 0)
     throw std::runtime_error("H264Encoder: cannot open libx264");
