@@ -1,8 +1,8 @@
 [Unit]
 Description=Drone Docker Stack
-After=docker.service NetworkManager-wait-online.service camera-settings.service
+After=docker.service NetworkManager-wait-online.service
 Requires=docker.service
-Wants=NetworkManager-wait-online.service camera-settings.service
+Wants=NetworkManager-wait-online.service
 
 [Service]
 Type=simple
@@ -18,4 +18,3 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-
