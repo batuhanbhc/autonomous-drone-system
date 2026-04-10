@@ -768,12 +768,12 @@ void VisionPipeline::workerLoop()
           tf2::Quaternion tf_q(
             cb_slot.quat_x, cb_slot.quat_y,
             cb_slot.quat_z, cb_slot.quat_w);
-          double roll_unused, pitch_unused;
-          tf2::Matrix3x3(tf_q).getRPY(roll_unused, pitch_unused, yaw);
+          double roll, pitch;
+          tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
           yaw -= yaw_offset_;
           projector_->setPose(
             cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
-            yaw, gimbal_pitch_rad_, 0.0);
+            yaw, gimbal_pitch_rad_ + pitch, roll);
         }
 
         cb_slot.detections.reserve(num_dets);
