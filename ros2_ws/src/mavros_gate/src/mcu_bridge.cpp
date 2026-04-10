@@ -39,7 +39,7 @@ McuBridgeNode::McuBridgeNode(const rclcpp::NodeOptions & options)
   pub_topic_ = base_ns + pub_topic_;   // prepend namespace
 
   // ── publisher (best-effort, estimated ~20 Hz) ────────────────────────────
-  auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
+  auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   pub_vertical_ = this->create_publisher<geometry_msgs::msg::Vector3Stamped>(pub_topic_, qos);
 
   RCLCPP_INFO(get_logger(), "Publishing vertical estimates on: %s", pub_topic_.c_str());

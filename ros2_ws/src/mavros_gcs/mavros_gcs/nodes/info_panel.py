@@ -126,12 +126,6 @@ class InfoPanelNode(Node):
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
         )
-        qos_latched = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
 
         self.create_subscription(ExtendedState, t_extended_state, self._on_extended_state, reliable_qos)
         self.create_subscription(StatusText,     t_statustext,     self._on_statustext,     qos_profile_sensor_data)
@@ -139,8 +133,8 @@ class InfoPanelNode(Node):
         self.create_subscription(State,          t_state,          self._on_state,           reliable_qos)
         self.create_subscription(Odometry,       t_odom,           self._on_odom,            qos_profile_sensor_data)
         self.create_subscription(GPSRAW,         t_gps1_raw,       self._on_gps1_raw,        qos_profile_sensor_data)
-        self.create_subscription(DroneState,     t_control_state,  self._on_control_state,   qos_profile_sensor_data)
-        self.create_subscription(DroneInfo,      t_drone_info,     self._on_drone_info,       qos_latched)
+        self.create_subscription(DroneState,     t_control_state,  self._on_control_state,   reliable_qos)
+        self.create_subscription(DroneInfo,      t_drone_info,     self._on_drone_info,       reliable_qos)
         self.create_subscription(
             Toggle,
             f"/drone_{drone_id}/camera/record/active",

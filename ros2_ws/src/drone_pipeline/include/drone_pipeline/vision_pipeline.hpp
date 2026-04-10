@@ -43,6 +43,7 @@ struct VisionConfig
   int         fps{};
 
   double gimbal_pitch_angle;
+  bool reverse_mounted{false};
 
   std::string hef_path;
   float       score_threshold{};

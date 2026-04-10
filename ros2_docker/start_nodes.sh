@@ -41,7 +41,7 @@ echo "[startup] FCU heartbeat received."
 
 
 echo "[startup] FCU connected, starting mavros_gate..."
-ros2 launch mavros_gate mavros_gate.launch.py drone_id:=$DRONE_ID \
+ros2 launch mavros_gate mavros_gate_compositor.launch.py drone_id:=$DRONE_ID \
   >> "$LOG_DIR/mavros_gate.log" 2>&1 &
 
 MAVROS_GATE_PID=$! 

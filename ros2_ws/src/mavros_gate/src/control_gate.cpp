@@ -41,57 +41,47 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
   const std::string topic_gcs_heartbeat  = base_ns + "/gcs/heartbeat";
 
   // -----------------------------------
-  // QoS profiles
-  const auto qos_command      = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
-  const auto qos_action       = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  const auto qos_sensor_data  = rclcpp::SensorDataQoS();
-  const auto qos_state_pub    = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  const auto qos_info_latched = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local();
-  const auto qos_best_effort  = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
-  const auto qos_reliable     = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+  // QoS profiles 
+  const auto qos_be  = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+  const auto qos_rel = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
 
-  // -----------------------------------
-  // --- Subscriptions ---
+  // Subscriptions
   sub_teleop_command_ = this->create_subscription<TeleopCmd>(
-    topics_.manual_command, qos_command,
+    topics_.manual_command, qos_rel,
     std::bind(&ControlGateNode::onTeleopCommand, this, std::placeholders::_1));
 
   sub_teleop_action_ = this->create_subscription<TeleopAct>(
-    topics_.manual_action, qos_action,
+    topics_.manual_action, qos_be,
     std::bind(&ControlGateNode::onTeleopAction, this, std::placeholders::_1));
 
   sub_mavros_state_ = this->create_subscription<mavros_msgs::msg::State>(
-    topic_mavros_state, qos_command,
+    topic_mavros_state, qos_rel,
     std::bind(&ControlGateNode::onMavrosState, this, std::placeholders::_1));
 
   sub_gcs_heartbeat_ = this->create_subscription<GcsHeartbeat>(
-    topic_gcs_heartbeat, qos_sensor_data,
+    topic_gcs_heartbeat, qos_be,
     std::bind(&ControlGateNode::onGcsHeartbeat, this, std::placeholders::_1));
 
-  // control_gate still subscribes to mcu_bridge to cache vertical estimates
-  // (needed for hover-target snapshots, takeoff monitor, etc.)
-  // It does NOT forward these to altitude_controller anymore.
   sub_vertical_estimate_ = this->create_subscription<VerticalEstimate>(
-    topics_.mcu_bridge, qos_best_effort,
+    topics_.mcu_bridge, qos_be,
     std::bind(&ControlGateNode::onVerticalEstimate, this, std::placeholders::_1));
 
-  // Altitude controller output — sensor QoS (best-effort, keep-last 1)
   sub_alt_ctrl_output_ = this->create_subscription<AltCtrlOutput>(
-    topics_.alt_ctrl_output, qos_sensor_data,
+    topics_.alt_ctrl_output, qos_be,
     std::bind(&ControlGateNode::onAltCtrlOutput, this, std::placeholders::_1));
 
-  // -----------------------------------
-  // --- Publishers ---
+  // Publishers
   pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
-    topic_setpoint_local, qos_sensor_data);
-  pub_control_state_ = this->create_publisher<DroneState>(
-    topic_cmd_gate_state, qos_state_pub);
-  pub_drone_info_ = this->create_publisher<DroneInfo>(
-    topic_cmd_gate_info, qos_info_latched);
+    topic_setpoint_local, qos_be);
 
-  // Altitude controller input — reliable (commands must arrive)
+  pub_control_state_ = this->create_publisher<DroneState>(
+    topic_cmd_gate_state, qos_rel);
+
+  pub_drone_info_ = this->create_publisher<DroneInfo>(
+    topic_cmd_gate_info, qos_rel);
+
   pub_alt_ctrl_input_ = this->create_publisher<AltCtrlInput>(
-    topics_.alt_ctrl_input, qos_reliable);
+    topics_.alt_ctrl_input, qos_rel);
 
   // -----------------------------------
   if (!initializationRoutine()) {

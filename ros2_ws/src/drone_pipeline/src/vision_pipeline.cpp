@@ -55,6 +55,7 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.height             = cam["height"].as<int>();
   cfg.fps                = cam["fps"].as<int>();
   cfg.gimbal_pitch_angle = cam["gimbal_pitch_angle"].as<double>();
+  cfg.reverse_mounted    = cam["reverse_mounted"].as<bool>();
 
   const auto vp = root["vision_pipeline"];
   cfg.hef_path         = vp["obj_det_hef_path"].as<std::string>();
@@ -84,7 +85,8 @@ VisionConfig VisionPipeline::loadConfig()
     cfg.width, cfg.height, cfg.fps,
     cfg.hef_path.c_str(), cfg.score_threshold, cfg.model_input_size, cfg.person_class_idx);
 
-  RCLCPP_INFO(get_logger(), "Gimbal pitch angle=%.2f deg", cfg.gimbal_pitch_angle);
+  RCLCPP_INFO(get_logger(), "Gimbal pitch angle=%.2f deg  reverse_mounted=%s",
+      cfg.gimbal_pitch_angle, cfg.reverse_mounted ? "true" : "false");
 
   RCLCPP_INFO(get_logger(),
     "Camera intrinsics → fx=%.4f fy=%.4f cx=%.4f cy=%.4f",
@@ -668,6 +670,11 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
     return;
   }
 
+  // Rotate image if camera is reverse mounted (in-place 180° rotation)
+  if (config_.reverse_mounted) {
+    cv::Mat rgb_mat(config_.height, config_.width, CV_8UC3, slot.rgb.data());
+    cv::rotate(rgb_mat, rgb_mat, cv::ROTATE_180);
+  }
   {
     std::lock_guard<std::mutex> lk(work_queue_mtx_);
     work_queue_.push(idx);

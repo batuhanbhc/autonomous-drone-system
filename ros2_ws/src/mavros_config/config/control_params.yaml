@@ -1,7 +1,7 @@
 drone_id: 0
 
 flight_params:
-  takeoff_m: 2.0
+  takeoff_m: 1.5
   gcs_failsafe_s: 5  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
   failsafe_watchdog_hz: 2.0
   guided_timeout_s:           1.0    # inactivity threshold before guided timeout (s)
@@ -11,13 +11,13 @@ flight_params:
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 1.2
+  kp: 1.5
   ki: 0.01
-  kd: 0.7
+  kd: 1.0
   output_min: -1.0
   output_max:  1.0
-  integral_min: -0.2
-  integral_max:  0.2
+  integral_min: -0.25
+  integral_max:  0.25
   max_accel_mps2: 1.0
   command_hz: 20.0
 
@@ -26,7 +26,8 @@ camera:
   width: 800
   height: 600
   fps: 30
-  gimbal_pitch_angle: 10.0  # degrees, positive downwards
+  gimbal_pitch_angle: 5.0   # degrees, positive downwards
+  reverse_mounted: true    # whether the camera is mounted in reverse orientation (upside down)
   
 vision_pipeline:
   obj_det_hef_path: /person_detector.hef # default path: "/usr/share/hailo-models/yolov8s_h8l.hef"
