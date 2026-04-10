@@ -195,16 +195,19 @@ static bool updateInitializationRoutine() {
   }
 
   imuData.initialized = true;
-  imuComputeLevelCorrection();
   
-  const float baroRel0 = 0.0f;
-  const bool lidarOk = lidarData.fresh &&
-                     lidarData.distanceCm >= LIDAR_MIN_RANGE_CM &&
-                     lidarData.distanceCm <= LIDAR_MAX_RANGE_CM &&
-                     lidarData.strength   >= LIDAR_MIN_STRENGTH;
-  float lidar0 = lidarOk ? lidarData.distanceCm * 0.01f : 0.0f;
+  float initialBaroRel_m = baroGetRelativeAltitudeM();
 
-  altitudeEkfInitialize(baroRel0, lidarOk, lidar0);
+  float initialLidarAgl_m = 0.0f;
+  bool lidarValid = lidarGetVerticalM(
+      &initialLidarAgl_m,
+      imuData.droneQuat[0], imuData.droneQuat[1],
+      imuData.droneQuat[2], imuData.droneQuat[3],
+      lidarData.distanceCm,
+      lidarData.strength
+  );
+
+  altitudeEkfInitialize(initialBaroRel_m, lidarValid, initialLidarAgl_m);
 
   Serial.printf("\tNum samples: accel=%lu gyro=%lu baro=%lu\r\n",
     (unsigned long)initAccum.imuSamples,

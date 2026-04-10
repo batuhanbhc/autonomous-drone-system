@@ -26,25 +26,25 @@ struct AltitudeEkf {
   float P[5][5] = {};
 
   // Tuning
-  float qAcc_mps2          = 1.0f;     // accel driving noise
-  float qAccelBias         = 0.005f;   // accel bias RW
-  float qBaroBias_m        = 0.01f;   // baro bias RW
-  float qGround_m          = 0.001f;   // ground RW (slow)
+  float qAcc_mps2          = 1.5f;     // accel driving noise
+  float qAccelBias         = 0.01f;   // accel bias RW
+  float qBaroBias_m        = 0.005f;   // baro bias RW
+  float qGround_m          = 0.0005f;   // ground RW (slow)
 
-  float rBaro_m            = 0.8f;     // baro stddev
+  float rBaro_m            = 1.5f;     // baro stddev above 4 meters
 
   // Lidar acceptance parameters
   float lidarMinRange_m    = 0.05f;
   float lidarMaxRange_m    = 20.0f;
   uint16_t lidarMinStrength = 200;
 
-  float maxTiltDeg         = 45.0f;
+  float maxTiltDeg         = 30.0f;
   float lidarJumpSlack_m   = 0.10f;
   float obstacleNegJump_m  = 0.25f;    // sudden shorter range threshold
   float mahaGateSigma      = 3.5f;
 
   // Obstacle cooldown
-  uint32_t rejectCooldownMs = 200;
+  uint32_t rejectCooldownMs = 600;
   uint32_t lidarRejectUntilMs = 0;
 
   // Internal bookkeeping

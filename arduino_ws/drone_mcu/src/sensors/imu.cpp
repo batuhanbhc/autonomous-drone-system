@@ -6,7 +6,6 @@ static sh2_SensorValue_t sensorValue;
 ImuData imuData = {};
 
 static volatile bool imuInterruptFired = false;
-static uint32_t lastAccelRxUs = 0;
 static float prevDroneGyro[3] = {0.0f, 0.0f, 0.0f};
 static bool  prevDroneGyroValid = false;
 
@@ -70,58 +69,6 @@ static void quatMul(const float a[4], const float b[4], float out[4]) {
   out[3] = a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2];
 }
 
-// Call once after the first stable IMU reading.
-// Computes q_corr that levels roll/pitch while preserving yaw.
-void imuComputeLevelCorrection() {
-  const float* q = imuData.droneQuat;  // [x,y,z,w]
-
-  // Extract yaw from current quaternion
-  const float yaw = atan2f(
-    2.0f * (q[3]*q[2] + q[0]*q[1]),
-    1.0f - 2.0f * (q[1]*q[1] + q[2]*q[2])
-  );
-
-  // q_level = pure yaw quaternion (zero roll, zero pitch)
-  const float q_level[4] = {
-    0.0f,
-    0.0f,
-    sinf(yaw * 0.5f),
-    cosf(yaw * 0.5f)
-  };
-
-  // q_corr = q_level * q_drone_inv
-  // q_drone_inv = [-x, -y, -z, w] (unit quaternion conjugate)
-  const float q_inv[4] = { -q[0], -q[1], -q[2], q[3] };
-
-  float corr[4];
-  // Hamilton product: q_level * q_inv
-  corr[0] = q_level[3]*q_inv[0] + q_level[0]*q_inv[3] + q_level[1]*q_inv[2] - q_level[2]*q_inv[1];
-  corr[1] = q_level[3]*q_inv[1] - q_level[0]*q_inv[2] + q_level[1]*q_inv[3] + q_level[2]*q_inv[0];
-  corr[2] = q_level[3]*q_inv[2] + q_level[0]*q_inv[1] - q_level[1]*q_inv[0] + q_level[2]*q_inv[3];
-  corr[3] = q_level[3]*q_inv[3] - q_level[0]*q_inv[0] - q_level[1]*q_inv[1] - q_level[2]*q_inv[2];
-
-  // Normalize and store
-  const float n = sqrtf(corr[0]*corr[0] + corr[1]*corr[1] + corr[2]*corr[2] + corr[3]*corr[3]);
-  imuData.levelCorrQuat[0] = corr[0] / n;
-  imuData.levelCorrQuat[1] = corr[1] / n;
-  imuData.levelCorrQuat[2] = corr[2] / n;
-  imuData.levelCorrQuat[3] = corr[3] / n;
-
-  imuData.levelCorrValid = true;
-}
-
-void applyLevelCorrection() {
-  if (!imuData.levelCorrValid) return;
-  float corrected[4];
-  quatMul(imuData.levelCorrQuat, imuData.droneQuat, corrected);
-  // normalize
-  const float n = sqrtf(corrected[0]*corrected[0] + corrected[1]*corrected[1] +
-                         corrected[2]*corrected[2] + corrected[3]*corrected[3]);
-  imuData.droneQuat[0] = corrected[0] / n;
-  imuData.droneQuat[1] = corrected[1] / n;
-  imuData.droneQuat[2] = corrected[2] / n;
-  imuData.droneQuat[3] = corrected[3] / n;
-}
 
 static void rotationZDeg(float yawDeg, float R[3][3]) {
   const float c = cosf(deg2rad(yawDeg));
@@ -240,28 +187,16 @@ static void recomputeDerivedState() {
     0.0f
   };
 
-  float alpha_body[3] = {0.0f, 0.0f, 0.0f};
-  if (prevDroneGyroValid && imuData.dt_us > 0) {
-    const float dt_s = 1e-6f * (float)imuData.dt_us;
-    if (dt_s > 0.0f) {
-      alpha_body[0] = (imuData.droneGyro[0] - prevDroneGyro[0]) / dt_s;
-      alpha_body[1] = (imuData.droneGyro[1] - prevDroneGyro[1]) / dt_s;
-      alpha_body[2] = (imuData.droneGyro[2] - prevDroneGyro[2]) / dt_s;
-    }
-  }
-
-  float alphaCrossR[3];
   float omegaCrossR[3];
   float omegaCrossOmegaCrossR[3];
 
-  cross3(alpha_body,        r_body, alphaCrossR);
   cross3(imuData.droneGyro, r_body, omegaCrossR);
   cross3(imuData.droneGyro, omegaCrossR, omegaCrossOmegaCrossR);
 
   float droneLinAccelRaw[3];
-  droneLinAccelRaw[0] = accelAtImu_body[0] - alphaCrossR[0] - omegaCrossOmegaCrossR[0];
-  droneLinAccelRaw[1] = accelAtImu_body[1] - alphaCrossR[1] - omegaCrossOmegaCrossR[1];
-  droneLinAccelRaw[2] = accelAtImu_body[2] - alphaCrossR[2] - omegaCrossOmegaCrossR[2];
+  droneLinAccelRaw[0] = accelAtImu_body[0] - omegaCrossOmegaCrossR[0];
+  droneLinAccelRaw[1] = accelAtImu_body[1] - omegaCrossOmegaCrossR[1];
+  droneLinAccelRaw[2] = accelAtImu_body[2] - omegaCrossOmegaCrossR[2];
 
   prevDroneGyro[0] = imuData.droneGyro[0];
   prevDroneGyro[1] = imuData.droneGyro[1];
@@ -276,8 +211,6 @@ static void recomputeDerivedState() {
   matMul3(R_WI, R_IB, R_WB);
 
   matrixToQuat(R_WB, imuData.droneQuat);
-
-  applyLevelCorrection();
 
   if (imuData.initialized) {
     imuData.droneLinAccel[0] = droneLinAccelRaw[0] - imuData.bias.droneLinAccel[0];
@@ -332,8 +265,6 @@ bool imuBegin() {
 }
 
 void imuUpdate() {
-  const uint32_t nowUs = micros();
-
   if (bno08x.wasReset()) {
     if (!setReports()) {
       imuData.fresh = false;
@@ -378,16 +309,11 @@ void imuUpdate() {
   }
 
   if (!gotAny) return;
-
   if (!gotAccel) return;
 
-  const uint32_t dtUs = (lastAccelRxUs == 0) ? 0 : (uint32_t)(nowUs - lastAccelRxUs);
-
-  imuData.timestamp_us = (uint64_t)nowUs;
-  imuData.dt_us = dtUs;
-  lastAccelRxUs = nowUs;
+  imuData.timestamp_us = micros();      // logging only
+  imuData.dt_us = IMU_REPORT_RATE_US;   // fixed
 
   recomputeDerivedState();
-
   imuData.fresh = true;
 }

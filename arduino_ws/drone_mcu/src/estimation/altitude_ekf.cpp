@@ -211,11 +211,36 @@ static void scalarUpdate(const float H[NX], float meas, float pred, float R, flo
 }
 
 void altitudeEkfUpdateBaro(float baroRel_m) {
-  if (!altitudeEkf.s.initialized) return;
+    if (!altitudeEkf.s.initialized) return;
 
-  const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
-  const float pred = altitudeEkf.s.z_m + altitudeEkf.s.baroBias_m;
-  scalarUpdate(H, baroRel_m, pred, sqf(altitudeEkf.rBaro_m), &altitudeEkf.s.lastBaroResidual_m);
+    static float baroResidAbsLPF = 0.0f;
+
+    float rBaro = altitudeEkf.rBaro_m;
+
+    const bool lidarRecent = altitudeEkf.hasLastAcceptedLidar &&
+        (millis() - altitudeEkf.lastLidarAcceptedMs) < 500;
+
+    if (lidarRecent) {
+        const float agl = altitudeEkf.s.agl_m;
+        if (agl < 1.5f) {
+            rBaro = 4.0f;
+        } else if (agl < 4.0f) {
+            const float t = (agl - 1.5f) / 2.5f;
+            rBaro = 4.0f - t * (4.0f - altitudeEkf.rBaro_m);
+        }
+    }
+
+    // Inflate baro noise when recent residuals are large
+    baroResidAbsLPF = 0.95f * baroResidAbsLPF +
+                      0.05f * fabsf(altitudeEkf.s.lastBaroResidual_m);
+
+    rBaro += clampf((baroResidAbsLPF - 0.5f) * 1.5f, 0.0f, 3.0f);
+    rBaro = clampf(rBaro, altitudeEkf.rBaro_m, 6.0f);
+
+    const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const float pred = altitudeEkf.s.z_m + altitudeEkf.s.baroBias_m;
+    scalarUpdate(H, baroRel_m, pred, sqf(rBaro),
+                 &altitudeEkf.s.lastBaroResidual_m);
 }
 
 static bool lidarMahalanobisPass(const float H[NX], float residual, float R) {
