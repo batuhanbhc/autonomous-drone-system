@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 
 def generate_launch_description():
@@ -15,15 +15,6 @@ def generate_launch_description():
                 name="camera_capture",
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
-            # RETIRED: RecordVideo node has been retired.
-            # Video recording (H264/MP4), detection CSV, and record toggle topics
-            # are now owned by VisionPipeline.
-            # ComposableNode(
-            #     package="drone_pipeline",
-            #     plugin="drone_pipeline::RecordVideo",
-            #     name="record_video",
-            #     extra_arguments=[{"use_intra_process_comms": True}],
-            # ),
             ComposableNode(
                 package="drone_pipeline",
                 plugin="drone_pipeline::VisionPipeline",
@@ -35,13 +26,16 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    return LaunchDescription([
-        container,
-        Node(
-            package="drone_pipeline",
-            executable="flight_logger_node",
-            name="flight_logger",
-            output="screen",
-            emulate_tty=True,
-        ),
-    ])
+    # FlightLogger is disabled — odom/gps per-frame data is now written
+    # directly by the MJPEG writer thread inside VisionPipeline.
+    # Re-enable by uncommenting below when needed.
+    #
+    # flight_logger = Node(
+    #     package="drone_pipeline",
+    #     executable="flight_logger_node",
+    #     name="flight_logger",
+    #     output="screen",
+    #     emulate_tty=True,
+    # )
+
+    return LaunchDescription([container])

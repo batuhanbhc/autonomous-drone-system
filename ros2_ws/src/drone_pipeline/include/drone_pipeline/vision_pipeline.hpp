@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -22,6 +23,7 @@ extern "C" {
 #include "drone_msgs/msg/toggle.hpp"
 #include "ffmpeg_image_transport_msgs/msg/ffmpeg_packet.hpp"
 #include "drone_pipeline/h264_encoder.hpp"
+#include "drone_pipeline/mjpeg_writer.hpp"
 #include "drone_pipeline/ray_ground_intersection.hpp"
 
 // HailoRT high-level C++ API
@@ -42,8 +44,8 @@ struct VisionConfig
   int         height{};
   int         fps{};
 
-  double gimbal_pitch_angle;
-  bool reverse_mounted{false};
+  double gimbal_pitch_angle{};
+  bool   reverse_mounted{false};
 
   std::string hef_path;
   float       score_threshold{};
@@ -56,7 +58,7 @@ struct VisionConfig
   // Distortion (OpenCV 5-parameter)
   double k1{}, k2{}, p1{}, p2{}, k3{};
 
-  // Recording paths (from flight_params in YAML)
+  // Root directory where session folders live
   std::string logs_path;
 };
 
@@ -66,60 +68,62 @@ struct VisionConfig
 
 struct Detection
 {
-  float   x_min{};
-  float   y_min{};
-  float   x_max{};
-  float   y_max{};
-  float   score{};
-  int     id{0};        // placeholder; will be replaced by tracker ID later
-  double  world_x{};    // ENU East  (m); NaN if projection invalid / no odom
-  double  world_y{};    // ENU North (m); NaN if projection invalid / no odom
+  float  x_min{};
+  float  y_min{};
+  float  x_max{};
+  float  y_max{};
+  float  score{};
+  int    id{0};       // placeholder; tracker will assign real IDs
+  double world_x{};   // ENU East  (m); NaN if projection invalid / no odom
+  double world_y{};   // ENU North (m); NaN if projection invalid / no odom
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Frame buffer
+//  Frame slot
+//
+//  Lifecycle: FREE → acquired by frameCallback → dispatched to three
+//  independent consumers (MJPEG writer, H264 encoder, Hailo workers).
+//  Each consumer atomically decrements consumers_remaining_.  Whoever
+//  decrements to zero sets the slot back to FREE.
 // ─────────────────────────────────────────────────────────────────────────────
-
-enum class SlotState : uint8_t
-{
-  FREE,
-  PENDING,
-  PROCESSING,
-  INFERENCING,
-  PROCESSED
-};
 
 struct FrameSlot
 {
-  // ── Original frame ───────────────────────────────────────────────────────
-  std::vector<uint8_t>    rgb;            // cfg.width * cfg.height * 3
+  // ── Pixel data ───────────────────────────────────────────────────────────
+  std::vector<uint8_t>   jpeg;          // copy of raw incoming JPEG bytes
+  std::vector<uint8_t>   rgb;           // cfg.width * cfg.height * 3, rotated
 
-  // ── Letterboxed input for Hailo ──────────────────────────────────────────
-  std::vector<uint8_t>    letterbox_buf;
+  // ── Letterboxed input / NMS output for Hailo ─────────────────────────────
+  std::vector<uint8_t>   letterbox_buf;
+  std::vector<float>     nms_output_buf;
 
-  // ── NMS output from Hailo ────────────────────────────────────────────────
-  std::vector<float>      nms_output_buf;
+  // ── Results (written by Hailo callback, read by track_results writer) ────
+  std::vector<Detection> detections;
 
-  // ── Detections (populated inside Hailo callback, read by encoder thread) ─
-  std::vector<Detection>  detections;
+  // ── Metadata ─────────────────────────────────────────────────────────────
+  uint32_t stamp_sec{};
+  uint32_t stamp_nanosec{};
 
-  // ── Timestamp ────────────────────────────────────────────────────────────
-  uint32_t                stamp_sec{};
-  uint32_t                stamp_nanosec{};
+  // Odometry snapshot (copied from FrameData at capture time)
+  double pos_x{}, pos_y{}, pos_z{};
+  double quat_x{}, quat_y{}, quat_z{}, quat_w{1.0};
+  double vel_x{}, vel_y{}, vel_z{};
+  bool   odom_valid{false};
 
-  // ── Odometry snapshot (copied from FrameData at capture time) ────────────
-  double                  pos_x{};
-  double                  pos_y{};
-  double                  pos_z{};
-  double                  quat_x{};
-  double                  quat_y{};
-  double                  quat_z{};
-  double                  quat_w{1.0};
-  bool                    odom_valid{false};
+  // GPS snapshot
+  int32_t lat{};
+  int32_t lon{};
+  bool    gps_valid{false};
 
-  std::atomic<SlotState>  state{SlotState::FREE};
-  std::mutex              cv_mtx;
-  std::condition_variable cv;             // encoder thread waits here
+  // Monotonically increasing sequence number assigned at acquire time.
+  // Used by the track_results writer to drain detections in order.
+  uint64_t seq{0};
+
+  // ── Slot lifecycle ───────────────────────────────────────────────────────
+  // Set to 3 at acquire time (MJPEG writer + H264 encoder + Hailo worker).
+  // Each consumer decrements; whoever hits 0 sets in_use to false.
+  std::atomic<int>  consumers_remaining{0};
+  std::atomic<bool> in_use{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,7 +142,9 @@ private:
   static constexpr int kNumWorkers = 4;
 
   static constexpr int    kYawCalibSamples = 10;
-  static constexpr double kYawCalibTimeout = 30.0;  ///< seconds
+  static constexpr double kYawCalibTimeout = 30.0;   // seconds
+
+  static constexpr size_t kCsvFlushSize = 200;       // lines before eager flush
 
   // ── Config ────────────────────────────────────────────────────────────────
   VisionConfig loadConfig();
@@ -154,96 +160,148 @@ private:
   std::unique_ptr<GroundProjector> projector_;
 
   // ── Yaw calibration ───────────────────────────────────────────────────────
-  double             yaw_offset_{0.0};
-  std::atomic<bool>  yaw_calibrated_{false};
+  double            yaw_offset_{0.0};
+  std::atomic<bool> yaw_calibrated_{false};
 
   struct LatestQuat { double x=0, y=0, z=0, w=1; bool valid=false; };
-  LatestQuat         latest_quat_;
-  std::mutex         latest_quat_mtx_;
+  LatestQuat  latest_quat_;
+  std::mutex  latest_quat_mtx_;
 
-  std::thread        yaw_calib_thread_;
-  void               runYawCalibration();
+  std::thread yaw_calib_thread_;
+  void        runYawCalibration();
 
-  // ── ROS interfaces — streaming ────────────────────────────────────────────
-  rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr      frame_sub_;
-  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr         stream_cmd_sub_;
-  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr            stream_state_pub_;
-  rclcpp::Publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>::SharedPtr stream_out_pub_;
+  // ── Session / clip directories ────────────────────────────────────────────
+  std::string resolveSessionDir(const std::string & logs_path);
+  std::string session_dir_;
+  std::string videos_dir_;
+  std::string data_dir_;
+  int         clip_index_{0};
 
-  // ── ROS interfaces — recording (ownership migrated from RecordVideo) ──────
-  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr  record_cmd_sub_;
-  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr     record_state_pub_;
+  // ── ROS interfaces ────────────────────────────────────────────────────────
+  rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr  frame_sub_;
+
+  // Streaming
+  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr     stream_cmd_sub_;
+  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr        stream_state_pub_;
+  rclcpp::Publisher<
+    ffmpeg_image_transport_msgs::msg::FFMPEGPacket>::SharedPtr stream_out_pub_;
+
+  // Recording
+  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr     record_cmd_sub_;
+  rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr        record_state_pub_;
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg);
   void streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
-  void publishStreamState();
   void recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
+  void publishStreamState();
   void publishRecordState();
 
   // ── Frame buffer ──────────────────────────────────────────────────────────
   std::array<FrameSlot, kNumSlots> buffer_;
-  int      acquireSlot();
-  tjhandle tj_decompress_{nullptr};
+  std::atomic<uint64_t>            next_seq_{0};
+  tjhandle                         tj_decompress_{nullptr};
 
-  // ── Work queue (frame callback → worker threads) ──────────────────────────
-  std::queue<int>         work_queue_;
-  std::mutex              work_queue_mtx_;
-  std::condition_variable work_queue_cv_;
+  // Returns slot index, or -1 if all slots are in use.
+  int  acquireSlot();
+  // Called by each consumer when it finishes.  Frees the slot when all done.
+  void releaseSlot(int idx);
 
-  // ── Encoder queue (frame callback → encoder thread) ───────────────────────
-  std::queue<int>         encoder_queue_;
-  std::mutex              encoder_queue_mtx_;
-  std::condition_variable encoder_queue_cv_;
+  // ── MJPEG writer thread ───────────────────────────────────────────────────
+  // Consumes: slot.jpeg (raw bytes), slot odom/gps snapshot.
+  // Writes:   .avi file via MjpegWriter, odom.csv, gps.csv — all buffered.
+  struct MjpegTask { int idx; };
 
-  // ── Worker threads ────────────────────────────────────────────────────────
-  std::array<std::thread, kNumWorkers> worker_threads_;
-  std::atomic<bool>                    workers_running_{false};
-  void workerLoop();
+  std::queue<MjpegTask>   mjpeg_queue_;
+  std::mutex              mjpeg_queue_mtx_;
+  std::condition_variable mjpeg_queue_cv_;
+  std::thread             mjpeg_thread_;
+  std::atomic<bool>       mjpeg_running_{false};
+  std::atomic<bool>       recording_{false};
 
-  // ── Encoder thread ────────────────────────────────────────────────────────
-  std::thread       encoder_thread_;
-  std::atomic<bool> encoder_running_{false};
-  std::atomic<bool> streaming_{false};
-  H264Encoder       h264_encoder_;
-  std::mutex        encoder_mtx_;    ///< guards h264_encoder_ open/close vs encode
+  MjpegWriter   mjpeg_writer_;
+  std::ofstream odom_csv_file_;
+  std::ofstream gps_csv_file_;
+
+  // Per-clip CSV buffers — flushed every 3 s or when kCsvFlushSize lines
+  std::vector<std::string> odom_csv_buf_;
+  std::vector<std::string> gps_csv_buf_;
+
+  void mjpegLoop();
+  void openRecordClip();
+  void closeRecordClip();
+
+  rclcpp::TimerBase::SharedPtr record_flush_timer_;
+
+  // ── H264 encoder thread ───────────────────────────────────────────────────
+  // Consumes: slot.rgb.  Publishes FFMPEGPacket if streaming_ is on; discards
+  // immediately if off.  No waiting for Hailo — fully independent.
+  struct EncoderTask { int idx; };
+
+  std::queue<EncoderTask>  encoder_queue_;
+  std::mutex               encoder_queue_mtx_;
+  std::condition_variable  encoder_queue_cv_;
+  std::thread              encoder_thread_;
+  std::atomic<bool>        encoder_running_{false};
+  std::atomic<bool>        streaming_{false};
+
+  H264Encoder h264_encoder_;
+  std::mutex  encoder_open_mtx_;   // guards open/close of h264_encoder_
+
   void encoderLoop();
 
-  // ── H264/MP4 recording ───────────────────────────────────────────────────
-  // All MP4 muxer state is touched exclusively from the encoder thread.
-  std::atomic<bool>   recording_{false};
-  int                 clip_index_{0};
-  std::string         session_dir_;
-  std::string         videos_dir_;
-  std::string         data_dir_;
+  // ── Hailo worker threads ──────────────────────────────────────────────────
+  // Consume: slot.rgb → letterbox → async Hailo inference → detections.
+  // On completion they push a PendingResult into the track_results ordering
+  // queue, then call releaseSlot().
+  struct WorkerTask { int idx; };
 
-  AVFormatContext * rec_fmt_ctx_{nullptr};
-  AVBSFContext *     rec_bsf_ctx_{nullptr};
-  AVStream        * rec_video_stream_{nullptr};
-  int64_t           rec_pts_{0};
+  std::queue<WorkerTask>               worker_queue_;
+  std::mutex                           worker_queue_mtx_;
+  std::condition_variable              worker_queue_cv_;
+  std::array<std::thread, kNumWorkers> worker_threads_;
+  std::atomic<bool>                    workers_running_{false};
 
-  std::string resolveSessionDir(const std::string & logs_path);
-  void        openRecordClip();
-  void        closeRecordClip();
-  // Returns the MP4 frame index (PTS) actually written, or -1 if nothing was written.
-  // Used by the encoder loop to correlate detection CSV rows with video frames.
-  int64_t     writeRecordPacket(const H264Encoder::EncodeResult & result,
-                                uint32_t stamp_sec, uint32_t stamp_nanosec);
+  void workerLoop();
 
-  // ── Detection CSV ─────────────────────────────────────────────────────────
-  // Written exclusively from the encoder thread; buffered and flushed by timer.
-  // Format (one row per detection):
-  //   frame_sec, frame_nanosec, id, x_min, y_min, x_max, y_max, score, world_x, world_y
-  std::ofstream              det_csv_file_;
-  std::vector<std::string>   det_csv_buffer_;
-  std::mutex                 det_csv_mtx_;   ///< guards buffer + file during flush
-  rclcpp::TimerBase::SharedPtr det_flush_timer_;
+  // ── track_results.csv — in-order detection writer ────────────────────────
+  // Hailo callbacks complete out of order (multiple worker threads).
+  // Each completed slot deposits a PendingResult here; a dedicated drain
+  // step (called from the Hailo callback itself under a mutex) writes rows
+  // in sequence-number order.
+  struct PendingResult
+  {
+    uint64_t               seq;
+    uint32_t               stamp_sec;
+    uint32_t               stamp_nanosec;
+    std::vector<Detection> detections;
+  };
 
-  static constexpr size_t kDetFlushSize = 200;  ///< lines before an eager flush
+  // Priority queue: smallest seq on top
+  struct PendingResultCmp {
+    bool operator()(const PendingResult & a, const PendingResult & b) const {
+      return a.seq > b.seq;
+    }
+  };
+
+  std::priority_queue<PendingResult,
+                      std::vector<PendingResult>,
+                      PendingResultCmp> results_pq_;
+  uint64_t          next_result_seq_{0};  // next seq we expect to write
+  std::mutex        results_mtx_;         // guards pq + next_result_seq_ + file/buf
+
+  std::ofstream            track_csv_file_;
+  std::vector<std::string> track_csv_buf_;
+  rclcpp::TimerBase::SharedPtr track_flush_timer_;
+
+  void depositResult(PendingResult && r);   // called from Hailo callback
+  void drainResultsLocked();                // called under results_mtx_
+  void openTrackCsv(const std::string & path);
+  void closeTrackCsv();
 
   // ── Hailo ─────────────────────────────────────────────────────────────────
-  std::unique_ptr<hailort::VDevice> hailo_vdevice_;
-  hailort::ConfiguredInferModel hailo_infer_model_;
+  std::unique_ptr<hailort::VDevice>   hailo_vdevice_;
+  hailort::ConfiguredInferModel       hailo_infer_model_;
   std::array<hailort::ConfiguredInferModel::Bindings, kNumSlots> hailo_bindings_;
   size_t hailo_output_frame_size_{0};
 

@@ -25,6 +25,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
       - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
+      - /home/batuhan/drone-project/tools/tune.py:/home/batuhan/tools/tune.py
       - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/start_nodes.sh
       - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
       - /home/batuhan/drone-project/ros2_docker/person_detector.hef:/person_detector.hef

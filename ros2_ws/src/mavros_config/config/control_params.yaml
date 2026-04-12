@@ -23,8 +23,8 @@ altitude_controller:
 
 camera:
   device_path: "/dev/video0"
-  width: 800
-  height: 600
+  width: 640
+  height: 480
   fps: 30
   gimbal_pitch_angle: 5.0   # degrees, positive downwards
   reverse_mounted: true    # whether the camera is mounted in reverse orientation (upside down)
