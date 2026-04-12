@@ -37,7 +37,7 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
   RCLCPP_INFO(get_logger(), "PID gains — kp=%.3f  ki=%.3f  kd=%.3f", kp_, ki_, kd_);
   RCLCPP_INFO(get_logger(), "Output clamp  [%.2f, %.2f] m/s", output_min_, output_max_);
   RCLCPP_INFO(get_logger(), "Integral clamp[%.2f, %.2f]",      integral_min_, integral_max_);
-  RCLCPP_INFO(get_logger(), "Motion model  accel=%.2f m/s²  cmd_hz=%.2f", max_accel_mps2_, command_hz_);
+  RCLCPP_INFO(get_logger(), "Motion model  accel=%.2f m/s²", max_accel_mps2_);
   RCLCPP_INFO(get_logger(), "Subscribing  cmd    : %s", topic_cmd_.c_str());
   RCLCPP_INFO(get_logger(), "Subscribing  mcu    : %s", topic_mcu_.c_str());
   RCLCPP_INFO(get_logger(), "Publishing   output : %s", topic_output_.c_str());
@@ -138,13 +138,7 @@ bool AltitudeControllerNode::loadConfig()
   load("integral_min",   integral_min_);
   load("integral_max",   integral_max_);
   load("max_accel_mps2", max_accel_mps2_);
-  load("command_hz",     command_hz_);
 
-  if (command_hz_ <= 0.0f) {
-    RCLCPP_WARN(get_logger(),
-      "altitude_controller.command_hz must be > 0. Falling back to 20 Hz.");
-    command_hz_ = 20.0f;
-  }
   if (max_accel_mps2_ <= 0.0f) {
     RCLCPP_WARN(get_logger(),
       "altitude_controller.max_accel_mps2 must be > 0. Falling back to 2.0 m/s².");
@@ -172,24 +166,6 @@ float AltitudeControllerNode::computeMotionAwareAltitude(
   const float stopping_distance =
     (current_vz * std::fabs(current_vz)) / (2.0f * max_accel_mps2_);
   return current_agl + stopping_distance;
-}
-
-float AltitudeControllerNode::computeCommandDt(double measured_dt_s) const
-{
-  const float nominal_dt_s = 1.0f / command_hz_;
-  if (measured_dt_s > 0.0 && measured_dt_s <= 1.0) {
-    return static_cast<float>(measured_dt_s);
-  }
-  return nominal_dt_s;
-}
-
-float AltitudeControllerNode::slewVelocityCommand(
-  float current_vz, float target_vz_cmd, double dt_s) const
-{
-  const float cmd_dt_s  = computeCommandDt(dt_s);
-  const float max_delta = max_accel_mps2_ * cmd_dt_s;
-  const float delta     = std::clamp(target_vz_cmd - current_vz, -max_delta, max_delta);
-  return std::clamp(current_vz + delta, output_min_, output_max_);
 }
 
 float AltitudeControllerNode::computeDesiredVelocity(
@@ -290,7 +266,6 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
   const float current_vz  = static_cast<float>(msg->vector.y);  // vz_world_mps
 
   const auto now = std::chrono::steady_clock::now();
-  double dt_s = 1.0 / static_cast<double>(command_hz_);
 
   if (!pid_initialized_) {
     RCLCPP_INFO(get_logger(),
@@ -298,31 +273,32 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
       current_agl, current_vz);
     integral_        = 0.0f;
     pid_initialized_ = true;
-  } else {
-    dt_s = std::chrono::duration<double>(now - last_stamp_).count();
-    if (dt_s <= 0.0 || dt_s > 1.0) {
-      RCLCPP_WARN(get_logger(),
-        "[alt_ctrl_pid] Abnormal dt=%.4f s — using nominal command period.", dt_s);
-      dt_s = 1.0 / static_cast<double>(command_hz_);
-    }
+    last_stamp_      = now;
+    return;  // skip first tick — no valid dt yet
   }
+
+  const double dt_s = std::chrono::duration<double>(now - last_stamp_).count();
   last_stamp_ = now;
+
+  if (dt_s <= 0.0 || dt_s > 1.0) {
+    RCLCPP_WARN(get_logger(),
+      "[alt_ctrl_pid] Abnormal dt=%.4f s — skipping tick.", dt_s);
+    return;
+  }
 
   const float motion_aware_agl =
     computeMotionAwareAltitude(current_agl, current_vz);
 
-  const float desired_vz_steady = computeDesiredVelocity(
+  const float vz_cmd = computeDesiredVelocity(
     target_agl_, motion_aware_agl, current_vz, dt_s);
-
-  const float vz_cmd = slewVelocityCommand(current_vz, desired_vz_steady, dt_s);
 
   AltCtrlOutput out;
   out.data = vz_cmd;
   pub_output_->publish(out);
 
   RCLCPP_DEBUG(get_logger(),
-    "[alt_ctrl_pid] tgt=%.3f cur=%.3f motion_agl=%.3f vz=%.3f dt=%.4f desired=%.3f cmd=%.3f",
-    target_agl_, current_agl, motion_aware_agl, current_vz, dt_s, desired_vz_steady, vz_cmd);
+    "[alt_ctrl_pid] tgt=%.3f cur=%.3f motion_agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",
+    target_agl_, current_agl, motion_aware_agl, current_vz, dt_s, vz_cmd);
 }
 
 

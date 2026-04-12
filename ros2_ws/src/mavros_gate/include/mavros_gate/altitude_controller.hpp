@@ -116,8 +116,6 @@ private:
   float computeDesiredVelocity(float target_agl, float motion_aware_agl,
                                float current_vz, double dt_s);
   float computeMotionAwareAltitude(float current_agl, float current_vz) const;
-  float computeCommandDt(double measured_dt_s) const;
-  float slewVelocityCommand(float current_vz, float target_vz_cmd, double dt_s) const;
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void onCommand(const AltCtrlInput::SharedPtr msg);          // control_gate commands
@@ -143,7 +141,6 @@ private:
   float integral_min_{-0.5f};
   float integral_max_{ 0.5f};
   float max_accel_mps2_{2.0f};
-  float command_hz_{20.0f};
 
   // ── Controller state ──────────────────────────────────────────────────────
   bool   active_{false};           // mirrors last command's active flag
