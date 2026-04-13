@@ -11,15 +11,14 @@ flight_params:
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 1.5
+  kp: 1.0
   ki: 0.01
-  kd: 1.0
-  output_min: -1.0
-  output_max:  1.0
+  kd: 0.3
+  output_min: -1.5
+  output_max:  1.5
   integral_min: -0.25
   integral_max:  0.25
   max_accel_mps2: 1.0
-  command_hz: 20.0
 
 camera:
   device_path: "/dev/video0"
@@ -36,17 +35,17 @@ vision_pipeline:
   obj_det_person_class_idx: 0     # person class index
   
   camera_intrinsics:
-    fx: 794.8507417999692
-    fy: 793.1434009233761
-    cx: 404.2176325649676
-    cy: 303.08905712993436
+    fx: 628.5174089378104
+    fy: 626.7246596297234
+    cx: 326.54433867625056
+    cy: 248.53088818750663
  
   distortion:
-    k1:  0.06077537192297337
-    k2: -0.26816775880001076
-    p1: -0.0030080382790939816
-    p2:  0.0008929689554498755
-    k3:  0.11999675679075539
+    k1:  0.028448533103527362
+    k2: -0.15787637678468983
+    p1:  0.0009147754450880819
+    p2:  0.0028768249435391887
+    k3:  0.01782338771345667
 
 custom_topics:
   mcu_bridge: /mcu_bridge/vertical_estimate
