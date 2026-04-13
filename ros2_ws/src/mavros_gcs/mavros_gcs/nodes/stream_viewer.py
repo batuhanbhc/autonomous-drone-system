@@ -48,10 +48,9 @@ class StreamViewer(Node):
             pkt.pts = msg.pts
             pkt.dts = msg.pts
             for f in self.codec.decode(pkt):
-                rgb = f.reformat(format='rgb24').to_ndarray()
-                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                if self._rotate:                              
-                    bgr = cv2.rotate(bgr, cv2.ROTATE_180)  
+                bgr = f.reformat(format='bgr24').to_ndarray()
+                if self._rotate:
+                    bgr = cv2.rotate(bgr, cv2.ROTATE_180)
                 with self.lock:
                     self.latest = bgr
         except Exception as e:
