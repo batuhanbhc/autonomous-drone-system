@@ -1,7 +1,6 @@
 #include "drone_pipeline/h264_encoder.hpp"
 
 #include <stdexcept>
-#include <cstring>
 
 extern "C" {
 #include <libavutil/opt.h>
@@ -22,34 +21,31 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
   if (!tj_decompress_)
     throw std::runtime_error("H264Encoder: tjInitDecompress failed");
 
-  // ── RGB staging buffer ────────────────────────────────────────────────────
-  rgb_staging_.resize(width * height * 3);
+  // ── YUV422P staging buffer ────────────────────────────────────────────────
+  // tjDecompressToYUV2 writes padded planar YUV.  We allocate via
+  // tjBufSizeYUV2 so the padding libjpeg-turbo expects is always present.
+  const unsigned long buf_size =
+    tjBufSizeYUV2(width, /*pad=*/1, height, TJSAMP_422);
+  if (buf_size == 0)
+    throw std::runtime_error("H264Encoder: tjBufSizeYUV2 returned 0");
+  yuv422_staging_.resize(buf_size);
 
   // ── Output packet ─────────────────────────────────────────────────────────
   pkt_out_ = av_packet_alloc();
   if (!pkt_out_)
     throw std::runtime_error("H264Encoder: av_packet_alloc failed");
 
-  // ── YUV420P frame (encoder input) ─────────────────────────────────────────
+  // ── YUV422P frame (encoder input) ─────────────────────────────────────────
   yuv_frame_ = av_frame_alloc();
   if (!yuv_frame_)
     throw std::runtime_error("H264Encoder: av_frame_alloc failed");
 
-  yuv_frame_->format = AV_PIX_FMT_YUV420P;
+  yuv_frame_->format = AV_PIX_FMT_YUV422P;
   yuv_frame_->width  = width;
   yuv_frame_->height = height;
 
-  if (av_frame_get_buffer(yuv_frame_, 32) < 0)
-    throw std::runtime_error("H264Encoder: cannot allocate YUV frame buffer");
-
-  // ── swscale: RGB24 → YUV420P ──────────────────────────────────────────────
-  sws_ctx_ = sws_getContext(
-    width, height, AV_PIX_FMT_RGB24,
-    width, height, AV_PIX_FMT_YUV420P,
-    SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-
-  if (!sws_ctx_)
-    throw std::runtime_error("H264Encoder: sws_getContext failed");
+  // We will point yuv_frame_->data[] directly at yuv422_staging_ in encode(),
+  // so we don't allocate a separate frame buffer here.
 
   // ── H.264 encoder ─────────────────────────────────────────────────────────
   const AVCodec * h264_enc = avcodec_find_encoder_by_name("libx264");
@@ -63,7 +59,7 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
 
   codec_ctx_->width        = width;
   codec_ctx_->height       = height;
-  codec_ctx_->pix_fmt      = AV_PIX_FMT_YUV420P;
+  codec_ctx_->pix_fmt      = AV_PIX_FMT_YUV422P;
   codec_ctx_->time_base    = AVRational{1, fps};
   codec_ctx_->framerate    = AVRational{fps, 1};
   codec_ctx_->gop_size     = gop_size;
@@ -93,40 +89,47 @@ void H264Encoder::close()
     if (pkt_out_) av_packet_unref(pkt_out_);
     avcodec_free_context(&codec_ctx_);
   }
-  if (sws_ctx_)       { sws_freeContext(sws_ctx_); sws_ctx_ = nullptr; }
   if (yuv_frame_)     av_frame_free(&yuv_frame_);
   if (pkt_out_)       av_packet_free(&pkt_out_);
   if (tj_decompress_) { tjDestroy(tj_decompress_); tj_decompress_ = nullptr; }
-  rgb_staging_.clear();
+  yuv422_staging_.clear();
   pts_ = 0;
 }
 
 H264Encoder::EncodeResult H264Encoder::encode(const uint8_t * jpeg_data, size_t jpeg_size)
 {
-  if (!codec_ctx_ || !tj_decompress_ || !sws_ctx_) return {};
+  if (!codec_ctx_ || !tj_decompress_) return {};
 
-  if (av_frame_make_writable(yuv_frame_) < 0) return {};
-
-  // ── Step 1: JPEG → RGB24 ──────────────────────────────────────────────────
-  const int ret = tjDecompress2(
+  // ── Step 1: JPEG → planar YUV422P ─────────────────────────────────────────
+  // pad=1 matches the tjBufSizeYUV2 call in open(), so plane offsets agree.
+  const int ret = tjDecompressToYUV2(
     tj_decompress_,
     jpeg_data,
     static_cast<unsigned long>(jpeg_size),
-    rgb_staging_.data(),
-    width_, 0, height_,
-    TJPF_RGB, TJFLAG_FASTDCT);
+    yuv422_staging_.data(),
+    width_,
+    /*pad=*/1,
+    height_,
+    TJFLAG_FASTDCT);
 
   if (ret != 0) return {};
 
-  // ── Step 2: RGB24 → YUV420P via swscale ───────────────────────────────────
-  const uint8_t * src_planes[1] = { rgb_staging_.data() };
-  int             src_stride[1] = { width_ * 3 };
+  // ── Step 2: point AVFrame planes at the staging buffer ────────────────────
+  // tjDecompressToYUV2 with pad=1 lays out planes contiguously with no row
+  // padding, so the plane offsets are simply:
+  //   Y : offset 0,                     stride = width
+  //   U : offset width*height,          stride = width/2
+  //   V : offset width*height + (width/2)*height, stride = width/2
+  const int y_size  = width_ * height_;
+  const int uv_size = (width_ / 2) * height_;
 
-  sws_scale(sws_ctx_,
-            src_planes, src_stride, 0, height_,
-            yuv_frame_->data, yuv_frame_->linesize);
-
-  yuv_frame_->pts = pts_++;
+  yuv_frame_->data[0]     = yuv422_staging_.data();
+  yuv_frame_->data[1]     = yuv422_staging_.data() + y_size;
+  yuv_frame_->data[2]     = yuv422_staging_.data() + y_size + uv_size;
+  yuv_frame_->linesize[0] = width_;
+  yuv_frame_->linesize[1] = width_ / 2;
+  yuv_frame_->linesize[2] = width_ / 2;
+  yuv_frame_->pts         = pts_++;
 
   // ── Step 3: H.264 encode ──────────────────────────────────────────────────
   if (avcodec_send_frame(codec_ctx_, yuv_frame_) < 0) return {};

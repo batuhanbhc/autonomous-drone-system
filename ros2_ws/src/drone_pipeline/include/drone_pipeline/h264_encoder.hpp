@@ -6,7 +6,6 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
 #include <turbojpeg.h>
 }
 
@@ -26,8 +25,9 @@ public:
   void open(int width, int height, int fps, int gop_size);
   void close();
 
-  // Input: raw JPEG bytes. Decompresses to RGB24 via libjpeg-turbo,
-  // converts to YUV420P via swscale, encodes with libx264.
+  // Input: raw MJPEG bytes (4:2:2 subsampled).
+  // Decompresses to planar YUV422P via libjpeg-turbo (no RGB, no swscale),
+  // then encodes directly with libx264 in YUV422P.
   EncodeResult encode(const uint8_t * jpeg_data, size_t jpeg_size);
 
   bool isOpen() const { return codec_ctx_ != nullptr; }
@@ -37,12 +37,13 @@ public:
 
 private:
   AVCodecContext * codec_ctx_{nullptr};
-  SwsContext     * sws_ctx_{nullptr};
   AVFrame        * yuv_frame_{nullptr};
   AVPacket       * pkt_out_{nullptr};
   tjhandle         tj_decompress_{nullptr};
 
-  std::vector<uint8_t> rgb_staging_;   // intermediate RGB buffer for decompress
+  // Planar YUV422P staging buffer for tjDecompressToYUV2.
+  // Layout: Y plane (width*height) + U plane (width/2*height) + V plane (width/2*height)
+  std::vector<uint8_t> yuv422_staging_;
 
   int     width_{0};
   int     height_{0};
