@@ -13,6 +13,8 @@ class StreamViewer(Node):
         super().__init__('stream_viewer')
 
         self.declare_parameter('drone_id', 0)
+        self.declare_parameter('rotate', False)                      
+        self._rotate = bool(self.get_parameter('rotate').value)      
         drone_id = int(self.get_parameter('drone_id').value)
 
         self.codec        = av.CodecContext.create('h264', 'r')
@@ -48,6 +50,8 @@ class StreamViewer(Node):
             for f in self.codec.decode(pkt):
                 rgb = f.reformat(format='rgb24').to_ndarray()
                 bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                if self._rotate:                              
+                    bgr = cv2.rotate(bgr, cv2.ROTATE_180)  
                 with self.lock:
                     self.latest = bgr
         except Exception as e:
