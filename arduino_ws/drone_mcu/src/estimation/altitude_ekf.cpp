@@ -282,23 +282,13 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
   const float predAgl = altitudeEkf.s.z_m - altitudeEkf.s.groundZ_m;
   const float residual = lidarVertical_m - predAgl;
 
-  // Stage 2: frame-to-frame motion bound
-  if (altitudeEkf.hasLastAcceptedLidar) {
-    const float dt = (nowMs - altitudeEkf.lastLidarAcceptedMs) * 1e-3f;
-    if (dt > 0.0f && dt < 1.0f) {
-      const float vzAbs = fabsf(altitudeEkf.s.vz_mps);
-      const float vzGate = clampf(vzAbs + 0.2f, 1.0f, 3.0f);
-      const float maxDelta = vzGate * dt + altitudeEkf.lidarJumpSlack_m;
-      const float jump = fabsf(lidarVertical_m - altitudeEkf.lastLidarAccepted_m);
-      if (jump > maxDelta) {
-        // Strong sudden shortening -> likely obstacle
-        if ((lidarVertical_m - altitudeEkf.lastLidarAccepted_m) < -altitudeEkf.obstacleNegJump_m) {
-          altitudeEkf.lidarRejectUntilMs = nowMs + altitudeEkf.rejectCooldownMs;
-        }
-        return false;
-      }
-    }
+  // Strong negative residual = object/human/obstacle under drone
+  /*
+  if (residual < -altitudeEkf.obstacleNegJump_m) {  
+      altitudeEkf.lidarRejectUntilMs = nowMs + altitudeEkf.rejectCooldownMs;
+      return false;
   }
+  */
 
   // Datasheet-grounded lidarStd (TFS-20L)
   // Repeatability: 2cm (1σ) up to 6m; assumed ~0.5% of range beyond 6m

@@ -223,12 +223,10 @@ private:
   std::atomic<bool>       recording_{false};
 
   MjpegWriter   mjpeg_writer_;
-  std::ofstream odom_csv_file_;
-  std::ofstream gps_csv_file_;
+  std::ofstream data_csv_file_;
 
-  // Per-clip CSV buffers — flushed every 3 s or when kCsvFlushSize lines
-  std::vector<std::string> odom_csv_buf_;
-  std::vector<std::string> gps_csv_buf_;
+  // Per-clip CSV buffer — flushed every 3 s or when kCsvFlushSize lines
+  std::vector<std::string> data_csv_buf_;
 
   void mjpegLoop();
   void openRecordClip();

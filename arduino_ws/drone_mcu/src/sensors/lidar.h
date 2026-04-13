@@ -22,9 +22,9 @@
 #define LIDAR_TRIGGER_HZ  20
 #define LIDAR_TRIGGER_US  (1000000UL / LIDAR_TRIGGER_HZ)
 
-#define LIDAR_MIN_RANGE_M   0.05f
+#define LIDAR_MIN_RANGE_M   0.0f
 #define LIDAR_MAX_RANGE_M   20.0f
-#define LIDAR_MIN_RANGE_CM  5
+#define LIDAR_MIN_RANGE_CM  0
 #define LIDAR_MAX_RANGE_CM  2000
 #define LIDAR_MIN_STRENGTH  200
 
@@ -33,7 +33,7 @@
 // x = right, y = front, z = body-Z
 static constexpr float lidarOffsetX_m = 0.00f;   // right +
 static constexpr float lidarOffsetY_m = -0.072f;   // front +
-static constexpr float lidarOffsetZ_m = 0.00f;   // body-Z +
+static constexpr float lidarOffsetZ_m = 0.06f;   // body-Z +
 
 struct LidarData {
     uint16_t distanceCm = -1;   // distance in cm

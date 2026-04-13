@@ -354,22 +354,17 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   publishStreamState();
   publishRecordState();
 
-  // ── Periodic flush timer for recording CSVs (odom, gps) ──────────────────
+  // ── Periodic flush timer for recording data CSV ───────────────────────────
   // Runs on the ROS timer thread; the mjpeg loop itself is the only other
-  // writer of these buffers, so we coordinate via mjpeg_queue_mtx_.
+  // writer of this buffer, so we coordinate via mjpeg_queue_mtx_.
   record_flush_timer_ = create_wall_timer(
     std::chrono::seconds(3),
     [this]() {
       std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-      if (odom_csv_file_.is_open()) {
-        for (const auto & line : odom_csv_buf_) odom_csv_file_ << line;
-        odom_csv_buf_.clear();
-        odom_csv_file_.flush();
-      }
-      if (gps_csv_file_.is_open()) {
-        for (const auto & line : gps_csv_buf_) gps_csv_file_ << line;
-        gps_csv_buf_.clear();
-        gps_csv_file_.flush();
+      if (data_csv_file_.is_open()) {
+        for (const auto & line : data_csv_buf_) data_csv_file_ << line;
+        data_csv_buf_.clear();
+        data_csv_file_.flush();
       }
     });
 
@@ -557,7 +552,7 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
 // ─────────────────────────────────────────────────────────────────────────────
 //  MJPEG writer thread
 //  Writes raw JPEG bytes directly to AVI — no pixel work.
-//  Also writes one row each to odom.csv and gps.csv, buffered.
+//  Also writes one combined frame-data row to session_data.csv, buffered.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VisionPipeline::mjpegLoop()
@@ -581,43 +576,27 @@ void VisionPipeline::mjpegLoop()
       // ── Write JPEG frame to AVI ───────────────────────────────────────────
       mjpeg_writer_.writeFrame(slot.msg->image.data);
 
-      // ── Odom CSV row ──────────────────────────────────────────────────────
+      // ── Combined data CSV row (all FrameData fields) ──────────────────────
       {
         std::ostringstream oss;
-        oss << slot.stamp_sec     << ','
-            << slot.stamp_nanosec << ','
-            << slot.pos_x  << ',' << slot.pos_y  << ',' << slot.pos_z  << ','
-            << slot.quat_x << ',' << slot.quat_y << ','
-            << slot.quat_z << ',' << slot.quat_w << ','
-            << slot.vel_x  << ',' << slot.vel_y  << ',' << slot.vel_z  << ','
-            << slot.odom_valid << '\n';
-
-        std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-        odom_csv_buf_.push_back(oss.str());
-
-        if (odom_csv_buf_.size() >= kCsvFlushSize && odom_csv_file_.is_open()) {
-          for (const auto & line : odom_csv_buf_) odom_csv_file_ << line;
-          odom_csv_buf_.clear();
-          odom_csv_file_.flush();
-        }
-      }
-
-      // ── GPS CSV row ───────────────────────────────────────────────────────
-      {
-        std::ostringstream oss;
-        oss << slot.stamp_sec     << ','
-            << slot.stamp_nanosec << ','
-            << slot.lat  << ','
-            << slot.lon  << ','
+        oss << slot.stamp_sec      << ','
+            << slot.stamp_nanosec  << ','
+            << slot.pos_x   << ',' << slot.pos_y   << ',' << slot.pos_z   << ','
+            << slot.quat_x  << ',' << slot.quat_y  << ','
+            << slot.quat_z  << ',' << slot.quat_w  << ','
+            << slot.vel_x   << ',' << slot.vel_y   << ',' << slot.vel_z   << ','
+            << slot.odom_valid << ','
+            << slot.lat     << ','
+            << slot.lon     << ','
             << slot.gps_valid << '\n';
 
         std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-        gps_csv_buf_.push_back(oss.str());
+        data_csv_buf_.push_back(oss.str());
 
-        if (gps_csv_buf_.size() >= kCsvFlushSize && gps_csv_file_.is_open()) {
-          for (const auto & line : gps_csv_buf_) gps_csv_file_ << line;
-          gps_csv_buf_.clear();
-          gps_csv_file_.flush();
+        if (data_csv_buf_.size() >= kCsvFlushSize && data_csv_file_.is_open()) {
+          for (const auto & line : data_csv_buf_) data_csv_file_ << line;
+          data_csv_buf_.clear();
+          data_csv_file_.flush();
         }
       }
     }
@@ -639,73 +618,55 @@ void VisionPipeline::openRecordClip()
   idx << std::setw(3) << std::setfill('0') << clip_index_;
   const std::string prefix = idx.str();
 
-  const std::string video_path      = videos_dir_ + "/" + prefix + ".avi";
-  const std::string odom_csv_path   = data_dir_   + "/" + prefix + "_odom.csv";
-  const std::string gps_csv_path    = data_dir_   + "/" + prefix + "_gps.csv";
-  const std::string track_csv_path  = data_dir_   + "/" + prefix + "_track_results.csv";
+  const std::string video_path     = videos_dir_ + "/" + prefix + ".avi";
+  const std::string data_csv_path  = data_dir_   + "/" + prefix + "_data.csv";
+  const std::string track_csv_path = data_dir_   + "/" + prefix + "_track_results.csv";
 
   // Open AVI — MjpegWriter throws on failure
   mjpeg_writer_.open(video_path, config_.width, config_.height, config_.fps);
 
-  // Open odom CSV (under mjpeg_queue_mtx_ so the flush timer sees a consistent state)
+  // Open data CSV (under mjpeg_queue_mtx_ so the flush timer sees a consistent state)
   {
     std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
 
-    odom_csv_file_.open(odom_csv_path, std::ios::out | std::ios::trunc);
-    if (!odom_csv_file_.is_open())
-      throw std::runtime_error("Cannot open odom CSV: " + odom_csv_path);
+    data_csv_file_.open(data_csv_path, std::ios::out | std::ios::trunc);
+    if (!data_csv_file_.is_open())
+      throw std::runtime_error("Cannot open data CSV: " + data_csv_path);
 
-    odom_csv_file_
-      << "frame_idx,"
+    data_csv_file_
       << "stamp_sec,stamp_nanosec,"
       << "pos_x,pos_y,pos_z,"
       << "quat_x,quat_y,quat_z,quat_w,"
       << "vel_x,vel_y,vel_z,"
-      << "odom_valid\n";
-
-    gps_csv_file_.open(gps_csv_path, std::ios::out | std::ios::trunc);
-    if (!gps_csv_file_.is_open())
-      throw std::runtime_error("Cannot open gps CSV: " + gps_csv_path);
-
-    gps_csv_file_
-      << "frame_idx,"
-      << "stamp_sec,stamp_nanosec,"
+      << "odom_valid,"
       << "lat_deg_e7,lon_deg_e7,"
       << "gps_valid\n";
 
-    odom_csv_buf_.clear();
-    gps_csv_buf_.clear();
+    data_csv_buf_.clear();
   }
 
   // Open track_results CSV
   openTrackCsv(track_csv_path);
 
   RCLCPP_INFO(get_logger(),
-    "Recording started → %s | %s | %s | %s",
-    video_path.c_str(), odom_csv_path.c_str(),
-    gps_csv_path.c_str(), track_csv_path.c_str());
+    "Recording started → %s | %s | %s",
+    video_path.c_str(), data_csv_path.c_str(), track_csv_path.c_str());
 }
 
 void VisionPipeline::closeRecordClip()
 {
   if (!mjpeg_writer_.isOpen()) return;
 
-  // Flush and close MJPEG + odom/gps CSVs
+  // Flush and close MJPEG + data CSV
   mjpeg_writer_.close();
 
   {
     std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-    if (odom_csv_file_.is_open()) {
-      for (const auto & line : odom_csv_buf_) odom_csv_file_ << line;
-      odom_csv_buf_.clear();
-      odom_csv_file_.flush();
-      odom_csv_file_.close();
-    }
-    if (gps_csv_file_.is_open()) {
-      for (const auto & line : gps_csv_buf_) gps_csv_file_ << line;
-      gps_csv_buf_.clear();
-      gps_csv_file_.flush();
-      gps_csv_file_.close();
+    if (data_csv_file_.is_open()) {
+      for (const auto & line : data_csv_buf_) data_csv_file_ << line;
+      data_csv_buf_.clear();
+      data_csv_file_.flush();
+      data_csv_file_.close();
     }
   }
 
