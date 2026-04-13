@@ -90,8 +90,10 @@ struct Detection
 struct FrameSlot
 {
   // ── Pixel data ───────────────────────────────────────────────────────────
-  std::vector<uint8_t>   jpeg;          // copy of raw incoming JPEG bytes
-  std::vector<uint8_t>   rgb;           // cfg.width * cfg.height * 3, rotated
+  // Zero-copy reference to the intra-process message from CameraCapture.
+  // All three consumers (MJPEG writer, encoder, worker) read image.data from
+  // here.  Cleared in releaseSlot() when consumers_remaining hits 0.
+  drone_msgs::msg::FrameData::ConstSharedPtr msg;
 
   // ── Letterboxed input / NMS output for Hailo ─────────────────────────────
   std::vector<uint8_t>   letterbox_buf;
@@ -200,7 +202,8 @@ private:
   // ── Frame buffer ──────────────────────────────────────────────────────────
   std::array<FrameSlot, kNumSlots> buffer_;
   std::atomic<uint64_t>            next_seq_{0};
-  tjhandle                         tj_decompress_{nullptr};
+  // NOTE: tjhandle is NOT thread-safe — each consumer thread owns a
+  // thread_local handle (defined in vision_pipeline.cpp).
 
   // Returns slot index, or -1 if all slots are in use.
   int  acquireSlot();
@@ -208,7 +211,7 @@ private:
   void releaseSlot(int idx);
 
   // ── MJPEG writer thread ───────────────────────────────────────────────────
-  // Consumes: slot.jpeg (raw bytes), slot odom/gps snapshot.
+  // Consumes: slot.msg->image.data (zero-copy JPEG), slot odom/gps snapshot.
   // Writes:   .avi file via MjpegWriter, odom.csv, gps.csv — all buffered.
   struct MjpegTask { int idx; };
 
@@ -234,8 +237,8 @@ private:
   rclcpp::TimerBase::SharedPtr record_flush_timer_;
 
   // ── H264 encoder thread ───────────────────────────────────────────────────
-  // Consumes: slot.rgb.  Publishes FFMPEGPacket if streaming_ is on; discards
-  // immediately if off.  No waiting for Hailo — fully independent.
+  // Consumes: slot.msg JPEG bytes → tjDecompressToYUVPlanes → libx264.
+  // Publishes FFMPEGPacket if streaming_ is on; discards immediately if off.
   struct EncoderTask { int idx; };
 
   std::queue<EncoderTask>  encoder_queue_;
@@ -251,7 +254,7 @@ private:
   void encoderLoop();
 
   // ── Hailo worker threads ──────────────────────────────────────────────────
-  // Consume: slot.rgb → letterbox → async Hailo inference → detections.
+  // Consume: slot.msg JPEG bytes → tjDecompress2(RGB) → rotate → letterbox → async Hailo.
   // On completion they push a PendingResult into the track_results ordering
   // queue, then call releaseSlot().
   struct WorkerTask { int idx; };

@@ -1,10 +1,12 @@
 #include "drone_pipeline/h264_encoder.hpp"
 
 #include <stdexcept>
+#include <cstring>
 
 extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
+#include <turbojpeg.h>
 }
 
 namespace drone_pipeline
@@ -14,6 +16,14 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
 {
   width_  = width;
   height_ = height;
+
+  // ── libjpeg-turbo decompress handle ───────────────────────────────────────
+  tj_decompress_ = tjInitDecompress();
+  if (!tj_decompress_)
+    throw std::runtime_error("H264Encoder: tjInitDecompress failed");
+
+  // ── RGB staging buffer ────────────────────────────────────────────────────
+  rgb_staging_.resize(width * height * 3);
 
   // ── Output packet ─────────────────────────────────────────────────────────
   pkt_out_ = av_packet_alloc();
@@ -58,16 +68,16 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
   codec_ctx_->framerate    = AVRational{fps, 1};
   codec_ctx_->gop_size     = gop_size;
   codec_ctx_->max_b_frames = 0;
-  
-  av_opt_set(codec_ctx_->priv_data, "preset",       "ultrafast",  0);
-  av_opt_set(codec_ctx_->priv_data, "tune",         "zerolatency",0);
-  av_opt_set(codec_ctx_->priv_data, "crf",          "18",         0);
-  av_opt_set(codec_ctx_->priv_data, "cabac",        "0",          0);
-  av_opt_set_int(codec_ctx_->priv_data, "rc-lookahead", 0, 0);
-  
+
+  av_opt_set(codec_ctx_->priv_data, "preset",       "ultrafast",   0);
+  av_opt_set(codec_ctx_->priv_data, "tune",         "zerolatency", 0);
+  av_opt_set(codec_ctx_->priv_data, "crf",          "18",          0);
+  av_opt_set(codec_ctx_->priv_data, "cabac",        "0",           0);
+  av_opt_set_int(codec_ctx_->priv_data, "rc-lookahead", 0,         0);
+
   codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
   av_opt_set(codec_ctx_->priv_data, "x264opts", "repeat-headers=1", 0);
-  
+
   if (avcodec_open2(codec_ctx_, h264_enc, nullptr) < 0)
     throw std::runtime_error("H264Encoder: cannot open libx264");
 
@@ -77,34 +87,48 @@ void H264Encoder::open(int width, int height, int fps, int gop_size)
 void H264Encoder::close()
 {
   if (codec_ctx_) {
-    // Flush encoder
     avcodec_send_frame(codec_ctx_, nullptr);
     while (pkt_out_ && avcodec_receive_packet(codec_ctx_, pkt_out_) == 0)
       av_packet_unref(pkt_out_);
+    if (pkt_out_) av_packet_unref(pkt_out_);
     avcodec_free_context(&codec_ctx_);
   }
-  if (sws_ctx_)   { sws_freeContext(sws_ctx_); sws_ctx_ = nullptr; }
-  if (yuv_frame_) av_frame_free(&yuv_frame_);
-  if (pkt_out_)   av_packet_free(&pkt_out_);
+  if (sws_ctx_)       { sws_freeContext(sws_ctx_); sws_ctx_ = nullptr; }
+  if (yuv_frame_)     av_frame_free(&yuv_frame_);
+  if (pkt_out_)       av_packet_free(&pkt_out_);
+  if (tj_decompress_) { tjDestroy(tj_decompress_); tj_decompress_ = nullptr; }
+  rgb_staging_.clear();
   pts_ = 0;
 }
 
-H264Encoder::EncodeResult H264Encoder::encode(const uint8_t * rgb_data, int width, int height)
+H264Encoder::EncodeResult H264Encoder::encode(const uint8_t * jpeg_data, size_t jpeg_size)
 {
-  // ── Step 1: RGB24 → YUV420P via swscale ───────────────────────────────────
-  // src_slice: single plane of packed RGB24
-  const uint8_t * src_planes[1]  = { rgb_data };
-  int             src_stride[1]  = { width * 3 };
+  if (!codec_ctx_ || !tj_decompress_ || !sws_ctx_) return {};
 
   if (av_frame_make_writable(yuv_frame_) < 0) return {};
 
+  // ── Step 1: JPEG → RGB24 ──────────────────────────────────────────────────
+  const int ret = tjDecompress2(
+    tj_decompress_,
+    jpeg_data,
+    static_cast<unsigned long>(jpeg_size),
+    rgb_staging_.data(),
+    width_, 0, height_,
+    TJPF_RGB, TJFLAG_FASTDCT);
+
+  if (ret != 0) return {};
+
+  // ── Step 2: RGB24 → YUV420P via swscale ───────────────────────────────────
+  const uint8_t * src_planes[1] = { rgb_staging_.data() };
+  int             src_stride[1] = { width_ * 3 };
+
   sws_scale(sws_ctx_,
-            src_planes, src_stride, 0, height,
+            src_planes, src_stride, 0, height_,
             yuv_frame_->data, yuv_frame_->linesize);
 
   yuv_frame_->pts = pts_++;
 
-  // ── Step 2: H.264 encode ──────────────────────────────────────────────────
+  // ── Step 3: H.264 encode ──────────────────────────────────────────────────
   if (avcodec_send_frame(codec_ctx_, yuv_frame_) < 0) return {};
 
   EncodeResult result;

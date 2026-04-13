@@ -7,6 +7,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
+#include <turbojpeg.h>
 }
 
 namespace drone_pipeline
@@ -25,18 +26,23 @@ public:
   void open(int width, int height, int fps, int gop_size);
   void close();
 
-  // Input: packed RGB24, width*height*3 bytes
-  EncodeResult encode(const uint8_t * rgb_data, int width, int height);
+  // Input: raw JPEG bytes. Decompresses to RGB24 via libjpeg-turbo,
+  // converts to YUV420P via swscale, encodes with libx264.
+  EncodeResult encode(const uint8_t * jpeg_data, size_t jpeg_size);
 
   bool isOpen() const { return codec_ctx_ != nullptr; }
 
-  const uint8_t* extradata()      const { return codec_ctx_ ? codec_ctx_->extradata: nullptr;}
-  int extradata_size() const { return codec_ctx_ ? codec_ctx_->extradata_size : 0;}
+  const uint8_t* extradata()      const { return codec_ctx_ ? codec_ctx_->extradata : nullptr; }
+  int            extradata_size() const { return codec_ctx_ ? codec_ctx_->extradata_size : 0; }
+
 private:
   AVCodecContext * codec_ctx_{nullptr};
   SwsContext     * sws_ctx_{nullptr};
   AVFrame        * yuv_frame_{nullptr};
   AVPacket       * pkt_out_{nullptr};
+  tjhandle         tj_decompress_{nullptr};
+
+  std::vector<uint8_t> rgb_staging_;   // intermediate RGB buffer for decompress
 
   int     width_{0};
   int     height_{0};

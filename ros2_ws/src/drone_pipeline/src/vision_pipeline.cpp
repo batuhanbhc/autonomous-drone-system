@@ -320,14 +320,7 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
          << "fps: "    << config_.fps    << "\n";
   }
 
-  // ── libjpeg-turbo ─────────────────────────────────────────────────────────
-  tj_decompress_ = tjInitDecompress();
-  if (!tj_decompress_)
-    throw std::runtime_error("VisionPipeline: tjInitDecompress failed");
-
-  // ── Pre-allocate slot buffers ─────────────────────────────────────────────
-  for (auto & slot : buffer_)
-    slot.rgb.resize(config_.width * config_.height * 3);
+  // ── Pre-allocate slot letterbox/NMS buffers — done inside initHailo() ──────
 
   // ── Hailo ─────────────────────────────────────────────────────────────────
   initHailo();
@@ -453,12 +446,6 @@ VisionPipeline::~VisionPipeline()
 
   // ── Yaw calibration thread ────────────────────────────────────────────────
   if (yaw_calib_thread_.joinable()) yaw_calib_thread_.join();
-
-  // ── libjpeg-turbo ─────────────────────────────────────────────────────────
-  if (tj_decompress_) {
-    tjDestroy(tj_decompress_);
-    tj_decompress_ = nullptr;
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,6 +475,7 @@ void VisionPipeline::releaseSlot(int idx)
   const int remaining =
     buffer_[idx].consumers_remaining.fetch_sub(1, std::memory_order_acq_rel) - 1;
   if (remaining == 0) {
+    buffer_[idx].msg.reset();   // release the intra-process message reference
     buffer_[idx].in_use.store(false, std::memory_order_release);
   }
 }
@@ -498,10 +486,8 @@ void VisionPipeline::releaseSlot(int idx)
 //  Does:
 //    1. Feed yaw calibration if needed
 //    2. Acquire a slot (drop frame if full)
-//    3. Copy metadata + odom/GPS snapshots into slot
-//    4. JPEG decompress + optional rotate into slot.rgb
-//    5. Copy raw JPEG bytes into slot.jpeg
-//    6. Push slot index to all three consumer queues
+//    3. Store ConstSharedPtr (zero-copy) + copy scalar metadata into slot
+//    4. Push slot index to all three consumer queues
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg)
@@ -520,6 +506,11 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   }
 
   FrameSlot & slot = buffer_[idx];
+
+  // ── Zero-copy: store the intra-process message pointer ────────────────────
+  // All three consumers read slot.msg->image.data directly.
+  // No JPEG copy, no decode, no rotate here — each consumer does its own work.
+  slot.msg = msg;
 
   // ── Metadata ──────────────────────────────────────────────────────────────
   slot.stamp_sec     = msg->image.header.stamp.sec;
@@ -542,36 +533,6 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   slot.gps_valid = msg->gps_valid;
 
   slot.detections.clear();
-
-  // ── JPEG decompress → RGB ─────────────────────────────────────────────────
-  const int ret = tjDecompress2(
-    tj_decompress_,
-    msg->image.data.data(),
-    static_cast<unsigned long>(msg->image.data.size()),
-    slot.rgb.data(),
-    config_.width, 0, config_.height,
-    TJPF_RGB, TJFLAG_FASTDCT);
-
-  if (ret != 0) {
-    RCLCPP_WARN(get_logger(), "JPEG decompress failed: %s",
-      tjGetErrorStr2(tj_decompress_));
-    // All three consumers must still be released so the slot returns to FREE.
-    releaseSlot(idx);  // MJPEG
-    releaseSlot(idx);  // encoder
-    releaseSlot(idx);  // worker
-    return;
-  }
-
-  // ── Optional 180° rotation (in-place on RGB) ──────────────────────────────
-  // Applied before dispatching to encoder and workers.
-  // The MJPEG writer receives the raw JPEG bytes (unrotated).
-  if (config_.reverse_mounted) {
-    cv::Mat rgb_mat(config_.height, config_.width, CV_8UC3, slot.rgb.data());
-    cv::rotate(rgb_mat, rgb_mat, cv::ROTATE_180);
-  }
-
-  // ── Copy raw JPEG bytes for the MJPEG writer ──────────────────────────────
-  slot.jpeg.assign(msg->image.data.begin(), msg->image.data.end());
 
   // ── Dispatch to all three consumer queues ─────────────────────────────────
   {
@@ -618,7 +579,7 @@ void VisionPipeline::mjpegLoop()
 
     if (recording_.load() && mjpeg_writer_.isOpen()) {
       // ── Write JPEG frame to AVI ───────────────────────────────────────────
-      mjpeg_writer_.writeFrame(slot.jpeg);
+      mjpeg_writer_.writeFrame(slot.msg->image.data);
 
       // ── Odom CSV row ──────────────────────────────────────────────────────
       {
@@ -758,7 +719,8 @@ void VisionPipeline::closeRecordClip()
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  H264 encoder thread — streaming only
-//  Receives slot.rgb, encodes, publishes if streaming_ is on.
+//  Receives slot.msg JPEG bytes, decodes directly to YUV420P via
+//  libjpeg-turbo (no RGB intermediate), encodes with libx264.
 //  Never waits for Hailo; fully independent of the worker pipeline.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -785,7 +747,8 @@ void VisionPipeline::encoderLoop()
         std::lock_guard<std::mutex> lk(encoder_open_mtx_);
         if (h264_encoder_.isOpen()) {
           result = h264_encoder_.encode(
-            slot.rgb.data(), config_.width, config_.height);
+            slot.msg->image.data.data(),
+            slot.msg->image.data.size());
         }
       }
 
@@ -816,6 +779,17 @@ void VisionPipeline::encoderLoop()
 
 void VisionPipeline::workerLoop()
 {
+  // Each worker thread owns its own libjpeg-turbo handle — tjhandle is NOT
+  // thread-safe and must not be shared across threads.
+  tjhandle tj = tjInitDecompress();
+  if (!tj) {
+    RCLCPP_FATAL(get_logger(), "workerLoop: tjInitDecompress failed");
+    return;
+  }
+
+  // Per-thread RGB buffer — allocated once, reused every frame.
+  std::vector<uint8_t> rgb(config_.width * config_.height * 3);
+
   while (true) {
     WorkerTask task;
     {
@@ -831,11 +805,41 @@ void VisionPipeline::workerLoop()
     const int idx = task.idx;
     FrameSlot & slot = buffer_[idx];
 
+    // ── JPEG decompress → RGB ─────────────────────────────────────────────
+    const auto & jpeg = slot.msg->image.data;
+    const int ret = tjDecompress2(
+      tj,
+      jpeg.data(),
+      static_cast<unsigned long>(jpeg.size()),
+      rgb.data(),
+      config_.width, 0, config_.height,
+      TJPF_RGB, TJFLAG_FASTDCT);
+
+    if (ret != 0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        "workerLoop JPEG decompress failed: %s", tjGetErrorStr2(tj));
+      // Deposit empty result so ordering is preserved, then release slot.
+      PendingResult pending;
+      pending.seq           = slot.seq;
+      pending.stamp_sec     = slot.stamp_sec;
+      pending.stamp_nanosec = slot.stamp_nanosec;
+      depositResult(std::move(pending));
+      releaseSlot(idx);
+      continue;
+    }
+
+    // ── Optional 180° rotation ────────────────────────────────────────────
+    if (config_.reverse_mounted) {
+      cv::Mat rgb_mat(config_.height, config_.width, CV_8UC3, rgb.data());
+      cv::rotate(rgb_mat, rgb_mat, cv::ROTATE_180);
+    }
+
     // ── Letterbox resize ──────────────────────────────────────────────────
     const int scaled_w = static_cast<int>(std::round(config_.width  * lb_scale_));
     const int scaled_h = static_cast<int>(std::round(config_.height * lb_scale_));
 
-    const cv::Mat src(config_.height, config_.width, CV_8UC3, slot.rgb.data());
+    // Read directly from the per-thread rgb buffer — no copy into slot needed.
+    const cv::Mat src(config_.height, config_.width, CV_8UC3, rgb.data());
     cv::Mat resized;
     cv::resize(src, resized, cv::Size(scaled_w, scaled_h), 0, 0, cv::INTER_LINEAR);
 
@@ -958,6 +962,8 @@ void VisionPipeline::workerLoop()
 
     (void)job_exp;  // job lifetime managed by HailoRT
   }
+
+  tjDestroy(tj);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
