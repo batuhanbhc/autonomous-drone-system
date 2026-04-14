@@ -12,14 +12,19 @@ def generate_launch_description():
         'gcs_id', default_value='0',
         description='GCS ID embedded in heartbeat messages'
     )
-    rotate_arg = DeclareLaunchArgument(                          # NEW
+    rotate_arg = DeclareLaunchArgument(
         'rotate', default_value='false',
         description='Rotate stream viewer 180 degrees'
+    )
+    use_odom_arg = DeclareLaunchArgument(          # NEW
+        'use_odom', default_value='true',
+        description='Enable odometry subscription in info_panel'
     )
 
     drone_id = LaunchConfiguration('drone_id')
     gcs_id   = LaunchConfiguration('gcs_id')
-    rotate   = LaunchConfiguration('rotate')                     # NEW
+    rotate   = LaunchConfiguration('rotate')
+    use_odom = LaunchConfiguration('use_odom')     # NEW
 
     teleop = Node(
         package='mavros_gcs',
@@ -32,7 +37,7 @@ def generate_launch_description():
         package='mavros_gcs',
         executable='info_panel',
         name='info_panel',
-        parameters=[{'drone_id': drone_id}],
+        parameters=[{'drone_id': drone_id, 'use_odom': use_odom}],  # CHANGED
         output='own_log',
         prefix='gnome-terminal --geometry=220x50 -- ',
         emulate_tty=True,
@@ -41,7 +46,7 @@ def generate_launch_description():
         package='mavros_gcs',
         executable='stream_viewer',
         name='stream_viewer',
-        parameters=[{'drone_id': drone_id, 'rotate': rotate}],  # CHANGED
+        parameters=[{'drone_id': drone_id, 'rotate': rotate}],
         output='screen',
         emulate_tty=True,
     )
@@ -55,7 +60,8 @@ def generate_launch_description():
     return LaunchDescription([
         drone_id_arg,
         gcs_id_arg,
-        rotate_arg,                                         
+        rotate_arg,
+        use_odom_arg,                                               # NEW
         teleop,
         info_panel,
         stream_viewer,

@@ -82,6 +82,8 @@ class InfoPanelNode(Node):
 
         self.declare_parameter("config_pkg", "mavros_config")
         self.declare_parameter("config_rel", "config/control_params.yaml")
+        self.declare_parameter("use_odom", True)
+        use_odom = bool(self.get_parameter("use_odom").value)
         config_pkg = self.get_parameter("config_pkg").value
         config_rel = self.get_parameter("config_rel").value
         root_cfg = load_yaml_from_pkg(config_pkg, config_rel)
@@ -131,7 +133,8 @@ class InfoPanelNode(Node):
         self.create_subscription(StatusText,     t_statustext,     self._on_statustext,     qos_profile_sensor_data)
         self.create_subscription(BatteryState,   t_battery,        self._on_battery,        qos_profile_sensor_data)
         self.create_subscription(State,          t_state,          self._on_state,           reliable_qos)
-        self.create_subscription(Odometry,       t_odom,           self._on_odom,            qos_profile_sensor_data)
+        if use_odom:
+            self.create_subscription(Odometry, t_odom, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(GPSRAW,         t_gps1_raw,       self._on_gps1_raw,        qos_profile_sensor_data)
         self.create_subscription(DroneState,     t_control_state,  self._on_control_state,   reliable_qos)
         self.create_subscription(DroneInfo,      t_drone_info,     self._on_drone_info,       reliable_qos)
