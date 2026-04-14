@@ -47,39 +47,24 @@
  *    output_max:      2.0
  *    integral_min:   -0.5   # anti-windup clamp on integral term
  *    integral_max:    0.5
- *    max_accel_mps2:  2.0   # achievable vertical acceleration magnitude
- *    command_hz:     20.0   # expected rate of incoming MCU updates
  *
- * ── Motion model ─────────────────────────────────────────────────────────────
+ * ── PID design ───────────────────────────────────────────────────────────────
  *
- *  The controller does not assume commanded velocity is achieved instantly.
- *  Instead it models two limits:
- *    1. The vehicle cannot stop instantly, so the altitude error is evaluated
- *       against a motion-aware altitude = agl + stopping_distance,
- *       where stopping_distance = sign(vz) * vz² / (2 * max_accel).
- *    2. The next published velocity command is limited to what can be reached
- *       within one command period (1 / command_hz) at max_accel.
+ *  error  = target_agl - current_agl
  *
- * ── Soft-PID design ──────────────────────────────────────────────────────────
+ *  P term = kp * error
  *
- *  error     = target_agl - motion_aware_agl
+ *  I term = integral of error × dt, clamped to [integral_min, integral_max]
+ *           Reset to 0 whenever active goes false OR reset_integral arrives.
  *
- *  P term    = kp * error
+ *  D term = -kd * current_vz   (derivative-on-measurement: avoids derivative
+ *           kick when the target changes; negative because positive vz already
+ *           reduces the error)
  *
- *  I term    = integral of error × dt, clamped to [integral_min, integral_max]
- *              Reset to 0 whenever active goes false OR reset_integral arrives.
- *
- *  D term    = -kd * current_vz   (derivative-on-measurement: avoids derivative
- *              kick when the target changes; negative because positive vz already
- *              reduces the error)
- *
- *  desired_vz_steady = clamp(P + I + D, output_min, output_max)
- *  output            = current_vz slewed toward desired_vz_steady with
- *                      acceleration limit max_accel over one command period.
+ *  output = clamp(P + I + D, output_min, output_max)
  *
  *  The node is reactive: it runs once per MCU measurement while active.
  *  dt for the integral comes from wall-clock time between active measurements.
- *  command_hz defines the nominal actuation horizon used by the motion model.
  */
 
 #include <chrono>
@@ -113,9 +98,8 @@ private:
 
   // ── PID helpers ───────────────────────────────────────────────────────────
   void  resetPid();
-  float computeDesiredVelocity(float target_agl, float motion_aware_agl,
+  float computeDesiredVelocity(float target_agl, float current_agl,
                                float current_vz, double dt_s);
-  float computeMotionAwareAltitude(float current_agl, float current_vz) const;
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void onCommand(const AltCtrlInput::SharedPtr msg);          // control_gate commands
@@ -135,12 +119,11 @@ private:
   float ki_{0.05f};
   float kd_{0.3f};
 
-  // ── Motion model params ───────────────────────────────────────────────────
+  // ── PID output params ─────────────────────────────────────────────────────
   float output_min_{-2.0f};
   float output_max_{ 2.0f};
   float integral_min_{-0.5f};
   float integral_max_{ 0.5f};
-  float max_accel_mps2_{2.0f};
 
   // ── Controller state ──────────────────────────────────────────────────────
   bool   active_{false};           // mirrors last command's active flag

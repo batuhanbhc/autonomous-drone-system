@@ -71,51 +71,50 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
   updateSetpointBlockStateAndMaybePublish(blocked, false);
   if (blocked) return;
 
-  // Every teleop action resets the timeout clock
+  // Every teleop action still resets the general "last action" clock
+  // (used by other watchdogs / state reporting).
   updateLastAct(std::chrono::steady_clock::now());
 
-  float eff_vx       = static_cast<float>(msg->vx);
-  float eff_vy       = static_cast<float>(msg->vy);
-  float eff_vz       = static_cast<float>(msg->vz);
-  float eff_yaw_rate = static_cast<float>(msg->yaw_rate);
+  const float eff_vx       = static_cast<float>(msg->vx);
+  const float eff_vy       = static_cast<float>(msg->vy);
+  const float eff_vz       = static_cast<float>(msg->vz);
+  const float eff_yaw_rate = static_cast<float>(msg->yaw_rate);
 
   if (alt_ctrl_mode_ == AltCtrlMode::AltHold) {
-    const bool vz_nonzero = (eff_vz != 0.0f);
+    // Vx / Vy / yaw_rate always pass through — update guided cmd state.
+    updateGuidedVx(eff_vx);
+    updateGuidedVy(eff_vy);
+    updateGuidedYawRate(eff_yaw_rate);
 
-    if (vz_nonzero) {
-      // Operator pushing vz — deactivate the PID (command transition only).
-      // We stay in AltHold so the PID re-engages on the next vz==0 input.
-      if (!alt_hold_last_vz_nonzero_) {
-        // Transition: vz was zero → now nonzero.  Send deactivate command.
-        publishAltCtrlInput(/*active=*/false, /*target_agl_m=*/0.0f);
-        alt_ctrl_output_fresh_    = false;
-        alt_hold_last_vz_nonzero_ = true;
+    // Vz: operator input resets the override clock and is forwarded directly.
+    // The operator bypasses the PID and the ground-protection clamp intentionally.
+    if (eff_vz != 0.0f) {
+      last_vz_override_t_ = std::chrono::steady_clock::now();
+
+      if (!alt_hold_operator_override_) {
+        // Transition: PID was running → operator took over.
+        alt_hold_operator_override_ = true;
+        deactivatePid();
+
+        RCLCPP_INFO(get_logger(),
+          "[alt_hold] Operator Vz override (%.3f m/s) — PID deactivated.", eff_vz);
+        publishInfo(DroneInfo::LEVEL_INFO, "AltHold: operator Vz override, PID paused.");
       }
-      // eff_vz passes through unchanged
-
+      // Forward operator Vz directly — bypass updateGuidedVz (no ground clamp for operator).
+      guided_cmd_.vz  = eff_vz;
+      last_vz_update_ = std::chrono::steady_clock::now();
     } else {
-      // vz == 0: controller should hold altitude
-      if (alt_hold_last_vz_nonzero_) {
-        // Transition: vz was nonzero → now zero.
-        // Snapshot current agl as the new hold target and send activate command.
-        const VerticalEstimateCache ve = snapshotVertEst();
-        if (ve.valid) {
-          alt_ctrl_target_agl_ = ve.agl_m;
-          // Send activate command with new target; altitude_controller reads
-          // current measurements directly from mcu_bridge.
-          publishAltCtrlInput(/*active=*/true, alt_ctrl_target_agl_);
-        }
-        alt_hold_last_vz_nonzero_ = false;
-      }
-
-      if (alt_ctrl_output_fresh_) {
-        eff_vz = alt_ctrl_vz_output_;
-      }
-      // No controller output yet → eff_vz stays 0, safe hover
+      // vz == 0: zero out Vz so the setpoint timer doesn't replay the last nonzero value.
+      guided_cmd_.vz  = 0.0f;
+      last_vz_update_ = std::chrono::steady_clock::now();
     }
-  }
 
-  publishSetpoint(eff_vx, eff_vy, eff_vz, eff_yaw_rate);
+  } else {
+    // AltHold Off — plain pass-through to the setpoint publisher.
+    // We do NOT use the guided_cmd_ / timer path here; call publishSetpoint directly
+    // so that non-althold teleop still works.
+    publishSetpoint(eff_vx, eff_vy, eff_vz, eff_yaw_rate);
+  }
 }
 
 
@@ -231,14 +230,11 @@ void ControlGateNode::onFailsafeWatchdog() {
 // onVerticalEstimate  — update internal cache ONLY
 //
 // control_gate caches the MCU vertical estimates so it can:
-//   • snapshot a hold altitude when the operator releases the throttle stick
+//   • snapshot a safe hold altitude when the vz-override timeout fires
 //   • monitor takeoff progress
-//   • enter/exit the timed-out sub-state
 //
-// It NO LONGER forwards this data to the altitude_controller.
 // The altitude_controller subscribes directly to the mcu_bridge topic at
-// sensor QoS for measurements, eliminating the extra hop and the associated
-// serialization overhead (especially valuable on intra-process comms).
+// sensor QoS for its own measurements.
 // ============================================================================
 
 void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) {
@@ -253,61 +249,64 @@ void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) 
 
 
 // ============================================================================
-// onAltCtrlOutput  — receive vz command from PID node
+// onAltCtrlOutput  — receive Vz command from PID node
 // ============================================================================
 
 void ControlGateNode::onAltCtrlOutput(const AltCtrlOutput::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
+  // Ignore output when AltHold is off or operator override is active.
+  if (alt_ctrl_mode_ != AltCtrlMode::AltHold || alt_hold_operator_override_) return;
+
   alt_ctrl_vz_output_    = msg->data;
   alt_ctrl_output_fresh_ = true;
 
-  // When timed out, drive setpoints directly from here (no teleop action
-  // arriving) so the drone hovers even with no operator input.
-  if (alt_ctrl_mode_ == AltCtrlMode::AltHold && alt_hold_timed_out_) {
-    const InternalState st = snapshotState();
-    if (isSetpointBlocked(st)) return;
-    publishSetpoint(0.0f, 0.0f, alt_ctrl_vz_output_, 0.0f);
-  }
+  // Route PID output into the guided command state (with ground protection).
+  updateGuidedVz(msg->data);
 }
 
 
 // ============================================================================
-// onSetTargetHeight  — service callback
+// onSetTargetHeight  — service callback (control_gate owns this)
 //
-// Lets an operator set a specific hold altitude on-the-fly.
-// Sends a command to altitude_controller with the new target and an integral
-// reset request; the altitude_controller will pick up current measurements
-// independently from mcu_bridge.
+// Sets a new altitude hold target. Rejects targets below alt_ctrl_min_agl_m_.
+// If the PID is currently active, pushes the new target immediately with an
+// integral reset. If AltHold is off entirely, the request is rejected.
 // ============================================================================
 
 void ControlGateNode::onSetTargetHeight(
   const std::shared_ptr<SetTargetHeight::Request>  req,
   std::shared_ptr<SetTargetHeight::Response>       res)
 {
-  if (req->target_agl_m < 0.0f) {
+  if (alt_ctrl_mode_ == AltCtrlMode::Off) {
     res->success = false;
-    res->message = "target_agl_m must be >= 0.";
+    res->message = "AltHold is not active.";
+    RCLCPP_WARN(get_logger(), "SetTargetHeight rejected: %s", res->message.c_str());
+    return;
+  }
+
+  if (req->target_agl_m < alt_ctrl_min_agl_m_) {
+    res->success = false;
+    res->message = stringf(
+      "target_agl_m=%.2f is below minimum safe AGL of %.2f m.",
+      req->target_agl_m, alt_ctrl_min_agl_m_);
     RCLCPP_WARN(get_logger(), "SetTargetHeight rejected: %s", res->message.c_str());
     return;
   }
 
   const float old_target = alt_ctrl_target_agl_;
-  alt_ctrl_target_agl_   = req->target_agl_m;
-
   const std::string info_msg = stringf(
-    "Target height updated: %.2f m → %.2f m", old_target, alt_ctrl_target_agl_);
+    "Target height updated: %.2f m → %.2f m", old_target, req->target_agl_m);
+
   RCLCPP_INFO(get_logger(), "[set_target_height] %s", info_msg.c_str());
   publishInfo(DroneInfo::LEVEL_INFO, info_msg);
 
-  // If the controller is running, push a new command with reset_integral so
-  // the PID node picks up the new target cleanly.  Current measurements come
-  // from mcu_bridge directly, so we only need to send the command.
-  if (alt_ctrl_mode_ != AltCtrlMode::Off) {
-    publishAltCtrlInput(
-      /*active=*/        true,
-      /*target_agl_m=*/  alt_ctrl_target_agl_,
-      /*reset_integral=*/true);
+  // Push new target. If PID is active send it immediately; if override is
+  // active, just store it so it will be used when the timeout fires.
+  if (!alt_hold_operator_override_) {
+    activatePid(req->target_agl_m);   // activatePid stores target and resets integral
+  } else {
+    alt_ctrl_target_agl_ = req->target_agl_m;
   }
 
   res->success = true;

@@ -467,9 +467,9 @@ class InfoPanelNode(Node):
         elif alt_mode == 0:
             alt_str = "[dim]OFF[/dim]"
         elif alt_mode == 1:
-            alt_str = "[bold yellow]GUIDED TIMEOUT[/bold yellow]"
+            alt_str = "[bold green]● PID HOLDING[/bold green]"
         elif alt_mode == 2:
-            alt_str = "[bold cyan]ALT SUPPORT[/bold cyan]"
+            alt_str = "[bold yellow]⬆ OPERATOR OVERRIDE[/bold yellow]"
         else:
             alt_str = f"UNKNOWN({alt_mode})"
         t.add_row("Alt Ctrl",        alt_str)

@@ -75,16 +75,19 @@ private:
 
   // ── Altitude hold state machine ────────────────────────────────────────
   //
-  //  Off      – controller not running (before takeoff, failsafe, disarmed)
+  //  Off      – altitude controller completely off; any leftover output ignored.
   //
-  //  AltHold  – single mode, always active after takeoff while in guided.
-  //               • operator vz != 0  → pass vz through, controller deactivated
-  //               • operator vz == 0  → controller holds alt_ctrl_target_agl_
-  //               • timed_out == true → additionally zero out xy and yaw
+  //  AltHold  – altitude controller has FULL authority over Vz.
+  //             Operator Vz does NOT pass through to the setpoint; it only
+  //             resets the operator-override timeout clock:
+  //               • nonzero operator Vz  → set alt_hold_operator_override_ = true;
+  //                                        deactivate PID (FCU holds on its own)
+  //               • override timeout fires → snapshot current agl, activate PID
+  //               • Vx / Vy / yaw_rate always pass through unchanged
   //
-  //  timed_out flag (inside AltHold):
-  //               false → operator is actively flying; xy/yaw pass through
-  //               true  → no teleop for guided_timeout_s_; force hover
+  //  alt_hold_operator_override_:
+  //               true  → operator recently sent nonzero Vz; PID deactivated
+  //               false → timeout elapsed; PID controls Vz
   enum class AltCtrlMode : uint8_t {
     Off     = 0,
     AltHold = 1,
@@ -181,10 +184,13 @@ private:
   float  takeoff_m_{1.5f};
   float  failsafe_watchdog_hz_{1.0f};
   double gcs_failsafe_s_{5.0};
-  double guided_timeout_s_{3.0};
-  float  guided_timeout_watchdog_hz_{10.0f};
+  double vz_override_timeout_s_{3.0};      // seconds of nonzero-Vz silence → PID takes over
+  float  alt_timeout_watchdog_hz_{10.0f};  // watchdog rate for the above
   float  takeoff_reach_threshold_m_{0.2f};
   float  takeoff_timeout_s_{15.0f};
+  float  alt_ctrl_setpoint_hz_{20.0f};     // rate of the guided-setpoint publish timer
+  float  cmd_stale_timeout_s_{0.5f};       // seconds without update → component zeroed
+  float  alt_ctrl_min_agl_m_{2.0f};        // below this AGL, negative Vz from PID is suppressed
 
   // ── Runtime flags ─────────────────────────────────────────────────────────
   bool setpoint_blocked_{true};
@@ -206,21 +212,45 @@ private:
   VerticalEstimateCache vert_est_;
 
   // ── Altitude controller runtime ───────────────────────────────────────────
-  // All fields below are accessed only on the ROS executor thread
-  // (single-threaded spin), so no extra mutex is needed.
+  // All fields below are only touched on the ROS executor thread (single-
+  // threaded spin inside the compositor), so no extra mutex is needed.
   AltCtrlMode alt_ctrl_mode_{AltCtrlMode::Off};
-  bool        alt_hold_timed_out_{false};   // true → force xy/yaw=0 as well
 
-  // The altitude the controller is trying to hold.
-  // Updated by: enterAltHold (snapshot), onSetTargetHeight (service override).
+  // true  → operator sent nonzero Vz recently; PID is deactivated
+  // false → override timeout elapsed; PID is running
+  bool alt_hold_operator_override_{true};   // starts true (PID off until first timeout)
+
+  // The altitude the PID is targeting. Set by the override-timeout snapshot
+  // and by the set_target_height service.
   float alt_ctrl_target_agl_{0.0f};
 
-  float alt_ctrl_vz_output_{0.0f};    // latest vz from PID (m/s)
+  // Latest Vz command received from the altitude controller PID [m/s].
+  // Zero-initialised; updated by onAltCtrlOutput.
+  float alt_ctrl_vz_output_{0.0f};
   bool  alt_ctrl_output_fresh_{false};
 
-  // Track whether operator last sent nonzero vz, to detect the transition
-  // back to vz==0 so we can snapshot a fresh hold altitude.
-  bool alt_hold_last_vz_nonzero_{false};
+  // Throttle log: last time we printed the "PID Vz suppressed near ground" warning.
+  std::chrono::steady_clock::time_point last_suppress_warn_t_{};
+
+  // ── Guided setpoint state ─────────────────────────────────────────────────
+  // Single-point-of-entry for all MAVLink setpoint publishing.
+  // Each component is updated independently; the publish timer reads and sends
+  // the current combination at alt_ctrl_setpoint_hz_.
+  // last_*_update_ tracks when each component was last written — components
+  // that have not been updated for cmd_stale_timeout_s_ are zeroed.
+  struct GuidedCmd {
+    float vx{0.0f}, vy{0.0f}, vz{0.0f}, yaw_rate{0.0f};
+  };
+  GuidedCmd guided_cmd_;
+
+  // Timestamps of last update for each component (for stale-zeroing).
+  std::chrono::steady_clock::time_point last_vx_update_{};
+  std::chrono::steady_clock::time_point last_vy_update_{};
+  std::chrono::steady_clock::time_point last_vz_update_{};   // set by PID output
+  std::chrono::steady_clock::time_point last_yaw_update_{};
+
+  // Timestamp of the last nonzero-Vz operator input (for override timeout).
+  std::chrono::steady_clock::time_point last_vz_override_t_{};
 
   // Takeoff monitor
   bool          takeoff_monitor_active_{false};
@@ -242,17 +272,23 @@ private:
   bool isAnyFailsafeActive() const;
 
   // ── Altitude controller helpers ───────────────────────────────────────────
-  void enterAltHold(float target_agl, float current_agl, float current_vz_mps);
+  void enterAltHold();
   void exitAltHold();
-  void enterTimedOut(const VerticalEstimateCache& ve);
-  void exitTimedOut();
+  void activatePid(float target_agl);   // send active=true command to altitude_controller
+  void deactivatePid();                 // send active=false command to altitude_controller
+
+  // Update a single component of guided_cmd_ and stamp its update time.
+  void updateGuidedVx(float vx);
+  void updateGuidedVy(float vy);
+  void updateGuidedVz(float vz);        // called from onAltCtrlOutput only
+  void updateGuidedYawRate(float yr);
 
   // publishAltCtrlInput: command-only — sends active, target_agl_m, reset_integral.
-  // Measurements (current_agl_m, current_vz_mps) are NO LONGER sent here;
-  // altitude_controller subscribes directly to the mcu_bridge topic for those.
   void publishAltCtrlInput(bool active,
                            float target_agl_m,
                            bool reset_integral = false);
+
+  // publishSetpoint is now PRIVATE to onGuidedSetpointTimer — use update* above.
   void publishSetpoint(float vx, float vy, float vz, float yaw_rate);
 
   // ── Subscriber callbacks ──────────────────────────────────────────────────
@@ -271,8 +307,9 @@ private:
     std::shared_ptr<SetTargetHeight::Response>       res);
 
   // ── Timer callbacks ───────────────────────────────────────────────────────
-  void onGuidedTimeoutWatchdog();
+  void onAltTimeoutWatchdog();    // watches for vz-override timeout
   void onTakeoffMonitorTick();
+  void onGuidedSetpointTimer();   // single-point setpoint publish at alt_ctrl_setpoint_hz_
 
   // ── Publisher helpers ─────────────────────────────────────────────────────
   void publishInfo(uint8_t level, const std::string& text);
@@ -313,8 +350,9 @@ private:
   rclcpp::TimerBase::SharedPtr kill_switch_timer_;
   rclcpp::TimerBase::SharedPtr state_pub_timer_;
   rclcpp::TimerBase::SharedPtr gcs_watchdog_timer_;
-  rclcpp::TimerBase::SharedPtr guided_timeout_watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr alt_timeout_watchdog_timer_;   // vz-override timeout watchdog
   rclcpp::TimerBase::SharedPtr takeoff_monitor_timer_;
+  rclcpp::TimerBase::SharedPtr guided_setpoint_timer_;        // single-point setpoint publish
 };
 
 #endif  // MAVROS_GATE__COMMAND_GATE_HPP_

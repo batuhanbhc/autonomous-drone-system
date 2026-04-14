@@ -105,18 +105,25 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
     std::chrono::milliseconds(static_cast<int64_t>((1.0 / failsafe_watchdog_hz_) * 1000)),
     std::bind(&ControlGateNode::onFailsafeWatchdog, this));
 
-  // Guided timeout watchdog (default 10 Hz, configurable)
-  guided_timeout_watchdog_timer_ = this->create_wall_timer(
+  // Vz-override timeout watchdog
+  alt_timeout_watchdog_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(
-      static_cast<int64_t>((1.0 / guided_timeout_watchdog_hz_) * 1000)),
-    std::bind(&ControlGateNode::onGuidedTimeoutWatchdog, this));
+      static_cast<int64_t>((1.0 / alt_timeout_watchdog_hz_) * 1000)),
+    std::bind(&ControlGateNode::onAltTimeoutWatchdog, this));
 
-  // Takeoff monitor timer — created here but immediately cancelled;
-  // it is re-armed by executeTakeoff() after a successful takeoff service call.
+  // Takeoff monitor — dormant until re-armed by executeTakeoff()
   takeoff_monitor_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(100),   // 10 Hz check
     std::bind(&ControlGateNode::onTakeoffMonitorTick, this));
-  takeoff_monitor_timer_->cancel();   // dormant until takeoff accepted
+  takeoff_monitor_timer_->cancel();
+
+  // Guided setpoint publisher — single point of entry for MAVLink setpoints.
+  // Starts cancelled; enabled when AltHold is entered.
+  guided_setpoint_timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(
+      static_cast<int64_t>((1.0 / alt_ctrl_setpoint_hz_) * 1000)),
+    std::bind(&ControlGateNode::onGuidedSetpointTimer, this));
+  guided_setpoint_timer_->cancel();
 
   // -----------------------------------
   RCLCPP_INFO(get_logger(), "Initialization complete.");

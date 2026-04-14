@@ -1,5 +1,4 @@
 from typing import Dict, Optional
-import time
 import math
 from dataclasses import dataclass
 
@@ -60,7 +59,7 @@ class CommandManager:
 
         self._kill_pending_until: float | None = None
         self._last_executed_cmd: Optional[Command] = None
-        self._last_executed_time_s: Optional[float] = None
+        self._hover_sent_after_release: bool = False  # True once hover fired after last cmd release
     
     def toggle_keyboard(self) -> bool:
         """
@@ -103,15 +102,14 @@ class CommandManager:
             return False
         return not getattr(cmd, "hover", False)
 
-    def _maybe_send_hover_keepalive(self, now_s: float) -> None:
-        # Only send hover if last executed cmd was non-hover VelocityYaw and it was < 1s ago
-        if (
-            self._last_executed_time_s is not None
-            and self._is_non_hover_velocity_yaw(self._last_executed_cmd)
-            and (now_s - self._last_executed_time_s) < 1.0
-        ):
+    def _maybe_send_hover_once(self) -> None:
+        """Send a single hover action the first time we go idle after a VelocityYaw command.
+        Does nothing on subsequent calls until a new VelocityYaw command is executed."""
+        if self._hover_sent_after_release:
+            return
+        if self._is_non_hover_velocity_yaw(self._last_executed_cmd):
             self.execute_hover()
-        # else: send nothing
+        self._hover_sent_after_release = True
 
     def _select_candidate(self, state: Dict[str, bool]) -> Command:
         """
@@ -128,21 +126,20 @@ class CommandManager:
     
     def tick(self, state_tuple: tuple):
         state, _ = state_tuple
-        now_s = time.time()
 
         candidate = self._select_candidate(state)
 
-        # If nothing triggered and nothing on hold, do not send hover blindly.
+        # If nothing triggered and nothing on hold, go idle.
         if candidate is None and self._hold is None:
-            self._maybe_send_hover_keepalive(now_s)
+            self._maybe_send_hover_once()
             return
 
-        # If nothing triggered but we have a hold, we may need to drop it if released.
+        # If nothing triggered but we have a hold, check if it was released.
         if candidate is None and self._hold is not None:
             hold_cmd = self._hold.cmd
             if not hold_cmd.is_triggered(state):
                 self._hold = None
-                self._maybe_send_hover_keepalive(now_s)
+                self._maybe_send_hover_once()
                 return
             # else: keep holding existing command; fall through to update
 
@@ -174,36 +171,33 @@ class CommandManager:
 
     def _update_selected(self, state_tuple: tuple) -> None:
         state, _ = state_tuple
-        now_s = time.time()
 
         slot = self._hold
         if slot is None:
-            self._maybe_send_hover_keepalive(now_s)
+            self._maybe_send_hover_once()
             return
 
         cmd = slot.cmd
 
-        # If command set to be complete, it means latched command is being sent
+        # Latched command already fired — wait for release.
         if slot.complete:
-            self._maybe_send_hover_keepalive(now_s)
             return
 
-        # Countdown logic
+        # Countdown: still holding, not ready to fire yet.
         if slot.ticks_left > 0:
             slot.ticks_left -= 1
             cmd.on_hold_hook()
-
-            # Only send hover if your rule allows it
-            self._maybe_send_hover_keepalive(now_s)
             return
 
-        # ticks_left == 0, execute it
+        # ticks_left == 0 — execute.
         cmd.execute(state)
 
-        # Remember last EXECUTED command (except hover)
+        # Track last executed VelocityYaw so hover fires once on release.
         if cmd is not self._hover_command and not getattr(cmd, "hover", False):
+            if self._is_non_hover_velocity_yaw(cmd):
+                # New VelocityYaw executed — arm the single-shot hover for next idle.
+                self._hover_sent_after_release = False
             self._last_executed_cmd = cmd
-            self._last_executed_time_s = now_s
 
         if cmd.latch:
             slot.complete = True

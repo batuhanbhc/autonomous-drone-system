@@ -13,7 +13,6 @@ void ControlGateNode::onPublishStateTimer() {
 
   DroneState msg;
 
-  // control_mode
   msg.control_mode =
     (st.control_mode == ControlMode::Auto)
       ? DroneState::CONTROL_MODE_AUTO
@@ -22,10 +21,10 @@ void ControlGateNode::onPublishStateTimer() {
   // alt_ctrl_mode
   if (alt_ctrl_mode_ == AltCtrlMode::Off) {
     msg.alt_ctrl_mode = DroneState::ALT_CTRL_OFF;
-  } else if (alt_hold_timed_out_) {
-    msg.alt_ctrl_mode = DroneState::ALT_CTRL_GUIDED_TIMEOUT;
+  } else if (alt_hold_operator_override_) {
+    msg.alt_ctrl_mode = DroneState::ALT_CTRL_SUPPORT;          // operator flying
   } else {
-    msg.alt_ctrl_mode = DroneState::ALT_CTRL_SUPPORT;
+    msg.alt_ctrl_mode = DroneState::ALT_CTRL_GUIDED_TIMEOUT;   // PID holding
   }
 
   msg.velocity_h       = st.vel.hv;
@@ -35,7 +34,6 @@ void ControlGateNode::onPublishStateTimer() {
   msg.safety_switch_on = st.safety_switch_on;
   msg.system_killed    = st.system_killed;
 
-  // time_since_action
   const auto now = std::chrono::steady_clock::now();
   if (last_act.time_since_epoch().count() == 0) {
     msg.time_since_action.sec     = 0;
@@ -68,7 +66,9 @@ void ControlGateNode::publishInfo(uint8_t level, const std::string& text) {
 
 
 // ============================================================================
-// publishSetpoint  — single point of entry for all MAVLink setpoint publishing
+// publishSetpoint  — low-level MAVLink setpoint builder
+// Called only by onGuidedSetpointTimer (AltHold path) and directly from
+// onTeleopAction (non-AltHold path).
 // ============================================================================
 
 void ControlGateNode::publishSetpoint(float vx, float vy, float vz, float yaw_rate) {
@@ -93,22 +93,50 @@ void ControlGateNode::publishSetpoint(float vx, float vy, float vz, float yaw_ra
 
 
 // ============================================================================
-// publishAltCtrlInput  — sends COMMAND fields only (no measurement data)
+// onGuidedSetpointTimer  — single point of entry for guided setpoints
 //
-// The AltitudeControllerInput message is now a pure command channel:
-//   active         – true  → controller should run; false → stop & reset
-//   target_agl_m   – desired altitude above ground [m]
-//   reset_integral – edge-triggered: zero integral before next PID tick
+// Runs at alt_ctrl_setpoint_hz_ while AltHold is active.
+// Reads the current guided_cmd_ state, applies stale-zeroing to each
+// component that has not been updated within cmd_stale_timeout_s_, then
+// publishes the combined setpoint.
 //
-// Measurement data (current_agl_m, current_vz_mps) are no longer sent here.
-// The altitude_controller node subscribes directly to the mcu_bridge topic
-// for those values at sensor QoS, decoupling command latency from data rate.
-//
-// This function is called ONLY on state transitions:
-//   • activate  (enterAltHold, enterTimedOut)
-//   • deactivate (exitAltHold)
-//   • new target (onSetTargetHeight, vz-zero transition snapshot)
-//   • integral reset request (onSetTargetHeight)
+// Stale rules:
+//   Vx, Vy, yaw_rate — zeroed if not updated within cmd_stale_timeout_s_
+//   Vz               — supplied by PID (updated via updateGuidedVz from
+//                      onAltCtrlOutput); zeroed if PID output is stale.
+//                      When operator override is active, Vz is always 0.
+// ============================================================================
+
+void ControlGateNode::onGuidedSetpointTimer() {
+  if (inInitializationPhase()) return;
+  if (alt_ctrl_mode_ != AltCtrlMode::AltHold) return;
+
+  const InternalState st = snapshotState();
+  if (isSetpointBlocked(st)) return;
+
+  const auto   now           = std::chrono::steady_clock::now();
+  const double stale_s       = cmd_stale_timeout_s_;
+
+  // Zero stale horizontal / yaw components.
+  auto age = [&](const std::chrono::steady_clock::time_point& t) -> double {
+    if (t.time_since_epoch().count() == 0) return 1e9;
+    return std::chrono::duration<double>(now - t).count();
+  };
+
+  const float vx       = (age(last_vx_update_)  < stale_s) ? guided_cmd_.vx       : 0.0f;
+  const float vy       = (age(last_vy_update_)  < stale_s) ? guided_cmd_.vy       : 0.0f;
+  const float yaw_rate = (age(last_yaw_update_) < stale_s) ? guided_cmd_.yaw_rate : 0.0f;
+
+  // Vz: use guided_cmd_.vz if fresh — it holds either operator Vz (when override
+  // is active) or PID output (when override is inactive). Either way, stale = 0.
+  const float vz = (age(last_vz_update_) < stale_s) ? guided_cmd_.vz : 0.0f;
+
+  publishSetpoint(vx, vy, vz, yaw_rate);
+}
+
+
+// ============================================================================
+// publishAltCtrlInput
 // ============================================================================
 
 void ControlGateNode::publishAltCtrlInput(

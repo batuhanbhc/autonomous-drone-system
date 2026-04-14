@@ -14,9 +14,6 @@ _KEY_PRETTY = {
 }
 
 def _pretty_key_name(key_code: str) -> str:
-    """
-    Convert evdev key names like 'KEY_W' into a compact, user-facing label.
-    """
     if not key_code:
         return ""
     name = key_code
@@ -27,80 +24,83 @@ def _pretty_key_name(key_code: str) -> str:
 def _format_key_combo(keys) -> str:
     return " + ".join(_pretty_key_name(k) for k in keys if k)
 
+def _keys_for(name: str) -> str:
+    cfg = TELEOP_CONFIG.get(name)
+    if cfg is None:
+        return "(not configured)"
+    return _format_key_combo(getattr(cfg, "key_list", ()))
+
 def teleop_manual_text() -> str:
-    """
-    Returns a human-readable manual for the current TELEOP_CONFIG.
-    Activation keys are mentioned in section titles (not repeated per-line).
-    """
-    # Derive activation switches from config so the manual stays in sync.
-    action_switch = getattr(TELEOP_CONFIG.get("ACTION", None), "activation_switch_key", None)
-    command_switch = getattr(TELEOP_CONFIG.get("RTL", None), "activation_switch_key", None)
+    action_switch  = getattr(TELEOP_CONFIG.get("ACTION"),  "activation_switch_key", None)
+    command_switch = getattr(TELEOP_CONFIG.get("RTL"),     "activation_switch_key", None)
+
+    cs = f" (hold {_pretty_key_name(command_switch)})" if command_switch else ""
+    as_ = f" (hold {_pretty_key_name(action_switch)})" if action_switch else ""
 
     lines = []
     lines.append("=== Teleop Keyboard Manual ===")
-    lines.append("")
 
-    # --- Mode changes (RTL/Takeoff/Guided/Land)
-    mode_title = "Mode changes"
-    if command_switch:
-        mode_title += f" (hold {_pretty_key_name(command_switch)})"
-    lines.append(mode_title)
-    for name in ("RTL", "TAKEOFF", "GUIDED", "LAND"):
-        cfg = TELEOP_CONFIG.get(name)
-        if cfg is None:
-            continue
-        lines.append(f"  {name}: {_format_key_combo(getattr(cfg, 'key_list', ())) }")
-    lines.append("")
+    # ── Flight modes ──────────────────────────────────────────────────────────
+    lines.append(f"\nFlight modes{cs}")
+    for name in ("GUIDED", "TAKEOFF", "LAND", "RTL"):
+        lines.append(f"  {name:<22} {_keys_for(name)}")
 
-    # --- Actions (movement)
-    action_title = "Actions"
-    if action_switch:
-        action_title += f" (hold {_pretty_key_name(action_switch)})"
-    lines.append(action_title)
-
-    # Explicit human names for ACTION keys (more useful than 'KEY_W', etc.)
-    action_map = [
-        ("Forward", "KEY_W"),
-        ("Back", "KEY_S"),
-        ("Left", "KEY_A"),
-        ("Right", "KEY_D"),
-        ("Up", "KEY_UP"),
-        ("Down", "KEY_DOWN"),
-        ("Yaw left", "KEY_LEFT"),
+    # ── Movement ──────────────────────────────────────────────────────────────
+    lines.append(f"\nMovement{as_}")
+    movement = [
+        ("Forward",   "KEY_W"),
+        ("Back",      "KEY_S"),
+        ("Left",      "KEY_A"),
+        ("Right",     "KEY_D"),
+        ("Up",        "KEY_UP"),
+        ("Down",      "KEY_DOWN"),
+        ("Yaw left",  "KEY_LEFT"),
         ("Yaw right", "KEY_RIGHT"),
     ]
-    for label, key in action_map:
-        lines.append(f"  {label}: {_pretty_key_name(key)}")
-    lines.append("")
+    for label, key in movement:
+        lines.append(f"  {label:<22} {_pretty_key_name(key)}")
 
-    # --- Other commands
-    other_title = "Other commands"
-    if command_switch:
-        other_title += f" (hold {_pretty_key_name(command_switch)})"
-    lines.append(other_title)
+    # ── Speed adjustment ──────────────────────────────────────────────────────
+    lines.append(f"\nSpeed adjustment{cs}")
+    speed_cmds = [
+        ("SPEED_UP_HORIZONTAL",   "Horizontal +"),
+        ("SPEED_DOWN_HORIZONTAL", "Horizontal -"),
+        ("SPEED_UP_VERTICAL",     "Vertical +"),
+        ("SPEED_DOWN_VERTICAL",   "Vertical -"),
+        ("SPEED_UP_YAW",          "Yaw rate +"),
+        ("SPEED_DOWN_YAW",        "Yaw rate -"),
+    ]
+    for name, label in speed_cmds:
+        lines.append(f"  {label:<22} {_keys_for(name)}")
 
-    # Order here is what shows up in the manual.
-    other_cmds = (
-        "ARM",
-        "DISARM",
-        "SPEED_UP",
-        "SPEED_DOWN",
-        "KILL_SWITCH",
-        "KILL_CONFIRM",
-        "KEYBOARD_TOGGLE",
-        "CONTROL_TOGGLE",
-        "PRESS_SAFETY_SWITCH",
-    )
-    for name in other_cmds:
-        cfg = TELEOP_CONFIG.get(name)
-        if cfg is None:
-            continue
-        keys = getattr(cfg, "key_list", ())
-        lines.append(f"  {name}: {_format_key_combo(keys)}")
+    # ── Vehicle control ───────────────────────────────────────────────────────
+    lines.append(f"\nVehicle control{cs}")
+    ctrl_cmds = [
+        ("ARM",                "Arm"),
+        ("DISARM",             "Disarm"),
+        ("PRESS_SAFETY_SWITCH","Safety switch"),
+        ("CONTROL_TOGGLE",     "Auto/Manual toggle"),
+        ("KEYBOARD_TOGGLE",    "Keyboard on/off"),
+        ("ALT_SUPPORT_TOGGLE", "AltHold on/off"),
+    ]
+    for name, label in ctrl_cmds:
+        lines.append(f"  {label:<22} {_keys_for(name)}")
 
-    lines.append("\nFor initial takeoff:")
-    lines.append("1) Press safety switch")
-    lines.append("2) Switch to Guided")
-    lines.append("3) Arm the vehicle")
-    lines.append("4) Send Takeoff")
+    # ── Kill switch ───────────────────────────────────────────────────────────
+    lines.append(f"\nKill switch{cs}  !! motors stop immediately !!")
+    lines.append(f"  {'Open window':<22} {_keys_for('KILL_SWITCH')}")
+    lines.append(f"  {'Confirm kill':<22} {_keys_for('KILL_CONFIRM')}")
+
+    # ── Camera ────────────────────────────────────────────────────────────────
+    lines.append(f"\nCamera{cs}")
+    lines.append(f"  {'Record toggle':<22} {_keys_for('RECORD_VIDEO_TOGGLE')}")
+    lines.append(f"  {'Stream toggle':<22} {_keys_for('STREAM_TOGGLE')}")
+
+    # ── Quick-start ───────────────────────────────────────────────────────────
+    lines.append("\nQuick-start sequence:")
+    lines.append(f"  1) PRESS_SAFETY_SWITCH  ({_keys_for('PRESS_SAFETY_SWITCH')})")
+    lines.append(f"  2) GUIDED               ({_keys_for('GUIDED')})")
+    lines.append(f"  3) ARM                  ({_keys_for('ARM')})")
+    lines.append(f"  4) TAKEOFF              ({_keys_for('TAKEOFF')})")
+
     return "\n".join(lines)

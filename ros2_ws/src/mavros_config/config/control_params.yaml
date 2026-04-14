@@ -1,24 +1,29 @@
 drone_id: 0
 
 flight_params:
-  takeoff_m: 1.5
   gcs_failsafe_s: 5  # last gcs heartbeat > "gcs_failsafe_s" triggers failsafe state
   failsafe_watchdog_hz: 2.0
-  guided_timeout_s:           1.0    # inactivity threshold before guided timeout (s)
-  guided_timeout_watchdog_hz: 10.0   # how often to check guided timeout (Hz)
+
+  alt_timeout_watchdog_hz: 10.0       # how often to check for operator inactivity for entering AltHold
+  vz_override_timeout_s: 1.0          # how long to wait for operator inactivity before entering AltHold
+  alt_ctrl_setpoint_hz: 20.0          # how often guided velocity setpoints are sent to FCU
+  cmd_stale_timeout_s: 0.5            
+  alt_ctrl_min_agl_m: 2.0
+
+  takeoff_m: 1.5
   takeoff_reach_threshold_m:  0.20   # ±tolerance to consider takeoff altitude reached (m)
   takeoff_timeout_s:          10.0   # hard cap on takeoff monitor (s)
+  
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 1.0
-  ki: 0.01
-  kd: 0.3
+  kp: 0.8
+  ki: 0.0005
+  kd: 0.1
   output_min: -1.5
   output_max:  1.5
-  integral_min: -0.25
-  integral_max:  0.25
-  max_accel_mps2: 1.0
+  integral_min: -0.1
+  integral_max:  0.1
 
 camera:
   device_path: "/dev/video0"
@@ -94,7 +99,7 @@ teleop:
   commands:
     params:
       KILL_SWITCH:
-        activation_time_s: 1.0
+        activation_time_s: 0.1
         latch: true
         kill_window_s: 2.0
       KILL_CONFIRM:
@@ -107,7 +112,7 @@ teleop:
         activation_time_s: 0.25
         latch: true
       ARM:
-        activation_time_s: 1.0
+        activation_time_s: 0.5
         latch: true
       DISARM:
         activation_time_s: 2.0

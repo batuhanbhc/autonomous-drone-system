@@ -517,11 +517,7 @@ ControlGateNode::executeAltSupportToggle(const TeleopCmd&, const InternalState& 
   }
 
   if (alt_ctrl_mode_ == AltCtrlMode::Off) {
-    const VerticalEstimateCache ve = snapshotVertEst();
-    if (!ve.valid) {
-      return {false, "AltHold toggle rejected: no valid vertical estimate."};
-    }
-    enterAltHold(ve.agl_m, ve.agl_m, ve.vz_mps);
+    enterAltHold();
     return {true, "AltHold enabled."};
   } else {
     exitAltHold();

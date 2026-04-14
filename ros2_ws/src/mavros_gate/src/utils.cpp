@@ -156,13 +156,16 @@ bool ControlGateNode::loadConfig() {
     }
   };
 
-  load_f("takeoff_m",                  takeoff_m_);
-  load_f("gcs_failsafe_s",             gcs_failsafe_s_);
-  load_f("failsafe_watchdog_hz",       failsafe_watchdog_hz_);
-  load_f("guided_timeout_s",           guided_timeout_s_);
-  load_f("guided_timeout_watchdog_hz", guided_timeout_watchdog_hz_);
-  load_f("takeoff_reach_threshold_m",  takeoff_reach_threshold_m_);
-  load_f("takeoff_timeout_s",          takeoff_timeout_s_);
+  load_f("takeoff_m",                   takeoff_m_);
+  load_f("gcs_failsafe_s",              gcs_failsafe_s_);
+  load_f("failsafe_watchdog_hz",        failsafe_watchdog_hz_);
+  load_f("vz_override_timeout_s",       vz_override_timeout_s_);
+  load_f("alt_timeout_watchdog_hz",     alt_timeout_watchdog_hz_);
+  load_f("takeoff_reach_threshold_m",   takeoff_reach_threshold_m_);
+  load_f("takeoff_timeout_s",           takeoff_timeout_s_);
+  load_f("alt_ctrl_setpoint_hz",        alt_ctrl_setpoint_hz_);
+  load_f("cmd_stale_timeout_s",         cmd_stale_timeout_s_);
+  load_f("alt_ctrl_min_agl_m",          alt_ctrl_min_agl_m_);
 
   return ok;
 }
@@ -354,80 +357,120 @@ void ControlGateNode::updateSetpointBlockStateAndMaybePublish(
 
 
 // ============================================================================
-// Altitude controller state transitions  (unified AltHold design)
+// Altitude controller state transitions
 //
-//  AltHold is entered automatically after takeoff whenever in guided mode.
-//  It has two sub-states controlled by alt_hold_timed_out_:
-//    false → operator flying; only vz is controlled, xy/yaw pass through
-//    true  → no teleop for guided_timeout_s_; full hover (xy/yaw zeroed too)
+//  enterAltHold  – switch mode to AltHold; guided setpoint timer starts.
+//                  PID starts in override state (deactivated) — it will be
+//                  activated on the first vz-override timeout.
+//
+//  exitAltHold   – stop everything; guided setpoint timer cancelled.
+//
+//  activatePid   – send active=true to altitude_controller with given target.
+//  deactivatePid – send active=false; PID resets internally.
 // ============================================================================
 
-void ControlGateNode::enterAltHold(
-  float target_agl, float current_agl, float current_vz_mps)
+void ControlGateNode::enterAltHold()
 {
   alt_ctrl_mode_             = AltCtrlMode::AltHold;
-  alt_ctrl_target_agl_       = target_agl;
-  alt_hold_timed_out_        = false;
-  alt_hold_last_vz_nonzero_  = false;
+  alt_hold_operator_override_ = true;   // PID starts deactivated; timeout will activate it
+  alt_ctrl_output_fresh_     = false;
+  guided_cmd_                = GuidedCmd{};   // zero all components
+  last_vz_override_t_        = std::chrono::steady_clock::now();  // start timeout clock now
 
-  RCLCPP_INFO(get_logger(),
-    "[alt_hold] Entered AltHold — target=%.3f m, current=%.3f m",
-    target_agl, current_agl);
-  publishInfo(DroneInfo::LEVEL_INFO,
-    stringf("AltHold active. Holding %.2f m", target_agl));
+  guided_setpoint_timer_->reset();  // start publishing setpoints
 
-  publishAltCtrlInput(/*active=*/true, alt_ctrl_target_agl_);
+  RCLCPP_INFO(get_logger(), "[alt_hold] Entered AltHold — waiting for first override timeout.");
+  publishInfo(DroneInfo::LEVEL_INFO, "AltHold enabled. Waiting for operator release.");
 }
 
 void ControlGateNode::exitAltHold()
 {
-  alt_ctrl_mode_      = AltCtrlMode::Off;
-  alt_hold_timed_out_ = false;
-  publishAltCtrlInput(/*active=*/false, /*target_agl_m=*/0.0f);
+  alt_ctrl_mode_             = AltCtrlMode::Off;
+  alt_hold_operator_override_ = true;
+  alt_ctrl_output_fresh_     = false;
+  guided_cmd_                = GuidedCmd{};
+
+  guided_setpoint_timer_->cancel();
+  deactivatePid();
 
   RCLCPP_INFO(get_logger(), "[alt_hold] Exited AltHold.");
   publishInfo(DroneInfo::LEVEL_INFO, "AltHold deactivated.");
 }
 
-void ControlGateNode::enterTimedOut(const VerticalEstimateCache& ve)
+void ControlGateNode::activatePid(float target_agl)
 {
-  // Snapshot current agl as the hold target — "stay exactly where you are".
-  // A subsequent set_target_height service call can override this.
-  alt_ctrl_target_agl_ = ve.agl_m;
-  alt_hold_timed_out_  = true;
+  alt_ctrl_target_agl_   = target_agl;
+  alt_ctrl_output_fresh_ = false;   // wait for fresh PID output before using it
+  publishAltCtrlInput(/*active=*/true, target_agl, /*reset_integral=*/true);
 
-  RCLCPP_WARN(get_logger(),
-    "[alt_hold] Timed out — full hover at %.3f m", alt_ctrl_target_agl_);
-  publishInfo(DroneInfo::LEVEL_WARN,
-    stringf("AltHold timed out. Hovering at %.2f m", alt_ctrl_target_agl_));
-
-  publishAltCtrlInput(/*active=*/true, alt_ctrl_target_agl_);
+  RCLCPP_INFO(get_logger(),
+    "[alt_hold] PID activated — target=%.3f m", target_agl);
 }
 
-void ControlGateNode::exitTimedOut()
+void ControlGateNode::deactivatePid()
 {
-  alt_hold_timed_out_ = false;
-
-  RCLCPP_INFO(get_logger(), "[alt_hold] Timeout cleared — operator resumed.");
-  publishInfo(DroneInfo::LEVEL_INFO, "AltHold timeout cleared.");
+  publishAltCtrlInput(/*active=*/false, /*target_agl_m=*/0.0f);
+  guided_cmd_.vz         = 0.0f;
+  alt_ctrl_output_fresh_ = false;
 }
 
 
 // ============================================================================
-// onGuidedTimeoutWatchdog  (timer callback, ~10 Hz)
+// updateGuidedV* — update individual components of guided_cmd_
+// ============================================================================
+
+void ControlGateNode::updateGuidedVx(float vx) {
+  guided_cmd_.vx  = vx;
+  last_vx_update_ = std::chrono::steady_clock::now();
+}
+
+void ControlGateNode::updateGuidedVy(float vy) {
+  guided_cmd_.vy  = vy;
+  last_vy_update_ = std::chrono::steady_clock::now();
+}
+
+void ControlGateNode::updateGuidedVz(float vz) {
+  // Protection: when below min AGL, suppress negative Vz from the PID.
+  const VerticalEstimateCache ve = snapshotVertEst();
+  if (ve.valid && ve.agl_m < alt_ctrl_min_agl_m_ && vz < 0.0f) {
+    const auto now = std::chrono::steady_clock::now();
+    const double since_warn =
+      std::chrono::duration<double>(now - last_suppress_warn_t_).count();
+    if (since_warn >= 1.0) {
+      RCLCPP_WARN(get_logger(),
+        "[alt_hold] PID Vz=%.3f suppressed: agl=%.3f m is below min=%.3f m. "
+        "Setting Vz=0.",
+        vz, ve.agl_m, alt_ctrl_min_agl_m_);
+      last_suppress_warn_t_ = now;
+    }
+    vz = 0.0f;
+  }
+  guided_cmd_.vz  = vz;
+  last_vz_update_ = std::chrono::steady_clock::now();
+}
+
+void ControlGateNode::updateGuidedYawRate(float yr) {
+  guided_cmd_.yaw_rate  = yr;
+  last_yaw_update_      = std::chrono::steady_clock::now();
+}
+
+
+// ============================================================================
+// onAltTimeoutWatchdog  (timer callback, alt_timeout_watchdog_hz_)
 //
 // Responsibilities:
-//   1. Enter AltHold when conditions are met (taken off, guided, no failsafe)
-//   2. Exit AltHold when conditions are lost
-//   3. Flip timed_out flag when operator goes quiet for guided_timeout_s_
+//   1. Enter AltHold when conditions are met (taken off, guided, no failsafe,
+//      mode is AltHold).
+//   2. Exit AltHold when conditions are lost.
+//   3. Manage the operator-override / PID-active sub-state.
 // ============================================================================
 
-void ControlGateNode::onGuidedTimeoutWatchdog() {
+void ControlGateNode::onAltTimeoutWatchdog() {
   if (inInitializationPhase()) return;
 
   const InternalState st = snapshotState();
 
-  // Exit AltHold if conditions are lost
+  // Exit AltHold if flight conditions are lost.
   if (!st.guided || !st.armed || isAnyFailsafeActive()) {
     if (alt_ctrl_mode_ == AltCtrlMode::AltHold) {
       exitAltHold();
@@ -435,19 +478,37 @@ void ControlGateNode::onGuidedTimeoutWatchdog() {
     return;
   }
 
-  if (alt_ctrl_mode_ == AltCtrlMode::Off) return;  // ← nothing to do, user hasn't toggled it on
+  if (alt_ctrl_mode_ == AltCtrlMode::Off) return;  // user hasn't enabled AltHold
 
-  // Inside AltHold: manage timed_out sub-state
-  const double elapsed =
+  // ── Inside AltHold: manage override / PID active sub-state ───────────────
+  const double elapsed_since_vz =
     std::chrono::duration<double>(
-      std::chrono::steady_clock::now() - readLastAct()).count();
+      std::chrono::steady_clock::now() - last_vz_override_t_).count();
 
-  if (!alt_hold_timed_out_ && elapsed >= guided_timeout_s_) {
-    const VerticalEstimateCache ve = snapshotVertEst();
-    if (!ve.valid) return;
-    enterTimedOut(ve);
-  } else if (alt_hold_timed_out_ && elapsed < guided_timeout_s_) {
-    exitTimedOut();
+  if (alt_hold_operator_override_) {
+    // Waiting for operator to release Vz input.
+    if (elapsed_since_vz >= vz_override_timeout_s_) {
+      // Timeout: operator hasn't sent nonzero Vz for long enough.
+      // Snapshot current agl (clamped to min) as hold target and start PID.
+      const VerticalEstimateCache ve = snapshotVertEst();
+      if (!ve.valid) return;
+
+      const float safe_target = std::max(ve.agl_m, alt_ctrl_min_agl_m_);
+      alt_hold_operator_override_ = false;
+
+      RCLCPP_WARN(get_logger(),
+        "[alt_hold] Override timeout — holding %.3f m%s",
+        safe_target,
+        (safe_target > ve.agl_m) ? " (clamped to min AGL)" : "");
+      publishInfo(DroneInfo::LEVEL_WARN,
+        stringf("AltHold: operator override released. Holding %.2f m.", safe_target));
+
+      activatePid(safe_target);
+    }
+    // else: still in override, nothing to do
+  } else {
+    // PID is active. Nothing to do here — PID output arrives via onAltCtrlOutput.
+    // Re-activation of override happens in onTeleopAction when Vz != 0.
   }
 }
 

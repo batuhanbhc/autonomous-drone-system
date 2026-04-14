@@ -37,7 +37,6 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
   RCLCPP_INFO(get_logger(), "PID gains — kp=%.3f  ki=%.3f  kd=%.3f", kp_, ki_, kd_);
   RCLCPP_INFO(get_logger(), "Output clamp  [%.2f, %.2f] m/s", output_min_, output_max_);
   RCLCPP_INFO(get_logger(), "Integral clamp[%.2f, %.2f]",      integral_min_, integral_max_);
-  RCLCPP_INFO(get_logger(), "Motion model  accel=%.2f m/s²", max_accel_mps2_);
   RCLCPP_INFO(get_logger(), "Subscribing  cmd    : %s", topic_cmd_.c_str());
   RCLCPP_INFO(get_logger(), "Subscribing  mcu    : %s", topic_mcu_.c_str());
   RCLCPP_INFO(get_logger(), "Publishing   output : %s", topic_output_.c_str());
@@ -137,20 +136,13 @@ bool AltitudeControllerNode::loadConfig()
   load("output_max",     output_max_);
   load("integral_min",   integral_min_);
   load("integral_max",   integral_max_);
-  load("max_accel_mps2", max_accel_mps2_);
-
-  if (max_accel_mps2_ <= 0.0f) {
-    RCLCPP_WARN(get_logger(),
-      "altitude_controller.max_accel_mps2 must be > 0. Falling back to 2.0 m/s².");
-    max_accel_mps2_ = 2.0f;
-  }
 
   return true;
 }
 
 
 // ============================================================================
-// PID / motion-model helpers
+// PID helpers
 // ============================================================================
 
 void AltitudeControllerNode::resetPid()
@@ -160,16 +152,8 @@ void AltitudeControllerNode::resetPid()
   RCLCPP_DEBUG(get_logger(), "[alt_ctrl_pid] State reset.");
 }
 
-float AltitudeControllerNode::computeMotionAwareAltitude(
-  float current_agl, float current_vz) const
-{
-  const float stopping_distance =
-    (current_vz * std::fabs(current_vz)) / (2.0f * max_accel_mps2_);
-  return current_agl + stopping_distance;
-}
-
 float AltitudeControllerNode::computeDesiredVelocity(
-  float target_agl, float motion_aware_agl, float current_vz, double dt_s)
+  float target_agl, float current_agl, float current_vz, double dt_s)
 {
   float kp, ki, kd;
   {
@@ -179,7 +163,7 @@ float AltitudeControllerNode::computeDesiredVelocity(
     kd = kd_;
   }
 
-  const float error  = target_agl - motion_aware_agl;
+  const float error  = target_agl - current_agl;
   const float p_term = kp * error;
 
   integral_ += ki * error * static_cast<float>(dt_s);
@@ -192,8 +176,8 @@ float AltitudeControllerNode::computeDesiredVelocity(
   const float out = std::clamp(raw, output_min_, output_max_);
 
   RCLCPP_DEBUG(get_logger(),
-    "[pid] tgt=%.3f motion_agl=%.3f err=%.3f vz=%.3f P=%.3f I=%.3f D=%.3f → %.3f (%.3f clamped)",
-    target_agl, motion_aware_agl, error, current_vz, p_term, i_term, d_term, raw, out);
+    "[pid] tgt=%.3f agl=%.3f err=%.3f vz=%.3f P=%.3f I=%.3f D=%.3f → %.3f (%.3f clamped)",
+    target_agl, current_agl, error, current_vz, p_term, i_term, d_term, raw, out);
 
   return out;
 }
@@ -286,19 +270,16 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
     return;
   }
 
-  const float motion_aware_agl =
-    computeMotionAwareAltitude(current_agl, current_vz);
-
   const float vz_cmd = computeDesiredVelocity(
-    target_agl_, motion_aware_agl, current_vz, dt_s);
+    target_agl_, current_agl, current_vz, dt_s);
 
   AltCtrlOutput out;
   out.data = vz_cmd;
   pub_output_->publish(out);
 
-  RCLCPP_DEBUG(get_logger(),
-    "[alt_ctrl_pid] tgt=%.3f cur=%.3f motion_agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",
-    target_agl_, current_agl, motion_aware_agl, current_vz, dt_s, vz_cmd);
+  RCLCPP_INFO(get_logger(),
+    "[alt_ctrl_pid] tgt=%.3f agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",
+    target_agl_, current_agl, current_vz, dt_s, vz_cmd);
 }
 
 
