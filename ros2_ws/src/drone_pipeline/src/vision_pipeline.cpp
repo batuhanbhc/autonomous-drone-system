@@ -237,7 +237,7 @@ void VisionPipeline::runYawCalibration()
     tf2::Quaternion tf_q(q.x, q.y, q.z, q.w);
     double roll_unused, pitch_unused, yaw;
     tf2::Matrix3x3(tf_q).getRPY(roll_unused, pitch_unused, yaw);
-    yaw_samples.push_back(yaw);
+    yaw_samples.push_back(M_PI / 2.0 - yaw);
 
     {
       std::lock_guard<std::mutex> lk(latest_quat_mtx_);
@@ -846,10 +846,10 @@ void VisionPipeline::workerLoop()
             cb_slot.quat_z, cb_slot.quat_w);
           double roll, pitch;
           tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-          yaw -= yaw_offset_;
+          double yaw_compass = (M_PI / 2.0 - yaw) - yaw_offset_;
           projector_->setPose(
             cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
-            yaw, gimbal_pitch_rad_ + pitch, roll);
+            yaw_compass, gimbal_pitch_rad_ + pitch, roll);
         }
 
         pending.detections.reserve(num_dets);

@@ -38,7 +38,7 @@
  *             North (+Y_enu) = +Z_cam
  *             Up    (+Z_enu) = -Y_cam
  *
- *  R_att  : Rz(-yaw) * Rx(-pitch) * Ry(roll)
+ *  R_att  : Rz(-yaw) * Rx(pitch) * Ry(roll)
  *
  *  R_wc   : R_att * R_fix   (precomputed once per pose update)
  */
@@ -213,7 +213,7 @@ private:
         R_fix.m[1][2]= 1;                        // North = +Z_cam
         R_fix.m[2][1]=-1;                        // Up    = -Y_cam
 
-        Mat3 R_att = rotZ(-cam_.yaw) * rotX(-cam_.pitch) * rotY(cam_.roll);
+        Mat3 R_att = rotZ(-cam_.yaw) * rotX(cam_.pitch) * rotY(cam_.roll);
         R_wc_ = R_att * R_fix;
     }
 
