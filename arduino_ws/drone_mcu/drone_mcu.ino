@@ -43,13 +43,17 @@ struct InitAccum {
 
   uint32_t startMs = 0;
 
-  uint32_t imuSamples  = 0;
-  uint32_t baroSamples = 0;
-  uint32_t gyroSamples = 0;
+  uint32_t imuSamples   = 0;
+  uint32_t baroSamples  = 0;
+  uint32_t gyroSamples  = 0;
+  uint32_t lidarSamples = 0;
 
   double accSum[3]    = {0.0, 0.0, 0.0};
   double gyroSum[3]   = {0.0, 0.0, 0.0};
   double pressureSum  = 0.0;
+  double lidarAglSum  = 0.0;
+  float lidarAglMin   = 1e9f;
+  float lidarAglMax   = -1e9f;
 };
 
 static InitAccum initAccum;
@@ -171,6 +175,23 @@ static bool updateInitializationRoutine() {
     initAccum.baroSamples++;
   }
 
+  if (lidarData.fresh) {
+    float initLidarAgl_m = 0.0f;
+    if (lidarGetVerticalM(
+            &initLidarAgl_m,
+            imuData.droneQuat[0], imuData.droneQuat[1],
+            imuData.droneQuat[2], imuData.droneQuat[3],
+            lidarData.distanceCm,
+            lidarData.strength)) {
+      initAccum.lidarAglSum += initLidarAgl_m;
+      initAccum.lidarSamples++;
+      if (initLidarAgl_m < initAccum.lidarAglMin) initAccum.lidarAglMin = initLidarAgl_m;
+      if (initLidarAgl_m > initAccum.lidarAglMax) initAccum.lidarAglMax = initLidarAgl_m;
+    }
+
+    lidarData.fresh = false;
+  }
+
   if ((millis() - initAccum.startMs) < INIT_DURATION_MS) {
     return false;
   }
@@ -199,13 +220,17 @@ static bool updateInitializationRoutine() {
   float initialBaroRel_m = baroGetRelativeAltitudeM();
 
   float initialLidarAgl_m = 0.0f;
-  bool lidarValid = lidarGetVerticalM(
-      &initialLidarAgl_m,
-      imuData.droneQuat[0], imuData.droneQuat[1],
-      imuData.droneQuat[2], imuData.droneQuat[3],
-      lidarData.distanceCm,
-      lidarData.strength
-  );
+  bool lidarValid = false;
+
+  if (initAccum.lidarSamples >= 5) {
+    const float lidarMean = (float)(initAccum.lidarAglSum / initAccum.lidarSamples);
+    const float lidarSpan = initAccum.lidarAglMax - initAccum.lidarAglMin;
+
+    if (lidarSpan <= 0.15f) {
+      initialLidarAgl_m = lidarMean;
+      lidarValid = true;
+    }
+  }
 
   altitudeEkfInitialize(initialBaroRel_m, lidarValid, initialLidarAgl_m);
 

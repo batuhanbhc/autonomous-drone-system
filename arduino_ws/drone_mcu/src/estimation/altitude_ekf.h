@@ -10,13 +10,17 @@ struct AltitudeEkfState {
   float groundZ_m  = 0.0f;   // local ground world altitude
 
   // Outputs
-  float agl_m              = 0.0f;  // z - groundZ
-  bool  initialized        = false;
+  float agl_m               = 0.0f;  // z - groundZ
+  bool  initialized         = false;
 
   // Diagnostics
-  float lastBaroResidual_m  = 0.0f;
-  float lastLidarResidual_m = 0.0f;
-  bool  lastLidarAccepted   = false;
+  float lastBaroResidual_m         = 0.0f;
+  float lastLidarResidual_m        = 0.0f;
+  bool  lastLidarAccepted          = false;
+  bool  lidarBlocked               = false;
+  float lastImpliedGroundZ_m       = 0.0f;
+  float lastGroundConsistencyErr_m = 0.0f;
+  uint8_t lidarRecoveryCount       = 0;
 };
 
 struct AltitudeEkf {
@@ -26,29 +30,33 @@ struct AltitudeEkf {
   float P[5][5] = {};
 
   // Tuning
-  float qAcc_mps2          = 0.5f;     // accel driving noise
-  float qAccelBias         = 0.01f;   // accel bias RW
-  float qBaroBias_m        = 0.005f;   // baro bias RW
-  float qGround_m          = 0.0005f;   // ground RW (slow)
+  float qAcc_mps2           = 0.5f;    // accel driving noise
+  float qAccelBias          = 0.01f;   // accel bias RW
+  float qBaroBias_m         = 0.005f;  // baro bias RW
+  float qGround_m           = 0.0005f; // ground RW (slow)
 
-  float rBaro_m            = 1.0f;     // baro stddev above 4 meters
+  float rBaro_m             = 0.8f;    // baro stddev
 
-  // Lidar acceptance parameters
-  float lidarMinRange_m    = 0.05f;
-  float lidarMaxRange_m    = 20.0f;
+  // Lidar validity limits
+  float lidarMinRange_m     = 0.05f;
+  float lidarMaxRange_m     = 20.0f;
   uint16_t lidarMinStrength = 200;
+  float maxTiltDeg          = 45.0f;
 
-  float maxTiltDeg         = 30.0f;
-  float obstacleNegJump_m  = 0.30f;    // sudden shorter range threshold
-  float mahaGateSigma      = 3.0f;
+  // One-sided obstacle / recovery logic.
+  // Bands are combined with the lidar noise model so tuning stays minimal.
+  float minAcceptBand_m     = 0.12f;   // normal acceptance band around locked floor
+  float minObstacleBand_m   = 0.25f;   // upward floor jump => likely obstacle
+  uint8_t recoverConsecutiveNeeded = 3;
+  uint32_t minBlockHoldMs   = 150;     // chatter protection only
+  uint32_t lidarBlockedSinceMs = 0;
 
-  // Obstacle cooldown
-  uint32_t rejectCooldownMs = 600;
-  uint32_t lidarRejectUntilMs = 0;
+  // Statistical gate
+  float mahaGateSigma       = 4.0f;
 
   // Internal bookkeeping
   bool   hasLastAcceptedLidar = false;
-  float  lastLidarAccepted_m = 0.0f;
+  float  lastLidarAccepted_m  = 0.0f;
   uint32_t lastLidarAcceptedMs = 0;
 };
 

@@ -73,6 +73,20 @@ static void updateDerivedOutputs() {
   altitudeEkf.s.agl_m = altitudeEkf.s.z_m - altitudeEkf.s.groundZ_m;
 }
 
+static float computeLidarStdM(uint16_t distanceCm, float r22_abs) {
+  const float raw_m = 0.01f * distanceCm;
+
+  float slantStd;
+  if (raw_m <= 6.0f) {
+    slantStd = 0.02f;
+  } else {
+    slantStd = 0.005f * raw_m;
+  }
+
+  const float r22_safe = fmaxf(r22_abs, cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD));
+  return slantStd / r22_safe;
+}
+
 void altitudeEkfReset() {
   altitudeEkf = {};
   altitudeEkf.lidarMinRange_m = LIDAR_MIN_RANGE_M;
@@ -101,7 +115,6 @@ void altitudeEkfInitialize(float initialBaroRel_m,
     altitudeEkf.hasLastAcceptedLidar = false;
   }
 
-  // initial uncertainty
   zeroMat(altitudeEkf.P);
   altitudeEkf.P[IX_Z][IX_Z]   = 1.0f;
   altitudeEkf.P[IX_VZ][IX_VZ] = 1.0f;
@@ -110,6 +123,10 @@ void altitudeEkfInitialize(float initialBaroRel_m,
   altitudeEkf.P[IX_ZG][IX_ZG] = lidarValid ? 0.5f : 4.0f;
 
   altitudeEkf.s.initialized = true;
+  altitudeEkf.s.lidarBlocked = false;
+  altitudeEkf.s.lidarRecoveryCount = 0;
+  altitudeEkf.s.lastImpliedGroundZ_m = altitudeEkf.s.groundZ_m;
+  altitudeEkf.s.lastGroundConsistencyErr_m = 0.0f;
   updateDerivedOutputs();
 }
 
@@ -117,21 +134,17 @@ void altitudeEkfPredict(float accelWorldZ_mps2, float dt_s) {
   if (!altitudeEkf.s.initialized) return;
   if (!(dt_s > 0.0f) || dt_s > 0.1f) return;
 
-  // State propagation
   const float a = accelWorldZ_mps2 - altitudeEkf.s.accelBias;
 
   altitudeEkf.s.z_m    += altitudeEkf.s.vz_mps * dt_s + 0.5f * a * dt_s * dt_s;
   altitudeEkf.s.vz_mps += a * dt_s;
-  // accelBias, baroBias_m, groundZ_m are RW only
 
-  // Linearized F
   float F[NX][NX] = {};
   for (int i = 0; i < NX; ++i) F[i][i] = 1.0f;
   F[IX_Z][IX_VZ]  = dt_s;
   F[IX_Z][IX_BA]  = -0.5f * dt_s * dt_s;
   F[IX_VZ][IX_BA] = -dt_s;
 
-  // Process noise Q
   float Q[NX][NX] = {};
   const float dt2 = dt_s * dt_s;
   const float dt3 = dt2 * dt_s;
@@ -182,8 +195,6 @@ static void scalarUpdate(const float H[NX], float meas, float pred, float R, flo
   altitudeEkf.s.baroBias_m += K[IX_BB] * residual;
   altitudeEkf.s.groundZ_m  += K[IX_ZG] * residual;
 
-  // Full Joseph covariance update:
-  // P = (I - K H) P (I - K H)^T + K R K^T
   float I_KH[NX][NX] = {};
   for (int r = 0; r < NX; ++r) {
     for (int c = 0; c < NX; ++c) {
@@ -211,36 +222,33 @@ static void scalarUpdate(const float H[NX], float meas, float pred, float R, flo
 }
 
 void altitudeEkfUpdateBaro(float baroRel_m) {
-    if (!altitudeEkf.s.initialized) return;
+  if (!altitudeEkf.s.initialized) return;
 
-    static float baroResidAbsLPF = 0.0f;
+  static float baroResidAbsLPF = 0.0f;
 
-    float rBaro = altitudeEkf.rBaro_m;
+  float rBaro = altitudeEkf.rBaro_m;
 
-    const bool lidarRecent = altitudeEkf.hasLastAcceptedLidar &&
-        (millis() - altitudeEkf.lastLidarAcceptedMs) < 500;
+  // Simple rule: when lidar is trusted and not currently blocked, let baro
+  // have less authority. This replaces the previous altitude-shaped heuristic.
+  const bool lidarTrustedRecent = altitudeEkf.hasLastAcceptedLidar &&
+      !altitudeEkf.s.lidarBlocked &&
+      (millis() - altitudeEkf.lastLidarAcceptedMs) < 500;
 
-    if (lidarRecent) {
-        const float agl = altitudeEkf.s.agl_m;
-        if (agl < 1.5f) {
-            rBaro = 4.0f;
-        } else if (agl < 4.0f) {
-            const float t = (agl - 1.5f) / 2.5f;
-            rBaro = 4.0f - t * (4.0f - altitudeEkf.rBaro_m);
-        }
-    }
+  if (lidarTrustedRecent) {
+    rBaro *= 3.0f;
+  }
 
-    // Inflate baro noise when recent residuals are large
-    baroResidAbsLPF = 0.95f * baroResidAbsLPF +
-                      0.05f * fabsf(altitudeEkf.s.lastBaroResidual_m);
+  // Inflate baro noise a bit more when recent baro residuals stay large.
+  baroResidAbsLPF = 0.95f * baroResidAbsLPF +
+                    0.05f * fabsf(altitudeEkf.s.lastBaroResidual_m);
 
-    rBaro += clampf((baroResidAbsLPF - 0.5f) * 1.5f, 0.0f, 3.0f);
-    rBaro = clampf(rBaro, altitudeEkf.rBaro_m, 6.0f);
+  rBaro += clampf((baroResidAbsLPF - 0.5f) * 1.5f, 0.0f, 3.0f);
+  rBaro = clampf(rBaro, altitudeEkf.rBaro_m, 6.0f);
 
-    const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
-    const float pred = altitudeEkf.s.z_m + altitudeEkf.s.baroBias_m;
-    scalarUpdate(H, baroRel_m, pred, sqf(rBaro),
-                 &altitudeEkf.s.lastBaroResidual_m);
+  const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+  const float pred = altitudeEkf.s.z_m + altitudeEkf.s.baroBias_m;
+  scalarUpdate(H, baroRel_m, pred, sqf(rBaro),
+               &altitudeEkf.s.lastBaroResidual_m);
 }
 
 static bool lidarMahalanobisPass(const float H[NX], float residual, float R) {
@@ -266,53 +274,53 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
                             uint32_t nowMs) {
   altitudeEkf.s.lastLidarAccepted = false;
   if (!altitudeEkf.s.initialized) return false;
-  
-  
-  // Cooldown after strong obstacle suspicion
-  if ((int32_t)(nowMs - altitudeEkf.lidarRejectUntilMs) < 0) {
-    return false;
-  }
 
-  // Stage 1: hard checks
   if (strength < altitudeEkf.lidarMinStrength) return false;
   if (!(lidarVertical_m >= altitudeEkf.lidarMinRange_m && lidarVertical_m <= altitudeEkf.lidarMaxRange_m)) return false;
   if (r22_abs < cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD)) return false;
 
-  // Prediction
   const float predAgl = altitudeEkf.s.z_m - altitudeEkf.s.groundZ_m;
   const float residual = lidarVertical_m - predAgl;
+  const float lidarStd = computeLidarStdM(distanceCm, r22_abs);
+  const float acceptBand = fmaxf(altitudeEkf.minAcceptBand_m, 3.0f * lidarStd);
+  const float obstacleBand = fmaxf(altitudeEkf.minObstacleBand_m, 5.0f * lidarStd);
 
-  // Strong negative residual = object/human/obstacle under drone
-  /*
-  if (residual < -altitudeEkf.obstacleNegJump_m) {  
-      altitudeEkf.lidarRejectUntilMs = nowMs + altitudeEkf.rejectCooldownMs;
+  const float impliedGroundZ = altitudeEkf.s.z_m - lidarVertical_m;
+  const float groundErr = impliedGroundZ - altitudeEkf.s.groundZ_m;
+  altitudeEkf.s.lastImpliedGroundZ_m = impliedGroundZ;
+  altitudeEkf.s.lastGroundConsistencyErr_m = groundErr;
+
+  // If the implied ground suddenly moves upward, the beam likely hit an obstacle.
+  if (!altitudeEkf.s.lidarBlocked && groundErr > obstacleBand) {
+    altitudeEkf.s.lidarBlocked = true;
+    altitudeEkf.s.lidarRecoveryCount = 0;
+    altitudeEkf.lidarBlockedSinceMs = nowMs;
+    return false;
+  }
+
+  if (altitudeEkf.s.lidarBlocked) {
+    const bool minHoldDone = (uint32_t)(nowMs - altitudeEkf.lidarBlockedSinceMs) >= altitudeEkf.minBlockHoldMs;
+    if (minHoldDone && fabsf(groundErr) <= acceptBand) {
+      if (altitudeEkf.s.lidarRecoveryCount < 255) altitudeEkf.s.lidarRecoveryCount++;
+      if (altitudeEkf.s.lidarRecoveryCount >= altitudeEkf.recoverConsecutiveNeeded) {
+        altitudeEkf.s.lidarBlocked = false;
+        altitudeEkf.s.lidarRecoveryCount = 0;
+      }
+    } else {
+      altitudeEkf.s.lidarRecoveryCount = 0;
+    }
+
+    if (altitudeEkf.s.lidarBlocked) {
       return false;
-  }
-  */
-
-  // Datasheet-grounded lidarStd (TFS-20L)
-  // Repeatability: 2cm (1σ) up to 6m; assumed ~0.5% of range beyond 6m
-  // Tilt: vertical = slant * |R22|, so σ_vertical = σ_slant / |R22|
-
-  const float raw_m = 0.01f * distanceCm;  // slant range in meters
-
-  // Shot noise on slant range from datasheet
-  float slantStd;
-  if (raw_m <= 6.0f) {
-      slantStd = 0.02f;                  // 2cm (1σ), datasheet repeatability
-  } else {
-      slantStd = 0.005f * raw_m;         // ~0.5% of range, conservative extrapolation
+    }
   }
 
-  // Tilt amplifies range noise onto vertical axis
-  // σ_vertical = σ_slant / |R22|  (exact geometric relationship)
-  // Clamp r22_abs to avoid division blowup at extreme tilts
-  const float r22_safe = fmaxf(r22_abs, cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD));
-  const float lidarStd = slantStd / r22_safe;
+  // In normal mode, require floor consistency before giving the EKF a chance to update.
+  if (fabsf(groundErr) > acceptBand) {
+    return false;
+  }
 
   const float R = sqf(lidarStd);
-
-  // Stage 3: Mahalanobis gate
   const float H[NX] = {1.0f, 0.0f, 0.0f, 0.0f, -1.0f};
   if (!lidarMahalanobisPass(H, residual, R)) {
     return false;
