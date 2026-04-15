@@ -53,7 +53,8 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.width              = cam["width"].as<int>();
   cfg.height             = cam["height"].as<int>();
   cfg.fps                = cam["fps"].as<int>();
-  cfg.gimbal_pitch_angle = cam["gimbal_pitch_angle"].as<double>();
+  config_.camera_mount_angle = root["camera"]["camera_mount_angle"].as<double>();
+  config_.use_gimbal         = root["camera"]["use_gimbal"].as<bool>();
   cfg.reverse_mounted    = cam["reverse_mounted"].as<bool>();
 
   const auto vp = root["vision_pipeline"];
@@ -85,9 +86,9 @@ VisionConfig VisionPipeline::loadConfig()
     cfg.hef_path.c_str(), cfg.score_threshold,
     cfg.model_input_size, cfg.person_class_idx);
 
-  RCLCPP_INFO(get_logger(),
-    "Gimbal pitch=%.2f deg  reverse_mounted=%s",
-    cfg.gimbal_pitch_angle, cfg.reverse_mounted ? "true" : "false");
+  RCLCPP_INFO(get_logger(), "Camera mount angle=%.2f deg  use_gimbal=%s  reverse_mounted=%s",
+    cfg.camera_mount_angle, cfg.use_gimbal ? "true" : "false",
+    cfg.reverse_mounted ? "true" : "false");
 
   RCLCPP_INFO(get_logger(),
     "Camera intrinsics → fx=%.4f fy=%.4f cx=%.4f cy=%.4f",
@@ -225,7 +226,7 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 : Node("vision_pipeline", options)
 {
   config_           = loadConfig();
-  gimbal_pitch_rad_ = config_.gimbal_pitch_angle * M_PI / 180.0;
+  mount_angle_rad_ = config_.camera_mount_angle * M_PI / 180.0;
 
   // ── De-letterbox constants ────────────────────────────────────────────────
   lb_scale_ = static_cast<float>(config_.model_input_size) /
@@ -787,9 +788,15 @@ void VisionPipeline::workerLoop()
           double roll, pitch;
           tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
           double yaw_compass = (M_PI / 2.0 - yaw);
-          projector_->setPose(
-            cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
-            yaw_compass, gimbal_pitch_rad_ + pitch, roll);
+          if (config_.use_gimbal) {
+              projector_->setPose(
+                  cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
+                  yaw_compass, mount_angle_rad_, 0.0);
+          } else {
+              projector_->setPose(
+                  cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
+                  yaw_compass, mount_angle_rad_ + pitch, roll);
+          }
         }
 
         pending.detections.reserve(num_dets);

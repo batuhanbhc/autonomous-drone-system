@@ -30,9 +30,11 @@ camera:
   width: 640
   height: 480
   fps: 30
-  gimbal_pitch_angle: 5.0   # degrees, positive downwards
-  reverse_mounted: true    # whether the camera is mounted in reverse orientation (upside down)
+  camera_mount_angle: 5.0     # degrees, positive downwards
+  use_gimbal: true            # true if camera is mounted on gimbal: roll and pitch values do not change
+  reverse_mounted: false      # whether the camera is mounted in reverse orientation (upside down)
   
+
 vision_pipeline:
   obj_det_hef_path: /person_detector.hef # default path: "/usr/share/hailo-models/yolov8s_h8l.hef"
   obj_det_score_thresh: 0.5

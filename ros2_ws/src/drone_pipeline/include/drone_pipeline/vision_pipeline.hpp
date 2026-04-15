@@ -44,7 +44,8 @@ struct VisionConfig
   int         height{};
   int         fps{};
 
-  double gimbal_pitch_angle{};
+  double camera_mount_angle{};
+  bool   use_gimbal{false};
   bool   reverse_mounted{false};
 
   std::string hef_path;
@@ -151,7 +152,7 @@ private:
   // ── Config ────────────────────────────────────────────────────────────────
   VisionConfig loadConfig();
   VisionConfig config_;
-  double gimbal_pitch_rad_{0.0};
+  double mount_angle_rad_{0.0};
 
   // ── De-letterbox constants (computed once in constructor) ─────────────────
   float lb_scale_{};
