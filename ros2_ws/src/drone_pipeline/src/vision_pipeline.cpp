@@ -212,62 +212,9 @@ void VisionPipeline::initHailo()
 
 void VisionPipeline::runYawCalibration()
 {
-  RCLCPP_INFO(get_logger(),
-    "Yaw calibration started — collecting %d samples over %.0f s max",
-    kYawCalibSamples, kYawCalibTimeout);
-
-  std::vector<double> yaw_samples;
-  yaw_samples.reserve(kYawCalibSamples);
-
-  const auto deadline =
-    std::chrono::steady_clock::now() +
-    std::chrono::duration<double>(kYawCalibTimeout);
-
-  while (static_cast<int>(yaw_samples.size()) < kYawCalibSamples) {
-    if (std::chrono::steady_clock::now() >= deadline) break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    LatestQuat q;
-    {
-      std::lock_guard<std::mutex> lk(latest_quat_mtx_);
-      q = latest_quat_;
-    }
-    if (!q.valid) continue;
-
-    tf2::Quaternion tf_q(q.x, q.y, q.z, q.w);
-    double roll_unused, pitch_unused, yaw;
-    tf2::Matrix3x3(tf_q).getRPY(roll_unused, pitch_unused, yaw);
-    yaw_samples.push_back(M_PI / 2.0 - yaw);
-
-    {
-      std::lock_guard<std::mutex> lk(latest_quat_mtx_);
-      latest_quat_.valid = false;
-    }
-  }
-
-  if (yaw_samples.empty()) {
-    RCLCPP_WARN(get_logger(),
-      "Yaw calibration: no odometry within %.0f s — defaulting yaw_offset=0",
-      kYawCalibTimeout);
-    yaw_offset_ = 0.0;
-  } else {
-    double sum_sin = 0.0, sum_cos = 0.0;
-    for (double y : yaw_samples) { sum_sin += std::sin(y); sum_cos += std::cos(y); }
-    yaw_offset_ = std::atan2(
-      sum_sin / static_cast<double>(yaw_samples.size()),
-      sum_cos / static_cast<double>(yaw_samples.size()));
-
-    if (static_cast<int>(yaw_samples.size()) < kYawCalibSamples)
-      RCLCPP_WARN(get_logger(),
-        "Yaw calibration: only %zu/%d samples before timeout",
-        yaw_samples.size(), kYawCalibSamples);
-
-    RCLCPP_INFO(get_logger(),
-      "Yaw calibration complete — %zu samples, yaw_offset=%.4f rad (%.2f deg)",
-      yaw_samples.size(), yaw_offset_, yaw_offset_ * 180.0 / M_PI);
-  }
-
+  yaw_offset_ = 0.0;
   yaw_calibrated_.store(true);
+  RCLCPP_INFO(get_logger(), "Yaw calibration skipped — using true ENU heading.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -485,14 +432,7 @@ void VisionPipeline::releaseSlot(int idx)
 //    4. Push slot index to all three consumer queues
 // ─────────────────────────────────────────────────────────────────────────────
 
-void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg)
-{
-  // Feed yaw calibration (non-blocking snapshot)
-  if (!yaw_calibrated_.load() && msg->odom_valid) {
-    std::lock_guard<std::mutex> lk(latest_quat_mtx_);
-    latest_quat_ = {msg->quat_x, msg->quat_y, msg->quat_z, msg->quat_w, true};
-  }
-
+void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg) {
   const int idx = acquireSlot();
   if (idx == -1) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
@@ -846,7 +786,7 @@ void VisionPipeline::workerLoop()
             cb_slot.quat_z, cb_slot.quat_w);
           double roll, pitch;
           tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-          double yaw_compass = (M_PI / 2.0 - yaw) - yaw_offset_;
+          double yaw_compass = (M_PI / 2.0 - yaw);
           projector_->setPose(
             cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
             yaw_compass, gimbal_pitch_rad_ + pitch, roll);
