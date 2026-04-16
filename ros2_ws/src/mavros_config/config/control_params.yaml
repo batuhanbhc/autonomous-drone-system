@@ -40,6 +40,8 @@ vision_pipeline:
   obj_det_score_thresh: 0.5
   obj_det_model_input_size: 640   # square input side (px)
   obj_det_person_class_idx: 0     # person class index
+
+  use_mcu_height_estimate: true
   
   camera_intrinsics:
     fx: 628.5174089378104

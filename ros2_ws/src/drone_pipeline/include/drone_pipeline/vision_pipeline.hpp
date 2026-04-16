@@ -61,6 +61,10 @@ struct VisionConfig
 
   // Root directory where session folders live
   std::string logs_path;
+
+  // When true, use agl_m from the MCU vertical estimate (if mcu_valid) for
+  // ground projection instead of the odometry pos_z.
+  bool use_mcu_height_estimate{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,6 +121,11 @@ struct FrameSlot
   int32_t lat{};
   int32_t lon{};
   bool    gps_valid{false};
+
+  // MCU vertical estimate snapshot
+  float agl_m{};
+  float vz_mps{};
+  bool  mcu_valid{false};
 
   // Monotonically increasing sequence number assigned at acquire time.
   // Used by the track_results writer to drain detections in order.
@@ -212,8 +221,8 @@ private:
   void releaseSlot(int idx);
 
   // ── MJPEG writer thread ───────────────────────────────────────────────────
-  // Consumes: slot.msg->image.data (zero-copy JPEG), slot odom/gps snapshot.
-  // Writes:   .avi file via MjpegWriter, odom.csv, gps.csv — all buffered.
+  // Consumes: slot.msg->image.data (zero-copy JPEG), slot odom/gps/mcu snapshot.
+  // Writes:   .avi file via MjpegWriter, data.csv — all buffered.
   struct MjpegTask { int idx; };
 
   std::queue<MjpegTask>   mjpeg_queue_;

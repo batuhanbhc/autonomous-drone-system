@@ -10,6 +10,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "mavros_msgs/msg/gpsraw.hpp"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "drone_msgs/msg/frame_data.hpp"
 
 namespace drone_pipeline
@@ -25,6 +26,7 @@ struct CameraConfig
   std::string frames_topic;
   std::string odom_topic;
   std::string gps1_raw_topic;
+  std::string mcu_vertical_topic;
 };
 
 // Lightweight snapshots stored under their respective mutexes.
@@ -39,6 +41,12 @@ struct GpsSnapshot
 {
   int32_t lat{};
   int32_t lon{};
+};
+
+struct McuSnapshot
+{
+  float agl_m{};    // Vector3Stamped.z
+  float vz_mps{};   // Vector3Stamped.y
 };
 
 class CameraCapture : public rclcpp::Node
@@ -58,18 +66,22 @@ private:
   // ── Sensor callbacks ──────────────────────────────────────
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void gpsCallback (const mavros_msgs::msg::GPSRAW::SharedPtr msg);
+  void mcuCallback (const geometry_msgs::msg::Vector3Stamped::SharedPtr msg);
 
   // ── Members ───────────────────────────────────────────────
   CameraConfig config_;
 
   rclcpp::Publisher<drone_msgs::msg::FrameData>::SharedPtr frame_pub_;
 
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
-  rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr gps_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr          odom_sub_;
+  rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr         gps_sub_;
+  rclcpp::Subscription<
+    geometry_msgs::msg::Vector3Stamped>::SharedPtr                  mcu_sub_;
 
   // Staleness timers — each fires independently at ~1 Hz
   rclcpp::TimerBase::SharedPtr odom_staleness_timer_;
   rclcpp::TimerBase::SharedPtr gps_staleness_timer_;
+  rclcpp::TimerBase::SharedPtr mcu_staleness_timer_;
 
   std::mutex               odom_mtx_;
   std::optional<OdomSnapshot> latest_odom_;   // nullopt → stale / never received
@@ -78,6 +90,10 @@ private:
   std::mutex               gps_mtx_;
   std::optional<GpsSnapshot>  latest_gps_;
   std::atomic<bool>        gps_valid_{false};
+
+  std::mutex               mcu_mtx_;
+  std::optional<McuSnapshot>  latest_mcu_;
+  std::atomic<bool>        mcu_valid_{false};
 
   int                fd_{-1};
   std::thread        capture_thread_;

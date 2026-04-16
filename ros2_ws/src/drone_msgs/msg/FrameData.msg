@@ -21,3 +21,11 @@ bool    odom_valid     # false → staleness timer fired or no data yet
 int32   lat            # degrees × 1e7
 int32   lon            # degrees × 1e7
 bool    gps_valid      # false → staleness timer fired or no data yet
+
+# MCU vertical estimate snapshot — packed at capture time by CameraCapture.
+# Sourced from the mcu_bridge vertical estimate topic (Vector3Stamped:
+#   x = z_world_m, y = vz_world_mps, z = agl_m).
+# Zero when mcu_valid is false.
+float32 agl_m          # above-ground-level height from lidar/EKF (m)
+float32 vz_mps         # vertical velocity, world frame, up-positive (m/s)
+bool    mcu_valid      # false → staleness timer fired or no data yet

@@ -91,12 +91,16 @@ CameraConfig CameraCapture::loadConfig()
   cfg.odom_topic     = dp + mv["odom"].as<std::string>();
   cfg.gps1_raw_topic = dp + mv["gps1_raw"].as<std::string>();
 
+  if (!root["custom_topics"]["mcu_bridge"])
+    throw std::runtime_error("Missing 'custom_topics/mcu_bridge'");
+  cfg.mcu_vertical_topic = dp + root["custom_topics"]["mcu_bridge"].as<std::string>();
+
   RCLCPP_INFO(
     get_logger(),
     "Config → device=%s  format=MJPEG(hardcoded)  resolution=%dx%d  fps=%d  "
-    "drone_id=%u  topic=%s",
+    "drone_id=%u  topic=%s  mcu_topic=%s",
     cfg.device_path.c_str(), cfg.width, cfg.height, cfg.fps,
-    cfg.drone_id, cfg.frames_topic.c_str());
+    cfg.drone_id, cfg.frames_topic.c_str(), cfg.mcu_vertical_topic.c_str());
 
   return cfg;
 }
@@ -238,6 +242,10 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
   const auto sensor_qos   = rclcpp::SensorDataQoS();
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 
+  // mcu_bridge publishes with best_effort / volatile — match that profile.
+  const auto best_effort_qos =
+    rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     config_.odom_topic, sensor_qos,
     [this](const nav_msgs::msg::Odometry::SharedPtr msg) { odomCallback(msg); });
@@ -246,17 +254,19 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
     config_.gps1_raw_topic, reliable_qos,
     [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) { gpsCallback(msg); });
 
-  // Staleness timers — fire every 1 s; reset snapshot to nullopt if no fresh data arrived.
-  // Each timer is independent: GPS can go stale while odom remains valid, and vice-versa.
+  mcu_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+    config_.mcu_vertical_topic, best_effort_qos,
+    [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) { mcuCallback(msg); });
+
+  // ── Staleness timers ──────────────────────────────────────
+  // Fire every 1 s; reset snapshot to nullopt if no fresh data arrived.
+  // Each timer is independent: GPS can go stale while odom remains valid, etc.
+  // The pattern: callback sets *_valid_ = true each call; timer checks and
+  // then unconditionally clears it, giving a ~1 s window of tolerance.
+
   odom_staleness_timer_ = create_wall_timer(
     std::chrono::seconds(1),
     [this]() {
-      // If odom_valid_ is already false the sensor was already stale — no-op.
-      // If it was true, a fresh odomCallback() will have reset it to true since the
-      // last timer fire; if not, mark it stale now.
-      // We use a simple flag: odomCallback sets odom_valid_ = true each time it fires.
-      // The timer checks and then unconditionally clears the flag.
-      // That gives a ~1 s window of tolerance.
       if (!odom_valid_.exchange(false)) {
         std::lock_guard<std::mutex> lk(odom_mtx_);
         latest_odom_.reset();
@@ -273,6 +283,17 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
         latest_gps_.reset();
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
           "GPS stale — FrameData will carry gps_valid=false");
+      }
+    });
+
+  mcu_staleness_timer_ = create_wall_timer(
+    std::chrono::seconds(1),
+    [this]() {
+      if (!mcu_valid_.exchange(false)) {
+        std::lock_guard<std::mutex> lk(mcu_mtx_);
+        latest_mcu_.reset();
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "MCU vertical estimate stale — FrameData will carry mcu_valid=false");
       }
     });
 
@@ -322,6 +343,20 @@ void CameraCapture::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
     latest_gps_ = snap;
   }
   gps_valid_.store(true);
+}
+
+void CameraCapture::mcuCallback(const geometry_msgs::msg::Vector3Stamped::SharedPtr msg)
+{
+  // mcu_bridge packs:  x = z_world_m,  y = vz_world_mps,  z = agl_m
+  McuSnapshot snap;
+  snap.agl_m  = static_cast<float>(msg->vector.z);
+  snap.vz_mps = static_cast<float>(msg->vector.y);
+
+  {
+    std::lock_guard<std::mutex> lk(mcu_mtx_);
+    latest_mcu_ = snap;
+  }
+  mcu_valid_.store(true);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -404,6 +439,20 @@ void CameraCapture::captureThread()
         msg->lat       = 0;
         msg->lon       = 0;
         msg->gps_valid = false;
+      }
+    }
+
+    // ── MCU vertical estimate fields ────────────────────────
+    {
+      std::lock_guard<std::mutex> lk(mcu_mtx_);
+      if (latest_mcu_.has_value()) {
+        msg->agl_m     = latest_mcu_->agl_m;
+        msg->vz_mps    = latest_mcu_->vz_mps;
+        msg->mcu_valid = true;
+      } else {
+        msg->agl_m     = 0.0f;
+        msg->vz_mps    = 0.0f;
+        msg->mcu_valid = false;
       }
     }
 

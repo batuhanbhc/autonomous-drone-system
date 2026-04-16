@@ -78,13 +78,19 @@ VisionConfig VisionPipeline::loadConfig()
 
   cfg.logs_path = root["flight_params"]["logs_path"].as<std::string>();
 
+  cfg.use_mcu_height_estimate =
+    root["vision_pipeline"]["use_mcu_height_estimate"]
+      ? root["vision_pipeline"]["use_mcu_height_estimate"].as<bool>()
+      : false;
+
   RCLCPP_INFO(get_logger(),
     "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  "
-    "score_thresh=%.2f  model_input=%d  person_class=%d",
+    "score_thresh=%.2f  model_input=%d  person_class=%d  use_mcu_height=%s",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
     cfg.hef_path.c_str(), cfg.score_threshold,
-    cfg.model_input_size, cfg.person_class_idx);
+    cfg.model_input_size, cfg.person_class_idx,
+    cfg.use_mcu_height_estimate ? "true" : "false");
 
   RCLCPP_INFO(get_logger(), "Camera mount angle=%.2f deg  use_gimbal=%s  reverse_mounted=%s",
     cfg.camera_mount_angle, cfg.use_gimbal ? "true" : "false",
@@ -468,6 +474,10 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   slot.lon       = msg->lon;
   slot.gps_valid = msg->gps_valid;
 
+  slot.agl_m     = msg->agl_m;
+  slot.vz_mps    = msg->vz_mps;
+  slot.mcu_valid = msg->mcu_valid;
+
   slot.detections.clear();
 
   // ── Dispatch to all three consumer queues ─────────────────────────────────
@@ -529,7 +539,10 @@ void VisionPipeline::mjpegLoop()
             << slot.odom_valid << ','
             << slot.lat     << ','
             << slot.lon     << ','
-            << slot.gps_valid << '\n';
+            << slot.gps_valid << ','
+            << slot.agl_m   << ','
+            << slot.vz_mps  << ','
+            << slot.mcu_valid << '\n';
 
         std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
         data_csv_buf_.push_back(oss.str());
@@ -581,7 +594,9 @@ void VisionPipeline::openRecordClip()
       << "vel_x,vel_y,vel_z,"
       << "odom_valid,"
       << "lat_deg_e7,lon_deg_e7,"
-      << "gps_valid\n";
+      << "gps_valid,"
+      << "agl_m,vz_mps,"
+      << "mcu_valid\n";
 
     data_csv_buf_.clear();
   }
@@ -788,13 +803,22 @@ void VisionPipeline::workerLoop()
           double roll, pitch;
           tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
           double yaw_compass = (M_PI / 2.0 - yaw);
+
+          // Height source: MCU lidar/EKF estimate takes priority when
+          // use_mcu_height_estimate is set and mcu_valid is true.
+          // Fall back to odom pos_z otherwise.
+          const double proj_z =
+            (config_.use_mcu_height_estimate && cb_slot.mcu_valid)
+            ? static_cast<double>(cb_slot.agl_m)
+            : cb_slot.pos_z;
+
           if (config_.use_gimbal) {
               projector_->setPose(
-                  cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
+                  cb_slot.pos_x, cb_slot.pos_y, proj_z,
                   yaw_compass, mount_angle_rad_, 0.0);
           } else {
               projector_->setPose(
-                  cb_slot.pos_x, cb_slot.pos_y, cb_slot.pos_z,
+                  cb_slot.pos_x, cb_slot.pos_y, proj_z,
                   yaw_compass, mount_angle_rad_ + pitch, roll);
           }
         }
