@@ -15,6 +15,9 @@ float64 quat_w
 float64 vel_x
 float64 vel_y
 float64 vel_z
+float64 ang_vel_x
+float64 ang_vel_y
+float64 ang_vel_z
 bool    odom_valid     # false → staleness timer fired or no data yet
 
 # GPS snapshot

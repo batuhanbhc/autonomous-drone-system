@@ -319,11 +319,13 @@ void CameraCapture::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   const auto & p = msg->pose.pose.position;
   const auto & q = msg->pose.pose.orientation;
   const auto & v = msg->twist.twist.linear;
+  const auto & w = msg->twist.twist.angular;
 
   OdomSnapshot snap;
   snap.pos_x  = p.x;  snap.pos_y  = p.y;  snap.pos_z  = p.z;
   snap.quat_x = q.x;  snap.quat_y = q.y;  snap.quat_z = q.z;  snap.quat_w = q.w;
   snap.vel_x  = v.x;  snap.vel_y  = v.y;  snap.vel_z  = v.z;
+  snap.ang_vel_x = w.x;  snap.ang_vel_y = w.y;  snap.ang_vel_z = w.z;
 
   {
     std::lock_guard<std::mutex> lk(odom_mtx_);
@@ -420,6 +422,8 @@ void CameraCapture::captureThread()
         msg->quat_x     = o.quat_x; msg->quat_y = o.quat_y;
         msg->quat_z     = o.quat_z; msg->quat_w = o.quat_w;
         msg->vel_x      = o.vel_x;  msg->vel_y  = o.vel_y;  msg->vel_z  = o.vel_z;
+        msg->ang_vel_x  = o.ang_vel_x; msg->ang_vel_y = o.ang_vel_y;
+        msg->ang_vel_z  = o.ang_vel_z;
         msg->odom_valid = true;
       } else {
         // Dummy: identity quaternion, everything else zero

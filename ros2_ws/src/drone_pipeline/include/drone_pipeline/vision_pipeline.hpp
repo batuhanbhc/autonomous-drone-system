@@ -115,6 +115,7 @@ struct FrameSlot
   double pos_x{}, pos_y{}, pos_z{};
   double quat_x{}, quat_y{}, quat_z{}, quat_w{1.0};
   double vel_x{}, vel_y{}, vel_z{};
+  double ang_vel_x{}, ang_vel_y{}, ang_vel_z{};
   bool   odom_valid{false};
 
   // GPS snapshot

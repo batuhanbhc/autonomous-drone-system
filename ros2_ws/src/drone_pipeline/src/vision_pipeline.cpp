@@ -468,6 +468,9 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   slot.vel_x      = msg->vel_x;
   slot.vel_y      = msg->vel_y;
   slot.vel_z      = msg->vel_z;
+  slot.ang_vel_x  = msg->ang_vel_x;
+  slot.ang_vel_y  = msg->ang_vel_y;
+  slot.ang_vel_z  = msg->ang_vel_z;
   slot.odom_valid = msg->odom_valid;
 
   slot.lat       = msg->lat;
@@ -536,6 +539,7 @@ void VisionPipeline::mjpegLoop()
             << slot.quat_x  << ',' << slot.quat_y  << ','
             << slot.quat_z  << ',' << slot.quat_w  << ','
             << slot.vel_x   << ',' << slot.vel_y   << ',' << slot.vel_z   << ','
+            << slot.ang_vel_x << ',' << slot.ang_vel_y << ',' << slot.ang_vel_z << ','
             << slot.odom_valid << ','
             << slot.lat     << ','
             << slot.lon     << ','
@@ -592,6 +596,7 @@ void VisionPipeline::openRecordClip()
       << "pos_x,pos_y,pos_z,"
       << "quat_x,quat_y,quat_z,quat_w,"
       << "vel_x,vel_y,vel_z,"
+      << "ang_vel_x,ang_vel_y,ang_vel_z,"
       << "odom_valid,"
       << "lat_deg_e7,lon_deg_e7,"
       << "gps_valid,"
