@@ -410,8 +410,8 @@ class InfoPanelNode(Node):
         t.add_row("Y (m/s)", _format_float_to_str(data["vy"], 3))
         t.add_row("Z (m/s)", _format_float_to_str(data["vz"], 3), end_section=True)
         t.add_row("Local Origin Dist (m)", _format_float_to_str(data["dist_lo"]), end_section=True)
-        t.add_row("[bold]Orientation (earth-fixed)[/bold]")
-        t.add_row("Yaw (deg)",   _format_float_to_str(data["yaw"],   3))
+        t.add_row("[bold]Orientation (ENU, right-handed)[/bold]")
+        t.add_row("Yaw ENU (deg)", _format_float_to_str(data["yaw"],   3))
         t.add_row("Roll (deg)",  _format_float_to_str(data["roll"],  3))
         t.add_row("Pitch (deg)", _format_float_to_str(data["pitch"], 3))
         title  = "Odometry [STALE]" if stale else "Odometry"

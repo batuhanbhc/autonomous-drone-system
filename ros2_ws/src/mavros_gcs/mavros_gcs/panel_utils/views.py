@@ -186,10 +186,9 @@ class OdometryView:
 
         q = msg.pose.pose.orientation
         roll, pitch, yaw_enu = euler_from_quaternion([q.x, q.y, q.z, q.w])
-        heading_from_north = math.pi/2 - yaw_enu
         self.roll = _radians_to_degree(roll)
         self.pitch = _radians_to_degree(pitch)
-        self.yaw = _wrap_degrees(_radians_to_degree(heading_from_north))
+        self.yaw = _wrap_degrees(_radians_to_degree(yaw_enu))
 
 
 

@@ -802,7 +802,6 @@ void VisionPipeline::workerLoop()
             cb_slot.quat_z, cb_slot.quat_w);
           double roll, pitch;
           tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-          double yaw_compass = (M_PI / 2.0 - yaw);
 
           // Height source: MCU lidar/EKF estimate takes priority when
           // use_mcu_height_estimate is set and mcu_valid is true.
@@ -815,11 +814,11 @@ void VisionPipeline::workerLoop()
           if (config_.use_gimbal) {
               projector_->setPose(
                   cb_slot.pos_x, cb_slot.pos_y, proj_z,
-                  yaw_compass, mount_angle_rad_, 0.0);
+                  yaw, mount_angle_rad_, 0.0);
           } else {
               projector_->setPose(
                   cb_slot.pos_x, cb_slot.pos_y, proj_z,
-                  yaw_compass, mount_angle_rad_ + pitch, roll);
+                  yaw, mount_angle_rad_ + pitch, roll);
           }
         }
 

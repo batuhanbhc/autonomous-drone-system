@@ -19,26 +19,26 @@
  * ANGLE CONVENTIONS  (radians; use deg2rad() for degrees)
  * ============================================================
  *
- *  yaw   – compass heading, clockwise from North.
- *             0=North, 90=East, 180=South, 270=West
+ *  yaw   – ENU yaw, counter-clockwise from East.
+ *             0=East, 90=North, 180=West, -90=South
  *
  *  pitch – nose-down positive.
  *             0=horizontal, +90=straight down, -90=straight up
  *          Pass (mount_angle + drone_pitch) as a single value.
  *
- *  roll  – clockwise-from-behind positive.
+ *  roll  – right wing down positive.
  *             0=level, +30=right side down
  *
  * ============================================================
  * ROTATION
  * ============================================================
  *
- *  R_fix  : OpenCV cam axes → ENU body at zero attitude (cam faces North)
- *             East  (+X_enu) = +X_cam
- *             North (+Y_enu) = +Z_cam
+ *  R_fix  : OpenCV cam axes → ENU world at zero attitude (cam faces East)
+ *             East  (+X_enu) = +Z_cam
+ *             North (+Y_enu) = -X_cam
  *             Up    (+Z_enu) = -Y_cam
  *
- *  R_att  : Rz(-yaw) * Rx(pitch) * Ry(roll)
+ *  R_att  : Rz(yaw) * Ry(pitch) * Rx(roll)
  *
  *  R_wc   : R_att * R_fix   (precomputed once per pose update)
  */
@@ -122,9 +122,9 @@ struct CameraParams {
     double z = 0.0;   ///< Up (altitude above ground)
 
     // Orientation
-    double yaw   = 0.0;  ///< compass CW from North (rad)
+    double yaw   = 0.0;  ///< ENU yaw, CCW from East (rad)
     double pitch = 0.0;  ///< nose-down positive (rad)
-    double roll  = 0.0;  ///< CW-from-behind positive (rad)
+    double roll  = 0.0;  ///< right-wing-down positive (rad)
 };
 
 struct DistortionCoeffs {
@@ -207,13 +207,13 @@ private:
     // ----------------------------------------------------------------
     void rebuildRotation()
     {
-        // R_fix: OpenCV cam → ENU body at zero attitude
+        // R_fix: OpenCV cam → ENU world when yaw=pitch=roll=0 (camera faces East)
         Mat3 R_fix;
-        R_fix.m[0][0]= 1; R_fix.m[0][2]= 0;   // East  = +X_cam
-        R_fix.m[1][2]= 1;                        // North = +Z_cam
-        R_fix.m[2][1]=-1;                        // Up    = -Y_cam
+        R_fix.m[0][2]= 1;   // East  = +Z_cam
+        R_fix.m[1][0]=-1;   // North = -X_cam
+        R_fix.m[2][1]=-1;   // Up    = -Y_cam
 
-        Mat3 R_att = rotZ(-cam_.yaw) * rotX(cam_.pitch) * rotY(cam_.roll);
+        Mat3 R_att = rotZ(cam_.yaw) * rotY(cam_.pitch) * rotX(cam_.roll);
         R_wc_ = R_att * R_fix;
     }
 
