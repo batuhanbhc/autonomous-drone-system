@@ -53,8 +53,8 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.width              = cam["width"].as<int>();
   cfg.height             = cam["height"].as<int>();
   cfg.fps                = cam["fps"].as<int>();
-  config_.camera_mount_angle = root["camera"]["camera_mount_angle"].as<double>();
-  config_.use_gimbal         = root["camera"]["use_gimbal"].as<bool>();
+  cfg.camera_mount_angle = cam["camera_mount_angle"].as<double>();
+  cfg.use_gimbal         = cam["use_gimbal"].as<bool>();
   cfg.reverse_mounted    = cam["reverse_mounted"].as<bool>();
 
   const auto vp = root["vision_pipeline"];
