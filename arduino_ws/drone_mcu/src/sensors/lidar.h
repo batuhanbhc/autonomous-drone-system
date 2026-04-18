@@ -28,12 +28,11 @@
 #define LIDAR_MAX_RANGE_CM  2000
 #define LIDAR_MIN_STRENGTH  200
 
-
-// LiDAR position relative to drone center, in BODY frame.
-// x = right, y = front, z = body-Z
-static constexpr float lidarOffsetX_m = 0.00f;   // right +
-static constexpr float lidarOffsetY_m = -0.072f;   // front +
-static constexpr float lidarOffsetZ_m = 0.06f;   // body-Z +
+// LiDAR position relative to drone center, in the body frame using FLU axes.
+// x = forward, y = left, z = up.
+static constexpr float lidarOffsetX_m = 0.00f;
+static constexpr float lidarOffsetY_m = -0.072f;
+static constexpr float lidarOffsetZ_m = 0.06f;
 
 struct LidarData {
     uint16_t distanceCm = -1;   // distance in cm

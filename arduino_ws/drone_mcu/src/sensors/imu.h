@@ -8,9 +8,11 @@
 #define IMU_ADDR              0x4A
 #define IMU_REPORT_RATE_US    10000 // ~100 hz 
 
-#define IMU_OFFSET_X_CM      -6.0f
-#define IMU_OFFSET_Y_CM       3.0f
-#define IMU_YAW_OFFSET_DEG   -135.0f  // IMU to drone, + is cw, - is ccw
+// IMU position in the drone body frame using FLU axes:
+// x = forward, y = left.
+#define IMU_OFFSET_X_CM       3.0f
+#define IMU_OFFSET_Y_CM       6.0f
+#define IMU_YAW_OFFSET_DEG    135.0f  // IMU -> drone about +Z, CCW positive
 
 
 struct ImuMounting {

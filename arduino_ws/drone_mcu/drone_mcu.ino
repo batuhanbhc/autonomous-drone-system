@@ -20,10 +20,13 @@ static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
 
 // Set to 1 if you want to stop text prints after boot and only emit binary.
 static constexpr bool USB_BINARY_ONLY_AFTER_INIT = true;
+static constexpr bool PRINT_EULER_DEBUG_AFTER_INIT = false;
+static constexpr uint32_t EULER_DEBUG_PERIOD_MS = 100;
 
 // Rolling sequence number so the Pi can detect packet loss/reordering.
 static uint8_t companionSeq = 0;
 static uint32_t nextCompanionSendMs = 0;
+static uint32_t nextEulerDebugMs = 0;
 
 // Packed payload that the Pi will decode.
 #pragma pack(push, 1)
@@ -121,6 +124,10 @@ static void sendVerticalEstimatePacket() {
 }
 
 static void maybeSendCompanionPacket() {
+  if (PRINT_EULER_DEBUG_AFTER_INIT) {
+    return;
+  }
+
   const uint32_t nowMs = millis();
 
   if (nextCompanionSendMs == 0) {
@@ -130,6 +137,59 @@ static void maybeSendCompanionPacket() {
   if ((int32_t)(nowMs - nextCompanionSendMs) >= 0) {
     nextCompanionSendMs += COMPANION_SEND_PERIOD_MS;  // phase-locked 20 Hz
     sendVerticalEstimatePacket();
+  }
+}
+
+static void quatToFluEulerDeg(float qx, float qy, float qz, float qw,
+                              float* rollDeg, float* pitchDeg, float* yawDeg) {
+  const float r00 = 1.0f - 2.0f * (qy * qy + qz * qz);
+  const float r10 = 2.0f * (qx * qy + qz * qw);
+  const float r20 = 2.0f * (qx * qz - qy * qw);
+  const float r21 = 2.0f * (qy * qz + qx * qw);
+  const float r22 = 1.0f - 2.0f * (qx * qx + qy * qy);
+
+  float r20Clamped = r20;
+  if (r20Clamped > 1.0f) r20Clamped = 1.0f;
+  if (r20Clamped < -1.0f) r20Clamped = -1.0f;
+
+  if (rollDeg) {
+    *rollDeg = atan2f(r21, r22) * RAD_TO_DEG;
+  }
+
+  if (pitchDeg) {
+    // FLU convention: positive roll = left-up/right-down, positive pitch = nose-down.
+    *pitchDeg = asinf(-r20Clamped) * RAD_TO_DEG;
+  }
+
+  if (yawDeg) {
+    *yawDeg = atan2f(r10, r00) * RAD_TO_DEG;
+  }
+}
+
+static void maybePrintEulerDebug() {
+  if (!PRINT_EULER_DEBUG_AFTER_INIT) {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  if (nextEulerDebugMs == 0) {
+    nextEulerDebugMs = nowMs;
+  }
+
+  if ((int32_t)(nowMs - nextEulerDebugMs) >= 0) {
+    nextEulerDebugMs += EULER_DEBUG_PERIOD_MS;
+
+    float rollDeg = 0.0f;
+    float pitchDeg = 0.0f;
+    float yawDeg = 0.0f;
+    quatToFluEulerDeg(
+      imuData.droneQuat[0], imuData.droneQuat[1],
+      imuData.droneQuat[2], imuData.droneQuat[3],
+      &rollDeg, &pitchDeg, &yawDeg
+    );
+
+    Serial.printf("[ATT] roll_deg=%.2f pitch_deg=%.2f yaw_deg=%.2f\r\n",
+      rollDeg, pitchDeg, yawDeg);
   }
 }
 
@@ -252,7 +312,9 @@ static bool updateInitializationRoutine() {
   Serial.printf("\tLaunch Pressure (Pa): %.2f\r\n",
     (double)baroData.launchPressurePa);
 
-  if (USB_BINARY_ONLY_AFTER_INIT) {
+  if (PRINT_EULER_DEBUG_AFTER_INIT) {
+    Serial.println("[DEBUG] Euler debug enabled; companion binary packets are disabled.");
+  } else if (USB_BINARY_ONLY_AFTER_INIT) {
     Serial.println("[COMPANION] Starting binary vertical packets at 20 Hz");
     delay(20);
   }
@@ -359,6 +421,7 @@ void loop() {
   }
 
   // 4) Send binary packet
+  //maybePrintEulerDebug();
   maybeSendCompanionPacket();
 
   /*

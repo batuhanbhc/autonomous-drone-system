@@ -74,8 +74,7 @@ static void rotationZDeg(float yawDeg, float R[3][3]) {
   const float c = cosf(deg2rad(yawDeg));
   const float s = sinf(deg2rad(yawDeg));
 
-  // Maps vector components from IMU frame to DRONE frame.
-  // "yawOffset_deg rotates IMU +Y onto drone +Y", CCW positive.
+  // Standard +Z right-hand rotation that maps IMU-frame vectors into drone body axes.
   R[0][0] =  c; R[0][1] = -s; R[0][2] = 0.0f;
   R[1][0] =  s; R[1][1] =  c; R[1][2] = 0.0f;
   R[2][0] = 0.0f; R[2][1] = 0.0f; R[2][2] = 1.0f;
