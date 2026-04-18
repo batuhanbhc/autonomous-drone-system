@@ -819,11 +819,11 @@ void VisionPipeline::workerLoop()
           if (config_.use_gimbal) {
               projector_->setPose(
                   cb_slot.pos_x, cb_slot.pos_y, proj_z,
-                  yaw, mount_angle_rad_, 0.0);
+                  yaw, 0.0, 0.0, mount_angle_rad_);
           } else {
               projector_->setPose(
                   cb_slot.pos_x, cb_slot.pos_y, proj_z,
-                  yaw, mount_angle_rad_ + pitch, roll);
+                  yaw, pitch, roll, mount_angle_rad_);
           }
         }
 

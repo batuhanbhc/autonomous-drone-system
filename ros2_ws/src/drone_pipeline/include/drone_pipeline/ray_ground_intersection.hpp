@@ -24,10 +24,11 @@
  *
  *  pitch – nose-down positive.
  *             0=horizontal, +90=straight down, -90=straight up
- *          Pass (mount_angle + drone_pitch) as a single value.
  *
  *  roll  – right wing down positive.
  *             0=level, +30=right side down
+ *
+ *  mount_pitch – fixed camera mount pitch relative to body, nose-down positive.
  *
  * ============================================================
  * ROTATION
@@ -38,9 +39,10 @@
  *             North (+Y_enu) = -X_cam
  *             Up    (+Z_enu) = -Y_cam
  *
- *  R_att  : Rz(yaw) * Ry(pitch) * Rx(roll)
+ *  R_body : Rz(yaw) * Ry(pitch) * Rx(roll)
+ *  R_mount: Ry(mount_pitch)
  *
- *  R_wc   : R_att * R_fix   (precomputed once per pose update)
+ *  R_wc   : R_body * R_mount * R_fix   (precomputed once per pose update)
  */
 
 #include <cmath>
@@ -125,6 +127,7 @@ struct CameraParams {
     double yaw   = 0.0;  ///< ENU yaw, CCW from East (rad)
     double pitch = 0.0;  ///< nose-down positive (rad)
     double roll  = 0.0;  ///< right-wing-down positive (rad)
+    double mount_pitch = 0.0;  ///< fixed camera tilt relative to body (rad)
 };
 
 struct DistortionCoeffs {
@@ -165,10 +168,11 @@ public:
     // Only recomputes the rotation matrix — cheap.
     // ----------------------------------------------------------------
     void setPose(double x, double y, double z,
-                 double yaw, double pitch, double roll)
+                 double yaw, double pitch, double roll, double mount_pitch)
     {
         cam_.x = x; cam_.y = y; cam_.z = z;
         cam_.yaw = yaw; cam_.pitch = pitch; cam_.roll = roll;
+        cam_.mount_pitch = mount_pitch;
         rebuildRotation();
     }
 
@@ -213,8 +217,9 @@ private:
         R_fix.m[1][0]=-1;   // North = -X_cam
         R_fix.m[2][1]=-1;   // Up    = -Y_cam
 
-        Mat3 R_att = rotZ(cam_.yaw) * rotY(cam_.pitch) * rotX(cam_.roll);
-        R_wc_ = R_att * R_fix;
+        Mat3 R_body = rotZ(cam_.yaw) * rotY(cam_.pitch) * rotX(cam_.roll);
+        Mat3 R_mount = rotY(cam_.mount_pitch);
+        R_wc_ = R_body * R_mount * R_fix;
     }
 
     // ----------------------------------------------------------------
