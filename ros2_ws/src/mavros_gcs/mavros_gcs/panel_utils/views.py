@@ -17,7 +17,6 @@ import math
 
 from mavros_gcs.panel_utils.helpers import (
     _radians_to_degree,
-    _wrap_degrees
 )
 
 
@@ -188,7 +187,7 @@ class OdometryView:
         roll, pitch, yaw_enu = euler_from_quaternion([q.x, q.y, q.z, q.w])
         self.roll = _radians_to_degree(roll)
         self.pitch = _radians_to_degree(pitch)
-        self.yaw = _wrap_degrees(_radians_to_degree(yaw_enu))
+        self.yaw = _radians_to_degree(yaw_enu)
 
 
 

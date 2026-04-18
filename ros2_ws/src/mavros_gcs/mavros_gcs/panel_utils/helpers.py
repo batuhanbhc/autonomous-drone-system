@@ -34,6 +34,3 @@ def _stamp_to_clock_str(sec: int, nanosec: int) -> str:
     
 def _radians_to_degree(radians):
     return radians * 180.0 / math.pi
-
-def _wrap_degrees(d):
-    return (d + 360) % 360
