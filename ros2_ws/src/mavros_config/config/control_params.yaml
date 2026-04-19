@@ -10,16 +10,16 @@ flight_params:
   cmd_stale_timeout_s: 0.5            
   alt_ctrl_min_agl_m: 2.0
 
-  takeoff_m: 1.5
+  takeoff_m: 2.0
   takeoff_reach_threshold_m:  0.20   # ±tolerance to consider takeoff altitude reached (m)
   takeoff_timeout_s:          10.0   # hard cap on takeoff monitor (s)
   
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 0.8
+  kp: 0.7
   ki: 0.0005
-  kd: 0.1
+  kd: 0.2
   output_min: -1.5
   output_max:  1.5
   integral_min: -0.1
