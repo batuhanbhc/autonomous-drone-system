@@ -43,6 +43,7 @@
  *    kp:              1.2
  *    ki:              0.05
  *    kd:              0.3
+ *    d_lpf_tau_s:     0.1   # time constant for LPF on vz used by D term
  *    output_min:     -2.0   # m/s clamp
  *    output_max:      2.0
  *    integral_min:   -0.5   # anti-windup clamp on integral term
@@ -59,7 +60,8 @@
  *
  *  D term = -kd * current_vz   (derivative-on-measurement: avoids derivative
  *           kick when the target changes; negative because positive vz already
- *           reduces the error)
+ *           reduces the error). current_vz is low-pass filtered before use
+ *           when d_lpf_tau_s > 0.
  *
  *  output = clamp(P + I + D, output_min, output_max)
  *
@@ -118,6 +120,7 @@ private:
   float kp_{1.2f};
   float ki_{0.05f};
   float kd_{0.3f};
+  float d_lpf_tau_s_{0.0f};
 
   // ── PID output params ─────────────────────────────────────────────────────
   float output_min_{-2.0f};
@@ -131,6 +134,7 @@ private:
 
   bool   pid_initialized_{false};
   float  integral_{0.0f};
+  std::optional<float> filtered_vz_;
   std::chrono::steady_clock::time_point last_stamp_;
 
   // ── ROS interfaces ────────────────────────────────────────────────────────

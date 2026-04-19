@@ -35,6 +35,7 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
   topic_mcu_    = base_ns + topic_mcu_;
 
   RCLCPP_INFO(get_logger(), "PID gains — kp=%.3f  ki=%.3f  kd=%.3f", kp_, ki_, kd_);
+  RCLCPP_INFO(get_logger(), "D-term vz LPF tau: %.3f s", d_lpf_tau_s_);
   RCLCPP_INFO(get_logger(), "Output clamp  [%.2f, %.2f] m/s", output_min_, output_max_);
   RCLCPP_INFO(get_logger(), "Integral clamp[%.2f, %.2f]",      integral_min_, integral_max_);
   RCLCPP_INFO(get_logger(), "Subscribing  cmd    : %s", topic_cmd_.c_str());
@@ -132,10 +133,13 @@ bool AltitudeControllerNode::loadConfig()
   load("kp",             kp_);
   load("ki",             ki_);
   load("kd",             kd_);
+  load("d_lpf_tau_s",    d_lpf_tau_s_);
   load("output_min",     output_min_);
   load("output_max",     output_max_);
   load("integral_min",   integral_min_);
   load("integral_max",   integral_max_);
+
+  d_lpf_tau_s_ = std::max(0.0f, d_lpf_tau_s_);
 
   return true;
 }
@@ -149,6 +153,7 @@ void AltitudeControllerNode::resetPid()
 {
   integral_        = 0.0f;
   pid_initialized_ = false;
+  filtered_vz_.reset();
   RCLCPP_DEBUG(get_logger(), "[alt_ctrl_pid] State reset.");
 }
 
@@ -170,14 +175,25 @@ float AltitudeControllerNode::computeDesiredVelocity(
   integral_  = std::clamp(integral_, integral_min_, integral_max_);
   const float i_term = integral_;
 
-  const float d_term = -kd * current_vz;
+  float d_input_vz = current_vz;
+  if (d_lpf_tau_s_ > 0.0f) {
+    if (!filtered_vz_.has_value()) {
+      filtered_vz_ = current_vz;
+    } else {
+      const float alpha = static_cast<float>(dt_s / (static_cast<double>(d_lpf_tau_s_) + dt_s));
+      filtered_vz_ = *filtered_vz_ + alpha * (current_vz - *filtered_vz_);
+    }
+    d_input_vz = *filtered_vz_;
+  }
+
+  const float d_term = -kd * d_input_vz;
 
   const float raw = p_term + i_term + d_term;
   const float out = std::clamp(raw, output_min_, output_max_);
 
   RCLCPP_DEBUG(get_logger(),
-    "[pid] tgt=%.3f agl=%.3f err=%.3f vz=%.3f P=%.3f I=%.3f D=%.3f → %.3f (%.3f clamped)",
-    target_agl, current_agl, error, current_vz, p_term, i_term, d_term, raw, out);
+    "[pid] tgt=%.3f agl=%.3f err=%.3f vz=%.3f vz_f=%.3f P=%.3f I=%.3f D=%.3f → %.3f (%.3f clamped)",
+    target_agl, current_agl, error, current_vz, d_input_vz, p_term, i_term, d_term, raw, out);
 
   return out;
 }
@@ -256,6 +272,7 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
       "[alt_ctrl_pid] First measurement: agl=%.3f m, vz=%.3f m/s — PID running.",
       current_agl, current_vz);
     integral_        = 0.0f;
+    filtered_vz_     = current_vz;
     pid_initialized_ = true;
     last_stamp_      = now;
     return;  // skip first tick — no valid dt yet
