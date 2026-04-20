@@ -1,6 +1,5 @@
 #include "drone_pipeline/vision_pipeline.hpp"
 
-#include <chrono>
 #include <stdexcept>
 #include <cstdio>
 #include <cmath>
@@ -26,99 +25,6 @@ namespace fs = std::filesystem;
 
 namespace drone_pipeline
 {
-
-namespace
-{
-
-// TEMP DEBUG: remove after investigating frame-buffer backpressure.
-constexpr int kDebugNoSlot = -1;
-constexpr int kDebugNumWorkers = 4;
-constexpr auto kDebugLogInterval = std::chrono::seconds(1);
-
-struct TempFrameBufferDebugState
-{
-  std::mutex mtx;
-  int mjpeg_idx{kDebugNoSlot};
-  int encoder_idx{kDebugNoSlot};
-  std::array<int, kDebugNumWorkers> worker_indices{};
-  std::chrono::steady_clock::time_point last_log_tp{};
-  std::atomic<int> next_worker_id{0};
-
-  TempFrameBufferDebugState()
-  {
-    worker_indices.fill(kDebugNoSlot);
-    last_log_tp = std::chrono::steady_clock::now();
-  }
-};
-
-TempFrameBufferDebugState g_temp_frame_buffer_debug;
-
-void resetTempFrameBufferDebugState()
-{
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  g_temp_frame_buffer_debug.mjpeg_idx = kDebugNoSlot;
-  g_temp_frame_buffer_debug.encoder_idx = kDebugNoSlot;
-  g_temp_frame_buffer_debug.worker_indices.fill(kDebugNoSlot);
-  g_temp_frame_buffer_debug.last_log_tp = std::chrono::steady_clock::now();
-  g_temp_frame_buffer_debug.next_worker_id.store(0, std::memory_order_relaxed);
-}
-
-int registerTempWorkerDebugThread()
-{
-  return g_temp_frame_buffer_debug.next_worker_id.fetch_add(1, std::memory_order_relaxed);
-}
-
-void setTempMjpegDebugIndex(int idx)
-{
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  g_temp_frame_buffer_debug.mjpeg_idx = idx;
-}
-
-void clearTempMjpegDebugIndex(int idx)
-{
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  if (g_temp_frame_buffer_debug.mjpeg_idx == idx) {
-    g_temp_frame_buffer_debug.mjpeg_idx = kDebugNoSlot;
-  }
-}
-
-void setTempEncoderDebugIndex(int idx)
-{
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  g_temp_frame_buffer_debug.encoder_idx = idx;
-}
-
-void clearTempEncoderDebugIndex(int idx)
-{
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  if (g_temp_frame_buffer_debug.encoder_idx == idx) {
-    g_temp_frame_buffer_debug.encoder_idx = kDebugNoSlot;
-  }
-}
-
-void setTempWorkerDebugIndex(int worker_id, int idx)
-{
-  if (worker_id < 0 || worker_id >= kDebugNumWorkers) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  g_temp_frame_buffer_debug.worker_indices[worker_id] = idx;
-}
-
-void clearTempWorkerDebugIndex(int worker_id, int idx)
-{
-  if (worker_id < 0 || worker_id >= kDebugNumWorkers) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-  if (g_temp_frame_buffer_debug.worker_indices[worker_id] == idx) {
-    g_temp_frame_buffer_debug.worker_indices[worker_id] = kDebugNoSlot;
-  }
-}
-
-}  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Config
@@ -325,7 +231,6 @@ void VisionPipeline::runYawCalibration()
 VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 : Node("vision_pipeline", options)
 {
-  resetTempFrameBufferDebugState();
   config_           = loadConfig();
   mount_angle_rad_ = config_.camera_mount_angle * M_PI / 180.0;
 
@@ -490,8 +395,6 @@ VisionPipeline::~VisionPipeline()
 
   // ── Yaw calibration thread ────────────────────────────────────────────────
   if (yaw_calib_thread_.joinable()) yaw_calib_thread_.join();
-
-  resetTempFrameBufferDebugState();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -526,77 +429,6 @@ void VisionPipeline::releaseSlot(int idx)
   }
 }
 
-int VisionPipeline::countSlotsInUse() const
-{
-  int count = 0;
-  for (const auto & slot : buffer_) {
-    if (slot.in_use.load(std::memory_order_acquire)) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-void VisionPipeline::logTempFrameBufferDebug(const char * reason, bool force) const
-{
-  int mjpeg_idx = kDebugNoSlot;
-  int encoder_idx = kDebugNoSlot;
-  std::array<int, kDebugNumWorkers> worker_indices{};
-  worker_indices.fill(kDebugNoSlot);
-  std::size_t mjpeg_q_size = 0;
-  std::size_t encoder_q_size = 0;
-  std::size_t worker_q_size = 0;
-
-  {
-    std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-    const auto now = std::chrono::steady_clock::now();
-    if (!force && (now - g_temp_frame_buffer_debug.last_log_tp) < kDebugLogInterval) {
-      return;
-    }
-
-    g_temp_frame_buffer_debug.last_log_tp = now;
-    mjpeg_idx = g_temp_frame_buffer_debug.mjpeg_idx;
-    encoder_idx = g_temp_frame_buffer_debug.encoder_idx;
-    worker_indices = g_temp_frame_buffer_debug.worker_indices;
-  }
-
-  {
-    std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-    mjpeg_q_size = mjpeg_queue_.size();
-  }
-
-  {
-    std::lock_guard<std::mutex> lk(encoder_queue_mtx_);
-    encoder_q_size = encoder_queue_.size();
-  }
-
-  {
-    std::lock_guard<std::mutex> lk(worker_queue_mtx_);
-    worker_q_size = worker_queue_.size();
-  }
-
-  const int slots_in_use = countSlotsInUse();
-
-  if (force) {
-    RCLCPP_WARN(
-      get_logger(),
-      "[temp-debug] %s: mjpeg=%d encoder=%d worker0=%d worker1=%d worker2=%d worker3=%d "
-      "mjpeg_q=%zu encoder_q=%zu worker_q=%zu slots_in_use=%d",
-      reason, mjpeg_idx, encoder_idx,
-      worker_indices[0], worker_indices[1], worker_indices[2], worker_indices[3],
-      mjpeg_q_size, encoder_q_size, worker_q_size, slots_in_use);
-    return;
-  }
-
-  RCLCPP_INFO(
-    get_logger(),
-    "[temp-debug] %s: mjpeg=%d encoder=%d worker0=%d worker1=%d worker2=%d worker3=%d "
-    "mjpeg_q=%zu encoder_q=%zu worker_q=%zu slots_in_use=%d",
-    reason, mjpeg_idx, encoder_idx,
-    worker_indices[0], worker_indices[1], worker_indices[2], worker_indices[3],
-    mjpeg_q_size, encoder_q_size, worker_q_size, slots_in_use);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  Frame callback
 //  Runs in the ROS subscription thread.  Must return as fast as possible.
@@ -612,7 +444,6 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   if (idx == -1) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
       "Frame buffer full — dropping frame");
-    logTempFrameBufferDebug("frame buffer full", true);
     return;
   }
 
@@ -670,8 +501,6 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
     worker_queue_.push({idx});
   }
   worker_queue_cv_.notify_one();
-
-  logTempFrameBufferDebug("periodic");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -696,7 +525,6 @@ void VisionPipeline::mjpegLoop()
 
     const int idx = task.idx;
     const FrameSlot & slot = buffer_[idx];
-    setTempMjpegDebugIndex(idx);
 
     if (recording_.load() && mjpeg_writer_.isOpen()) {
       // ── Write JPEG frame to AVI ───────────────────────────────────────────
@@ -731,7 +559,6 @@ void VisionPipeline::mjpegLoop()
       }
     }
 
-    clearTempMjpegDebugIndex(idx);
     releaseSlot(idx);
   }
 }
@@ -835,7 +662,6 @@ void VisionPipeline::encoderLoop()
 
     const int idx = task.idx;
     const FrameSlot & slot = buffer_[idx];
-    setTempEncoderDebugIndex(idx);
 
     if (streaming_.load()) {
       H264Encoder::EncodeResult result;
@@ -862,7 +688,6 @@ void VisionPipeline::encoderLoop()
       }
     }
 
-    clearTempEncoderDebugIndex(idx);
     releaseSlot(idx);
   }
 }
@@ -878,7 +703,6 @@ void VisionPipeline::workerLoop()
 {
   // Each worker thread owns its own libjpeg-turbo handle — tjhandle is NOT
   // thread-safe and must not be shared across threads.
-  const int worker_id = registerTempWorkerDebugThread();
   tjhandle tj = tjInitDecompress();
   if (!tj) {
     RCLCPP_FATAL(get_logger(), "workerLoop: tjInitDecompress failed");
@@ -902,7 +726,6 @@ void VisionPipeline::workerLoop()
 
     const int idx = task.idx;
     FrameSlot & slot = buffer_[idx];
-    setTempWorkerDebugIndex(worker_id, idx);
 
     // ── JPEG decompress → RGB ─────────────────────────────────────────────
     const auto & jpeg = slot.msg->image.data;
@@ -923,7 +746,6 @@ void VisionPipeline::workerLoop()
       pending.stamp_sec     = slot.stamp_sec;
       pending.stamp_nanosec = slot.stamp_nanosec;
       depositResult(std::move(pending));
-      clearTempWorkerDebugIndex(worker_id, idx);
       releaseSlot(idx);
       continue;
     }
@@ -1071,11 +893,9 @@ void VisionPipeline::workerLoop()
       pending.stamp_sec     = slot.stamp_sec;
       pending.stamp_nanosec = slot.stamp_nanosec;
       depositResult(std::move(pending));
-      clearTempWorkerDebugIndex(worker_id, idx);
       releaseSlot(idx);
     }
 
-    clearTempWorkerDebugIndex(worker_id, idx);
     (void)job_exp;  // job lifetime managed by HailoRT
   }
 
@@ -1263,7 +1083,6 @@ void VisionPipeline::recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr 
     closeRecordClip();
     RCLCPP_INFO(get_logger(), "Record → OFF");
   }
-  logTempFrameBufferDebug("record toggled", true);
   publishRecordState();
 }
 
