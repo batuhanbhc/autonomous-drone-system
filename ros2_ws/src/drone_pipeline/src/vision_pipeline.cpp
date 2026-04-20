@@ -118,45 +118,6 @@ void clearTempWorkerDebugIndex(int worker_id, int idx)
   }
 }
 
-void maybeLogTempFrameBufferDebug(
-  const rclcpp::Logger & logger,
-  const char * reason,
-  bool force = false)
-{
-  int mjpeg_idx = kDebugNoSlot;
-  int encoder_idx = kDebugNoSlot;
-  std::array<int, kDebugNumWorkers> worker_indices{};
-  worker_indices.fill(kDebugNoSlot);
-
-  {
-    std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
-    const auto now = std::chrono::steady_clock::now();
-    if (!force && (now - g_temp_frame_buffer_debug.last_log_tp) < kDebugLogInterval) {
-      return;
-    }
-
-    g_temp_frame_buffer_debug.last_log_tp = now;
-    mjpeg_idx = g_temp_frame_buffer_debug.mjpeg_idx;
-    encoder_idx = g_temp_frame_buffer_debug.encoder_idx;
-    worker_indices = g_temp_frame_buffer_debug.worker_indices;
-  }
-
-  if (force) {
-    RCLCPP_WARN(
-      logger,
-      "[temp-debug] %s: mjpeg=%d encoder=%d worker0=%d worker1=%d worker2=%d worker3=%d",
-      reason, mjpeg_idx, encoder_idx,
-      worker_indices[0], worker_indices[1], worker_indices[2], worker_indices[3]);
-    return;
-  }
-
-  RCLCPP_INFO(
-    logger,
-    "[temp-debug] %s: mjpeg=%d encoder=%d worker0=%d worker1=%d worker2=%d worker3=%d",
-    reason, mjpeg_idx, encoder_idx,
-    worker_indices[0], worker_indices[1], worker_indices[2], worker_indices[3]);
-}
-
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -565,6 +526,77 @@ void VisionPipeline::releaseSlot(int idx)
   }
 }
 
+int VisionPipeline::countSlotsInUse() const
+{
+  int count = 0;
+  for (const auto & slot : buffer_) {
+    if (slot.in_use.load(std::memory_order_acquire)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+void VisionPipeline::logTempFrameBufferDebug(const char * reason, bool force) const
+{
+  int mjpeg_idx = kDebugNoSlot;
+  int encoder_idx = kDebugNoSlot;
+  std::array<int, kDebugNumWorkers> worker_indices{};
+  worker_indices.fill(kDebugNoSlot);
+  std::size_t mjpeg_q_size = 0;
+  std::size_t encoder_q_size = 0;
+  std::size_t worker_q_size = 0;
+
+  {
+    std::lock_guard<std::mutex> lk(g_temp_frame_buffer_debug.mtx);
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && (now - g_temp_frame_buffer_debug.last_log_tp) < kDebugLogInterval) {
+      return;
+    }
+
+    g_temp_frame_buffer_debug.last_log_tp = now;
+    mjpeg_idx = g_temp_frame_buffer_debug.mjpeg_idx;
+    encoder_idx = g_temp_frame_buffer_debug.encoder_idx;
+    worker_indices = g_temp_frame_buffer_debug.worker_indices;
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
+    mjpeg_q_size = mjpeg_queue_.size();
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(encoder_queue_mtx_);
+    encoder_q_size = encoder_queue_.size();
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(worker_queue_mtx_);
+    worker_q_size = worker_queue_.size();
+  }
+
+  const int slots_in_use = countSlotsInUse();
+
+  if (force) {
+    RCLCPP_WARN(
+      get_logger(),
+      "[temp-debug] %s: mjpeg=%d encoder=%d worker0=%d worker1=%d worker2=%d worker3=%d "
+      "mjpeg_q=%zu encoder_q=%zu worker_q=%zu slots_in_use=%d",
+      reason, mjpeg_idx, encoder_idx,
+      worker_indices[0], worker_indices[1], worker_indices[2], worker_indices[3],
+      mjpeg_q_size, encoder_q_size, worker_q_size, slots_in_use);
+    return;
+  }
+
+  RCLCPP_INFO(
+    get_logger(),
+    "[temp-debug] %s: mjpeg=%d encoder=%d worker0=%d worker1=%d worker2=%d worker3=%d "
+    "mjpeg_q=%zu encoder_q=%zu worker_q=%zu slots_in_use=%d",
+    reason, mjpeg_idx, encoder_idx,
+    worker_indices[0], worker_indices[1], worker_indices[2], worker_indices[3],
+    mjpeg_q_size, encoder_q_size, worker_q_size, slots_in_use);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Frame callback
 //  Runs in the ROS subscription thread.  Must return as fast as possible.
@@ -580,7 +612,7 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   if (idx == -1) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
       "Frame buffer full — dropping frame");
-    maybeLogTempFrameBufferDebug(get_logger(), "frame buffer full", true);
+    logTempFrameBufferDebug("frame buffer full", true);
     return;
   }
 
@@ -639,7 +671,7 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   }
   worker_queue_cv_.notify_one();
 
-  maybeLogTempFrameBufferDebug(get_logger(), "periodic");
+  logTempFrameBufferDebug("periodic");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1231,7 +1263,7 @@ void VisionPipeline::recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr 
     closeRecordClip();
     RCLCPP_INFO(get_logger(), "Record → OFF");
   }
-  maybeLogTempFrameBufferDebug(get_logger(), "record toggled", true);
+  logTempFrameBufferDebug("record toggled", true);
   publishRecordState();
 }
 
