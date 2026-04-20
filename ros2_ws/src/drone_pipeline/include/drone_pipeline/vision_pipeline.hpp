@@ -151,7 +151,7 @@ public:
 
 private:
   // ── Constants ─────────────────────────────────────────────────────────────
-  static constexpr int kNumSlots   = 30;
+  static constexpr int kNumSlots   = 60;
   static constexpr int kNumWorkers = 4;
 
   static constexpr int    kYawCalibSamples = 10;
