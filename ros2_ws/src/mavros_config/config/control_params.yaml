@@ -43,7 +43,7 @@ vision_pipeline:
   obj_det_person_class_idx: 0     # person class index
 
   use_mcu_height_estimate: true
-  projection_altitude_lpf_alpha: 0.5  # current-height weight; 1.0 disables smoothing
+  projection_altitude_lpf_alpha: 0.75  # current-height weight; 1.0 disables smoothing
 
   tracker:
     max_association_distance_m: 5.0
