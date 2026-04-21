@@ -19,7 +19,7 @@ flight_params:
 altitude_controller:
   kp: 0.7
   ki: 0.0001
-  kd: 0.3
+  kd: 0.2
   d_lpf_tau_s: 0.1
   output_min: -1.5
   output_max:  1.5
@@ -43,6 +43,23 @@ vision_pipeline:
   obj_det_person_class_idx: 0     # person class index
 
   use_mcu_height_estimate: true
+  projection_altitude_lpf_alpha: 0.5  # current-height weight; 1.0 disables smoothing
+
+  tracker:
+    max_association_distance_m: 5.0
+    mahalanobis_gate: 16.0
+    max_missed_frames: 10
+    min_hits_to_confirm: 3
+    process_noise_std_pos: 1.0
+    process_noise_std_vel: 3.0
+    base_meas_noise_m: 0.75
+    pixel_std_x: 2.0
+    pixel_std_y: 4.0
+    angular_vel_low_deg_s: 5.0
+    angular_vel_high_deg_s: 30.0
+    angular_vel_max_scale: 12.0
+    new_track_min_dist_calm_m: 0.5
+    new_track_min_dist_noisy_m: 2.0
   
   camera_intrinsics:
     fx: 628.5174089378104

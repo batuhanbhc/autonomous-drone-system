@@ -47,6 +47,7 @@ add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
   src/mjpeg_writer.cpp
   src/h264_encoder.cpp
+  src/tracker.cpp
   src/vision_pipeline.cpp
 )
 

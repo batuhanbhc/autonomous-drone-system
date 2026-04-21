@@ -1,14 +1,15 @@
 #include "drone_pipeline/vision_pipeline.hpp"
 
+#include <algorithm>
 #include <chrono>
-#include <stdexcept>
-#include <cstdio>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "yaml-cpp/yaml.h"
@@ -52,6 +53,78 @@ struct TempFrameBufferDebugState
 };
 
 TempFrameBufferDebugState g_temp_frame_buffer_debug;
+
+template<typename T>
+T yamlOr(const YAML::Node & node, const char * key, const T & default_value)
+{
+  return node[key] ? node[key].as<T>() : default_value;
+}
+
+int clampPixelCoord(int value, int limit)
+{
+  return std::max(0, std::min(limit - 1, value));
+}
+
+std::array<double, 4> estimateMeasurementCovariance(
+  GroundProjector & projector,
+  int u,
+  int v,
+  int image_width,
+  int image_height,
+  double noise_scale,
+  double pixel_std_x,
+  double pixel_std_y,
+  double base_meas_noise_m)
+{
+  const auto p0 = projector.projectOne(Pixel{u, v});
+  if (!p0.valid) {
+    const double s = 100.0 * noise_scale;
+    return {s, 0.0, 0.0, s};
+  }
+
+  const int du = std::max(1, static_cast<int>(std::lround(pixel_std_x)));
+  const int dv = std::max(1, static_cast<int>(std::lround(pixel_std_y)));
+  const int pu_u = clampPixelCoord(u + du, image_width);
+  const int pv_v = clampPixelCoord(v + dv, image_height);
+
+  const auto pu = projector.projectOne(Pixel{pu_u, v});
+  const auto pv = projector.projectOne(Pixel{u, pv_v});
+  if (!pu.valid || !pv.valid) {
+    const double s = 25.0 * noise_scale;
+    return {s, 0.0, 0.0, s};
+  }
+
+  const double step_u = static_cast<double>(pu_u - u);
+  const double step_v = static_cast<double>(pv_v - v);
+  if (std::abs(step_u) < 1e-9 || std::abs(step_v) < 1e-9) {
+    const double s = 25.0 * noise_scale;
+    return {s, 0.0, 0.0, s};
+  }
+
+  const double j00 = (pu.world_x - p0.world_x) / step_u;
+  const double j10 = (pu.world_y - p0.world_y) / step_u;
+  const double j01 = (pv.world_x - p0.world_x) / step_v;
+  const double j11 = (pv.world_y - p0.world_y) / step_v;
+
+  const double sigma_u2 = pixel_std_x * pixel_std_x;
+  const double sigma_v2 = pixel_std_y * pixel_std_y;
+
+  std::array<double, 4> s = {
+    j00 * j00 * sigma_u2 + j01 * j01 * sigma_v2,
+    j00 * j10 * sigma_u2 + j01 * j11 * sigma_v2,
+    j10 * j00 * sigma_u2 + j11 * j01 * sigma_v2,
+    j10 * j10 * sigma_u2 + j11 * j11 * sigma_v2
+  };
+
+  const double base_noise2 = base_meas_noise_m * base_meas_noise_m;
+  s[0] += base_noise2;
+  s[3] += base_noise2;
+
+  for (double & value : s) {
+    value *= noise_scale;
+  }
+  return s;
+}
 
 void resetTempFrameBufferDebugState()
 {
@@ -172,19 +245,51 @@ VisionConfig VisionPipeline::loadConfig()
 
   cfg.logs_path = root["flight_params"]["logs_path"].as<std::string>();
 
-  cfg.use_mcu_height_estimate =
-    root["vision_pipeline"]["use_mcu_height_estimate"]
-      ? root["vision_pipeline"]["use_mcu_height_estimate"].as<bool>()
-      : false;
+  cfg.use_mcu_height_estimate = yamlOr<bool>(vp, "use_mcu_height_estimate", false);
+  cfg.projection_altitude_lpf_alpha =
+    yamlOr<double>(vp, "projection_altitude_lpf_alpha", cfg.projection_altitude_lpf_alpha);
+
+  const auto tracker = vp["tracker"];
+  if (tracker) {
+    cfg.tracker.max_association_distance_m = yamlOr<double>(
+      tracker, "max_association_distance_m", cfg.tracker.max_association_distance_m);
+    cfg.tracker.mahalanobis_gate = yamlOr<double>(
+      tracker, "mahalanobis_gate", cfg.tracker.mahalanobis_gate);
+    cfg.tracker.max_missed_frames = yamlOr<int>(
+      tracker, "max_missed_frames", cfg.tracker.max_missed_frames);
+    cfg.tracker.min_hits_to_confirm = yamlOr<int>(
+      tracker, "min_hits_to_confirm", cfg.tracker.min_hits_to_confirm);
+    cfg.tracker.process_noise_std_pos = yamlOr<double>(
+      tracker, "process_noise_std_pos", cfg.tracker.process_noise_std_pos);
+    cfg.tracker.process_noise_std_vel = yamlOr<double>(
+      tracker, "process_noise_std_vel", cfg.tracker.process_noise_std_vel);
+    cfg.tracker.base_meas_noise_m = yamlOr<double>(
+      tracker, "base_meas_noise_m", cfg.tracker.base_meas_noise_m);
+    cfg.tracker.pixel_std_x = yamlOr<double>(
+      tracker, "pixel_std_x", cfg.tracker.pixel_std_x);
+    cfg.tracker.pixel_std_y = yamlOr<double>(
+      tracker, "pixel_std_y", cfg.tracker.pixel_std_y);
+    cfg.tracker.angular_vel_low_deg_s = yamlOr<double>(
+      tracker, "angular_vel_low_deg_s", cfg.tracker.angular_vel_low_deg_s);
+    cfg.tracker.angular_vel_high_deg_s = yamlOr<double>(
+      tracker, "angular_vel_high_deg_s", cfg.tracker.angular_vel_high_deg_s);
+    cfg.tracker.angular_vel_max_scale = yamlOr<double>(
+      tracker, "angular_vel_max_scale", cfg.tracker.angular_vel_max_scale);
+    cfg.tracker.new_track_min_dist_calm_m = yamlOr<double>(
+      tracker, "new_track_min_dist_calm_m", cfg.tracker.new_track_min_dist_calm_m);
+    cfg.tracker.new_track_min_dist_noisy_m = yamlOr<double>(
+      tracker, "new_track_min_dist_noisy_m", cfg.tracker.new_track_min_dist_noisy_m);
+  }
 
   RCLCPP_INFO(get_logger(),
     "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  "
-    "score_thresh=%.2f  model_input=%d  person_class=%d  use_mcu_height=%s",
+    "score_thresh=%.2f  model_input=%d  person_class=%d  use_mcu_height=%s  alt_lpf=%.2f",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
     cfg.hef_path.c_str(), cfg.score_threshold,
     cfg.model_input_size, cfg.person_class_idx,
-    cfg.use_mcu_height_estimate ? "true" : "false");
+    cfg.use_mcu_height_estimate ? "true" : "false",
+    cfg.projection_altitude_lpf_alpha);
 
   RCLCPP_INFO(get_logger(), "Camera mount angle=%.2f deg  use_gimbal=%s  reverse_mounted=%s",
     cfg.camera_mount_angle, cfg.use_gimbal ? "true" : "false",
@@ -197,6 +302,22 @@ VisionConfig VisionPipeline::loadConfig()
   RCLCPP_INFO(get_logger(),
     "Distortion → k1=%.6f k2=%.6f p1=%.6f p2=%.6f k3=%.6f",
     cfg.k1, cfg.k2, cfg.p1, cfg.p2, cfg.k3);
+
+  RCLCPP_INFO(get_logger(),
+    "Tracker → assoc=%.2fm  maha=%.2f  missed=%d  hits=%d  "
+    "proc=(%.2f,%.2f)  meas=%.2f  pixel_std=(%.2f,%.2f)  omega_deg_s=(%.2f,%.2f)->x%.2f",
+    cfg.tracker.max_association_distance_m,
+    cfg.tracker.mahalanobis_gate,
+    cfg.tracker.max_missed_frames,
+    cfg.tracker.min_hits_to_confirm,
+    cfg.tracker.process_noise_std_pos,
+    cfg.tracker.process_noise_std_vel,
+    cfg.tracker.base_meas_noise_m,
+    cfg.tracker.pixel_std_x,
+    cfg.tracker.pixel_std_y,
+    cfg.tracker.angular_vel_low_deg_s,
+    cfg.tracker.angular_vel_high_deg_s,
+    cfg.tracker.angular_vel_max_scale);
 
   return cfg;
 }
@@ -352,6 +473,7 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
     dc.k3 = config_.k3;
     projector_ = std::make_unique<GroundProjector>(cp, dc);
   }
+  tracker_ = std::make_unique<MultiObjectTracker>(config_.tracker);
 
   // ── Session directory ─────────────────────────────────────────────────────
   session_dir_ = resolveSessionDir(config_.logs_path);
@@ -922,6 +1044,19 @@ void VisionPipeline::workerLoop()
       pending.seq           = slot.seq;
       pending.stamp_sec     = slot.stamp_sec;
       pending.stamp_nanosec = slot.stamp_nanosec;
+      pending.pos_x         = slot.pos_x;
+      pending.pos_y         = slot.pos_y;
+      pending.pos_z         = slot.pos_z;
+      pending.quat_x        = slot.quat_x;
+      pending.quat_y        = slot.quat_y;
+      pending.quat_z        = slot.quat_z;
+      pending.quat_w        = slot.quat_w;
+      pending.ang_vel_x     = slot.ang_vel_x;
+      pending.ang_vel_y     = slot.ang_vel_y;
+      pending.ang_vel_z     = slot.ang_vel_z;
+      pending.odom_valid    = slot.odom_valid;
+      pending.agl_m         = slot.agl_m;
+      pending.mcu_valid     = slot.mcu_valid;
       depositResult(std::move(pending));
       clearTempWorkerDebugIndex(worker_id, idx);
       releaseSlot(idx);
@@ -957,6 +1092,19 @@ void VisionPipeline::workerLoop()
       pending.seq           = cb_slot.seq;
       pending.stamp_sec     = cb_slot.stamp_sec;
       pending.stamp_nanosec = cb_slot.stamp_nanosec;
+      pending.pos_x         = cb_slot.pos_x;
+      pending.pos_y         = cb_slot.pos_y;
+      pending.pos_z         = cb_slot.pos_z;
+      pending.quat_x        = cb_slot.quat_x;
+      pending.quat_y        = cb_slot.quat_y;
+      pending.quat_z        = cb_slot.quat_z;
+      pending.quat_w        = cb_slot.quat_w;
+      pending.ang_vel_x     = cb_slot.ang_vel_x;
+      pending.ang_vel_y     = cb_slot.ang_vel_y;
+      pending.ang_vel_z     = cb_slot.ang_vel_z;
+      pending.odom_valid    = cb_slot.odom_valid;
+      pending.agl_m         = cb_slot.agl_m;
+      pending.mcu_valid     = cb_slot.mcu_valid;
 
       if (info.status != HAILO_SUCCESS) {
         RCLCPP_WARN(get_logger(), "Hailo async infer failed (slot %d): %d",
@@ -976,35 +1124,6 @@ void VisionPipeline::workerLoop()
       const int     num_dets = static_cast<int>(cls_ptr[0]);
 
       if (num_dets > 0) {
-        // ── Decode pose for ground projection ──────────────────────────
-        bool can_project = cb_slot.odom_valid;
-        double yaw = 0.0;
-        if (can_project) {
-          tf2::Quaternion tf_q(
-            cb_slot.quat_x, cb_slot.quat_y,
-            cb_slot.quat_z, cb_slot.quat_w);
-          double roll, pitch;
-          tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-
-          // Height source: MCU lidar/EKF estimate takes priority when
-          // use_mcu_height_estimate is set and mcu_valid is true.
-          // Fall back to odom pos_z otherwise.
-          const double proj_z =
-            (config_.use_mcu_height_estimate && cb_slot.mcu_valid)
-            ? static_cast<double>(cb_slot.agl_m)
-            : cb_slot.pos_z;
-
-          if (config_.use_gimbal) {
-              projector_->setPose(
-                  cb_slot.pos_x, cb_slot.pos_y, proj_z,
-                  yaw, 0.0, 0.0, mount_angle_rad_);
-          } else {
-              projector_->setPose(
-                  cb_slot.pos_x, cb_slot.pos_y, proj_z,
-                  yaw, pitch, roll, mount_angle_rad_);
-          }
-        }
-
         pending.detections.reserve(num_dets);
 
         for (int d = 0; d < num_dets; ++d) {
@@ -1025,33 +1144,12 @@ void VisionPipeline::workerLoop()
           const float x_max = (x_max_lb - lb_pad_left_) / lb_scale_;
           const float y_max = (y_max_lb - lb_pad_top_)  / lb_scale_;
 
-          const int ix0 = std::max(0,                  static_cast<int>(x_min));
-          const int ix1 = std::min(config_.width  - 1, static_cast<int>(x_max));
-          const int iy1 = std::min(config_.height - 1, static_cast<int>(y_max));
-
-          const int foot_u = (ix0 + ix1) / 2;
-          const int foot_v = iy1;
-
-          double world_x = std::numeric_limits<double>::quiet_NaN();
-          double world_y = std::numeric_limits<double>::quiet_NaN();
-
-          if (can_project) {
-            const auto res = projector_->projectOne(Pixel{foot_u, foot_v});
-            if (res.valid) {
-              world_x = res.world_x;
-              world_y = res.world_y;
-            }
-          }
-
           Detection det_obj;
           det_obj.x_min   = std::max(0.0f, x_min);
           det_obj.y_min   = std::max(0.0f, y_min);
           det_obj.x_max   = std::min(static_cast<float>(config_.width  - 1), x_max);
           det_obj.y_max   = std::min(static_cast<float>(config_.height - 1), y_max);
           det_obj.score   = score;
-          det_obj.id      = 0;
-          det_obj.world_x = world_x;
-          det_obj.world_y = world_y;
 
           pending.detections.push_back(det_obj);
         }
@@ -1070,6 +1168,19 @@ void VisionPipeline::workerLoop()
       pending.seq           = slot.seq;
       pending.stamp_sec     = slot.stamp_sec;
       pending.stamp_nanosec = slot.stamp_nanosec;
+      pending.pos_x         = slot.pos_x;
+      pending.pos_y         = slot.pos_y;
+      pending.pos_z         = slot.pos_z;
+      pending.quat_x        = slot.quat_x;
+      pending.quat_y        = slot.quat_y;
+      pending.quat_z        = slot.quat_z;
+      pending.quat_w        = slot.quat_w;
+      pending.ang_vel_x     = slot.ang_vel_x;
+      pending.ang_vel_y     = slot.ang_vel_y;
+      pending.ang_vel_z     = slot.ang_vel_z;
+      pending.odom_valid    = slot.odom_valid;
+      pending.agl_m         = slot.agl_m;
+      pending.mcu_valid     = slot.mcu_valid;
       depositResult(std::move(pending));
       clearTempWorkerDebugIndex(worker_id, idx);
       releaseSlot(idx);
@@ -1086,9 +1197,154 @@ void VisionPipeline::workerLoop()
 //  track_results CSV — in-order drain
 // ─────────────────────────────────────────────────────────────────────────────
 
+void VisionPipeline::resetTrackingStateLocked()
+{
+  if (tracker_) {
+    tracker_->reset();
+  }
+  has_prev_track_timestamp_ = false;
+  prev_track_timestamp_s_ = 0.0;
+  has_smoothed_projection_height_ = false;
+  smoothed_projection_height_m_ = 0.0;
+
+  while (!results_pq_.empty()) {
+    results_pq_.pop();
+  }
+
+  track_csv_buf_.clear();
+  next_result_seq_ = next_seq_.load(std::memory_order_relaxed);
+}
+
+double VisionPipeline::computeAngularVelocityDegPerSecLocked(
+  const PendingResult & result) const
+{
+  const double wx = result.ang_vel_x;
+  const double wy = result.ang_vel_y;
+  const double wz = result.ang_vel_z;
+  // nav_msgs/Odometry twist uses ROS SI units, so MAVROS body rates arrive in rad/s.
+  const double omega_rad_s = std::sqrt(wx * wx + wy * wy + wz * wz);
+  return omega_rad_s * 180.0 / M_PI;
+}
+
+double VisionPipeline::smoothProjectionHeightLocked(double raw_height_m)
+{
+  const double alpha = std::max(0.0, std::min(1.0, config_.projection_altitude_lpf_alpha));
+  if (!has_smoothed_projection_height_ || alpha >= 0.999) {
+    smoothed_projection_height_m_ = raw_height_m;
+    has_smoothed_projection_height_ = true;
+    return smoothed_projection_height_m_;
+  }
+
+  smoothed_projection_height_m_ =
+    alpha * raw_height_m + (1.0 - alpha) * smoothed_projection_height_m_;
+  return smoothed_projection_height_m_;
+}
+
+std::vector<DetectionMeasurement> VisionPipeline::buildTrackMeasurementsLocked(
+  const PendingResult & result,
+  double noise_scale)
+{
+  std::vector<DetectionMeasurement> measurements;
+  if (!result.odom_valid || result.detections.empty()) {
+    return measurements;
+  }
+
+  tf2::Quaternion tf_q(
+    result.quat_x, result.quat_y,
+    result.quat_z, result.quat_w);
+  double roll = 0.0;
+  double pitch = 0.0;
+  double yaw = 0.0;
+  tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
+  yaw += yaw_offset_;
+
+  const double projection_pitch = config_.use_gimbal ? 0.0 : pitch;
+  const double projection_roll = config_.use_gimbal ? 0.0 : roll;
+  const double raw_projection_height =
+    (config_.use_mcu_height_estimate && result.mcu_valid)
+    ? static_cast<double>(result.agl_m)
+    : result.pos_z;
+
+  if (!std::isfinite(raw_projection_height) || raw_projection_height <= 1e-3) {
+    has_smoothed_projection_height_ = false;
+    return measurements;
+  }
+
+  const double projection_height = smoothProjectionHeightLocked(raw_projection_height);
+  projector_->setPose(
+    result.pos_x, result.pos_y, projection_height,
+    yaw, projection_pitch, projection_roll, mount_angle_rad_);
+
+  measurements.reserve(result.detections.size());
+  for (const auto & det : result.detections) {
+    const int foot_u = clampPixelCoord(
+      static_cast<int>(std::lround(0.5 * (det.x_min + det.x_max))),
+      config_.width);
+    const int foot_v = clampPixelCoord(
+      static_cast<int>(std::lround(det.y_max)),
+      config_.height);
+
+    const auto hit = projector_->projectOne(Pixel{foot_u, foot_v});
+    if (!hit.valid) {
+      continue;
+    }
+
+    DetectionMeasurement measurement;
+    measurement.world_xy = {hit.world_x, hit.world_y};
+    measurement.meas_cov = estimateMeasurementCovariance(
+      *projector_,
+      foot_u,
+      foot_v,
+      config_.width,
+      config_.height,
+      noise_scale,
+      config_.tracker.pixel_std_x,
+      config_.tracker.pixel_std_y,
+      config_.tracker.base_meas_noise_m);
+    measurement.image_box = {det.x_min, det.y_min, det.x_max, det.y_max};
+    measurement.score = det.score;
+    measurements.push_back(measurement);
+  }
+
+  return measurements;
+}
+
+void VisionPipeline::writeTrackRowsLocked(
+  const PendingResult & result,
+  const std::vector<TrackEstimate> & confirmed_tracks,
+  double noise_scale,
+  double omega_deg_s)
+{
+  if (confirmed_tracks.empty()) {
+    std::ostringstream oss;
+    oss << result.seq << ','
+        << result.stamp_sec << ',' << result.stamp_nanosec << ','
+        << ",,,,,,,,,,,,";
+    oss << noise_scale << ',' << omega_deg_s << '\n';
+    track_csv_buf_.push_back(oss.str());
+    return;
+  }
+
+  for (const auto & track : confirmed_tracks) {
+    std::ostringstream oss;
+    oss << result.seq << ','
+        << result.stamp_sec << ',' << result.stamp_nanosec << ','
+        << track.track_id << ','
+        << track.image_box[0] << ',' << track.image_box[1] << ','
+        << track.image_box[2] << ',' << track.image_box[3] << ','
+        << track.score << ','
+        << track.state[0] << ',' << track.state[1] << ','
+        << track.state[2] << ',' << track.state[3] << ','
+        << track.hits << ',' << track.missed << ','
+        << noise_scale << ',' << omega_deg_s << '\n';
+    track_csv_buf_.push_back(oss.str());
+  }
+}
+
 void VisionPipeline::openTrackCsv(const std::string & path)
 {
   std::lock_guard<std::mutex> lk(results_mtx_);
+  resetTrackingStateLocked();
   track_csv_file_.open(path, std::ios::out | std::ios::trunc);
   if (!track_csv_file_.is_open())
     throw std::runtime_error("Cannot open track_results CSV: " + path);
@@ -1096,13 +1352,13 @@ void VisionPipeline::openTrackCsv(const std::string & path)
   track_csv_file_
     << "seq,"
     << "stamp_sec,stamp_nanosec,"
-    << "id,"
+    << "track_id,"
     << "x_min,y_min,x_max,y_max,"
     << "score,"
-    << "world_x,world_y\n";
-
-  track_csv_buf_.clear();
-  next_result_seq_ = 0;
+    << "world_x,world_y,"
+    << "world_vx,world_vy,"
+    << "hits,missed,"
+    << "noise_scale,omega_deg_s\n";
 }
 
 void VisionPipeline::closeTrackCsv()
@@ -1110,34 +1366,32 @@ void VisionPipeline::closeTrackCsv()
   std::lock_guard<std::mutex> lk(results_mtx_);
   if (!track_csv_file_.is_open()) return;
 
-  // Drain whatever remains in the priority queue even if out-of-order —
-  // on shutdown we accept whatever we have.
   while (!results_pq_.empty()) {
-    const auto & r = results_pq_.top();
-    for (const auto & det : r.detections) {
-      std::ostringstream oss;
-      oss << r.seq << ','
-          << r.stamp_sec << ',' << r.stamp_nanosec << ','
-          << det.id      << ','
-          << det.x_min   << ',' << det.y_min << ','
-          << det.x_max   << ',' << det.y_max << ','
-          << det.score   << ',';
-      if (std::isnan(det.world_x)) oss << "nan"; else oss << det.world_x;
-      oss << ',';
-      if (std::isnan(det.world_y)) oss << "nan"; else oss << det.world_y;
-      oss << '\n';
-      track_csv_buf_.push_back(oss.str());
+    const PendingResult & result = results_pq_.top();
+    const double timestamp_s =
+      static_cast<double>(result.stamp_sec) +
+      static_cast<double>(result.stamp_nanosec) * 1e-9;
+    const double dt = has_prev_track_timestamp_
+      ? std::max(1e-3, timestamp_s - prev_track_timestamp_s_)
+      : (1.0 / static_cast<double>(config_.fps));
+    has_prev_track_timestamp_ = true;
+    prev_track_timestamp_s_ = timestamp_s;
+
+    const double omega_deg_s = computeAngularVelocityDegPerSecLocked(result);
+    const double low = config_.tracker.angular_vel_low_deg_s;
+    const double high = config_.tracker.angular_vel_high_deg_s;
+    double noise_scale = 1.0;
+    if (omega_deg_s >= high) {
+      noise_scale = config_.tracker.angular_vel_max_scale;
+    } else if (omega_deg_s > low) {
+      const double t = (omega_deg_s - low) / std::max(1e-6, high - low);
+      noise_scale = 1.0 + t * (config_.tracker.angular_vel_max_scale - 1.0);
     }
-    // Push an empty row for frames with no detections so frame count is preserved
-    if (r.detections.empty()) {
-      std::ostringstream oss;
-      oss << r.seq << ','
-          << r.stamp_sec << ',' << r.stamp_nanosec << ','
-          << ",,,,,,nan,nan\n";
-      track_csv_buf_.push_back(oss.str());
-    }
-    const_cast<std::priority_queue<PendingResult,
-      std::vector<PendingResult>, PendingResultCmp>&>(results_pq_).pop();
+
+    const auto measurements = buildTrackMeasurementsLocked(result, noise_scale);
+    const auto confirmed_tracks = tracker_->step(measurements, dt, noise_scale);
+    writeTrackRowsLocked(result, confirmed_tracks, noise_scale, omega_deg_s);
+    results_pq_.pop();
   }
 
   for (const auto & line : track_csv_buf_) track_csv_file_ << line;
@@ -1155,10 +1409,7 @@ void VisionPipeline::depositResult(PendingResult && r)
 
 void VisionPipeline::drainResultsLocked()
 {
-  // Write all consecutive results starting from next_result_seq_.
   if (!track_csv_file_.is_open()) {
-    // Recording not active — discard results that have piled up so the
-    // priority queue doesn't grow unboundedly.
     while (!results_pq_.empty())
       results_pq_.pop();
     next_result_seq_ = next_seq_.load(std::memory_order_relaxed);
@@ -1168,36 +1419,34 @@ void VisionPipeline::drainResultsLocked()
   while (!results_pq_.empty() &&
          results_pq_.top().seq == next_result_seq_)
   {
-    const PendingResult & r = results_pq_.top();
+    const PendingResult & result = results_pq_.top();
+    const double timestamp_s =
+      static_cast<double>(result.stamp_sec) +
+      static_cast<double>(result.stamp_nanosec) * 1e-9;
+    const double dt = has_prev_track_timestamp_
+      ? std::max(1e-3, timestamp_s - prev_track_timestamp_s_)
+      : (1.0 / static_cast<double>(config_.fps));
+    has_prev_track_timestamp_ = true;
+    prev_track_timestamp_s_ = timestamp_s;
 
-    if (r.detections.empty()) {
-      // Write a single "no detection" row so frame count stays aligned
-      std::ostringstream oss;
-      oss << r.seq << ','
-          << r.stamp_sec << ',' << r.stamp_nanosec << ','
-          << ",,,,,,nan,nan\n";
-      track_csv_buf_.push_back(oss.str());
-    } else {
-      for (const auto & det : r.detections) {
-        std::ostringstream oss;
-        oss << r.seq << ','
-            << r.stamp_sec << ',' << r.stamp_nanosec << ','
-            << det.id      << ','
-            << det.x_min   << ',' << det.y_min << ','
-            << det.x_max   << ',' << det.y_max << ','
-            << det.score   << ',';
-        if (std::isnan(det.world_x)) oss << "nan"; else oss << det.world_x;
-        oss << ',';
-        if (std::isnan(det.world_y)) oss << "nan"; else oss << det.world_y;
-        oss << '\n';
-        track_csv_buf_.push_back(oss.str());
-      }
+    const double omega_deg_s = computeAngularVelocityDegPerSecLocked(result);
+    const double low = config_.tracker.angular_vel_low_deg_s;
+    const double high = config_.tracker.angular_vel_high_deg_s;
+    double noise_scale = 1.0;
+    if (omega_deg_s >= high) {
+      noise_scale = config_.tracker.angular_vel_max_scale;
+    } else if (omega_deg_s > low) {
+      const double t = (omega_deg_s - low) / std::max(1e-6, high - low);
+      noise_scale = 1.0 + t * (config_.tracker.angular_vel_max_scale - 1.0);
     }
+
+    const auto measurements = buildTrackMeasurementsLocked(result, noise_scale);
+    const auto confirmed_tracks = tracker_->step(measurements, dt, noise_scale);
+    writeTrackRowsLocked(result, confirmed_tracks, noise_scale, omega_deg_s);
 
     results_pq_.pop();
     ++next_result_seq_;
 
-    // Eager flush
     if (track_csv_buf_.size() >= kCsvFlushSize) {
       for (const auto & line : track_csv_buf_) track_csv_file_ << line;
       track_csv_buf_.clear();

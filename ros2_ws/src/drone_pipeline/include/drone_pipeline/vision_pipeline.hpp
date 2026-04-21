@@ -25,6 +25,7 @@ extern "C" {
 #include "drone_pipeline/h264_encoder.hpp"
 #include "drone_pipeline/mjpeg_writer.hpp"
 #include "drone_pipeline/ray_ground_intersection.hpp"
+#include "drone_pipeline/tracker.hpp"
 
 // HailoRT high-level C++ API
 #include "hailo/hailort.hpp"
@@ -65,10 +66,12 @@ struct VisionConfig
   // When true, use agl_m from the MCU vertical estimate (if mcu_valid) for
   // ground projection instead of the odometry pos_z.
   bool use_mcu_height_estimate{false};
+  double projection_altitude_lpf_alpha{0.35};
+  TrackerConfig tracker;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Detection — one bounding box from inference, with ground projection
+//  Detection — one bounding box from inference
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct Detection
@@ -78,9 +81,6 @@ struct Detection
   float  x_max{};
   float  y_max{};
   float  score{};
-  int    id{0};       // placeholder; tracker will assign real IDs
-  double world_x{};   // ENU East  (m); NaN if projection invalid / no odom
-  double world_y{};   // ENU North (m); NaN if projection invalid / no odom
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,6 +171,7 @@ private:
 
   // ── Ground projector ──────────────────────────────────────────────────────
   std::unique_ptr<GroundProjector> projector_;
+  std::unique_ptr<MultiObjectTracker> tracker_;
 
   // ── Yaw calibration ───────────────────────────────────────────────────────
   double            yaw_offset_{0.0};
@@ -279,15 +280,28 @@ private:
   void workerLoop();
 
   // ── track_results.csv — in-order detection writer ────────────────────────
-  // Hailo callbacks complete out of order (multiple worker threads).
-  // Each completed slot deposits a PendingResult here; a dedicated drain
-  // step (called from the Hailo callback itself under a mutex) writes rows
-  // in sequence-number order.
+  // Hailo callbacks complete out of order (multiple worker threads). Each
+  // completed slot deposits a PendingResult here; the ordered drain performs
+  // projection, covariance estimation, tracking, and confirmed-track CSV
+  // writing in sequence-number order.
   struct PendingResult
   {
     uint64_t               seq;
     uint32_t               stamp_sec;
     uint32_t               stamp_nanosec;
+    double                 pos_x{};
+    double                 pos_y{};
+    double                 pos_z{};
+    double                 quat_x{};
+    double                 quat_y{};
+    double                 quat_z{};
+    double                 quat_w{1.0};
+    double                 ang_vel_x{};
+    double                 ang_vel_y{};
+    double                 ang_vel_z{};
+    bool                   odom_valid{false};
+    float                  agl_m{};
+    bool                   mcu_valid{false};
     std::vector<Detection> detections;
   };
 
@@ -307,11 +321,26 @@ private:
   std::ofstream            track_csv_file_;
   std::vector<std::string> track_csv_buf_;
   rclcpp::TimerBase::SharedPtr track_flush_timer_;
+  bool   has_prev_track_timestamp_{false};
+  double prev_track_timestamp_s_{0.0};
+  bool   has_smoothed_projection_height_{false};
+  double smoothed_projection_height_m_{0.0};
 
   void depositResult(PendingResult && r);   // called from Hailo callback
   void drainResultsLocked();                // called under results_mtx_
   void openTrackCsv(const std::string & path);
   void closeTrackCsv();
+  void resetTrackingStateLocked();
+  double computeAngularVelocityDegPerSecLocked(const PendingResult & result) const;
+  double smoothProjectionHeightLocked(double raw_height_m);
+  std::vector<DetectionMeasurement> buildTrackMeasurementsLocked(
+    const PendingResult & result,
+    double noise_scale);
+  void writeTrackRowsLocked(
+    const PendingResult & result,
+    const std::vector<TrackEstimate> & confirmed_tracks,
+    double noise_scale,
+    double omega_deg_s);
 
   // ── Hailo ─────────────────────────────────────────────────────────────────
   std::unique_ptr<hailort::VDevice>   hailo_vdevice_;
