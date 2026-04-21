@@ -659,7 +659,7 @@ int VisionPipeline::countSlotsInUse() const
   return count;
 }
 
-void VisionPipeline::logTempFrameBufferDebug(const char * reason, bool force) const
+void VisionPipeline::logTempFrameBufferDebug(const char * reason, bool force)
 {
   int mjpeg_idx = kDebugNoSlot;
   int encoder_idx = kDebugNoSlot;
@@ -1318,14 +1318,23 @@ void VisionPipeline::writeTrackRowsLocked(
   if (confirmed_tracks.empty()) {
     std::ostringstream oss;
     oss << result.seq << ','
-        << result.stamp_sec << ',' << result.stamp_nanosec << ','
-        << ",,,,,,,,,,,,";
+        << result.stamp_sec << ',' << result.stamp_nanosec;
+    for (int i = 0; i < 14; ++i) {
+      oss << ',';
+    }
+    oss << ',';
     oss << noise_scale << ',' << omega_deg_s << '\n';
     track_csv_buf_.push_back(oss.str());
     return;
   }
 
   for (const auto & track : confirmed_tracks) {
+    const double raw_world_x = track.matched_in_frame
+      ? track.raw_world_xy[0]
+      : std::numeric_limits<double>::quiet_NaN();
+    const double raw_world_y = track.matched_in_frame
+      ? track.raw_world_xy[1]
+      : std::numeric_limits<double>::quiet_NaN();
     std::ostringstream oss;
     oss << result.seq << ','
         << result.stamp_sec << ',' << result.stamp_nanosec << ','
@@ -1333,6 +1342,7 @@ void VisionPipeline::writeTrackRowsLocked(
         << track.image_box[0] << ',' << track.image_box[1] << ','
         << track.image_box[2] << ',' << track.image_box[3] << ','
         << track.score << ','
+        << raw_world_x << ',' << raw_world_y << ','
         << track.state[0] << ',' << track.state[1] << ','
         << track.state[2] << ',' << track.state[3] << ','
         << track.hits << ',' << track.missed << ','
@@ -1355,6 +1365,7 @@ void VisionPipeline::openTrackCsv(const std::string & path)
     << "track_id,"
     << "x_min,y_min,x_max,y_max,"
     << "score,"
+    << "raw_world_x,raw_world_y,"
     << "world_x,world_y,"
     << "world_vx,world_vy,"
     << "hits,missed,"

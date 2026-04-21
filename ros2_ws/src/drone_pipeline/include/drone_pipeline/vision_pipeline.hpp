@@ -222,7 +222,7 @@ private:
   // Called by each consumer when it finishes.  Frees the slot when all done.
   void releaseSlot(int idx);
   int  countSlotsInUse() const;
-  void logTempFrameBufferDebug(const char * reason, bool force = false) const;
+  void logTempFrameBufferDebug(const char * reason, bool force = false);
 
   // ── MJPEG writer thread ───────────────────────────────────────────────────
   // Consumes: slot.msg->image.data (zero-copy JPEG), slot odom/gps/mcu snapshot.

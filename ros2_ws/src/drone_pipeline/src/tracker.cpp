@@ -180,6 +180,7 @@ std::vector<TrackEstimate> MultiObjectTracker::step(
   double noise_scale)
 {
   for (auto & track : tracks_) {
+    track.matched_in_frame = false;
     predictTrack(track, dt, noise_scale);
   }
 
@@ -376,6 +377,8 @@ void MultiObjectTracker::updateTrack(Track & track, const DetectionMeasurement &
   if (track.hits >= config_.min_hits_to_confirm) {
     track.confirmed = true;
   }
+  track.raw_world_xy = detection.world_xy;
+  track.matched_in_frame = true;
   track.image_box = detection.image_box;
   track.score = detection.score;
 }
@@ -393,6 +396,8 @@ void MultiObjectTracker::spawnTrack(const DetectionMeasurement & detection, doub
   track.age = 1;
   track.hits = 1;
   track.confirmed = (config_.min_hits_to_confirm <= 1);
+  track.raw_world_xy = detection.world_xy;
+  track.matched_in_frame = true;
   track.image_box = detection.image_box;
   track.score = detection.score;
   tracks_.push_back(track);
@@ -439,12 +444,14 @@ std::vector<TrackEstimate> MultiObjectTracker::confirmedTracks() const
     TrackEstimate estimate;
     estimate.track_id = track.track_id;
     estimate.state = track.state;
+    estimate.raw_world_xy = track.raw_world_xy;
     estimate.image_box = track.image_box;
     estimate.score = track.score;
     estimate.age = track.age;
     estimate.hits = track.hits;
     estimate.missed = track.missed;
     estimate.confirmed = track.confirmed;
+    estimate.matched_in_frame = track.matched_in_frame;
     out.push_back(estimate);
   }
 

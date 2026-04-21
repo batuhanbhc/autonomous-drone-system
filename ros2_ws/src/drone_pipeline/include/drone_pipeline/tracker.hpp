@@ -36,12 +36,14 @@ struct TrackEstimate
 {
   int                   track_id{0};
   std::array<double, 4> state{};
+  std::array<double, 2> raw_world_xy{};
   std::array<float, 4>  image_box{};
   double                score{0.0};
   int                   age{0};
   int                   hits{0};
   int                   missed{0};
   bool                  confirmed{false};
+  bool                  matched_in_frame{false};
 };
 
 class MultiObjectTracker
@@ -65,6 +67,8 @@ private:
     int                   hits{0};
     int                   missed{0};
     bool                  confirmed{false};
+    std::array<double, 2> raw_world_xy{};
+    bool                  matched_in_frame{false};
     std::array<float, 4>  image_box{};
     double                score{0.0};
   };
