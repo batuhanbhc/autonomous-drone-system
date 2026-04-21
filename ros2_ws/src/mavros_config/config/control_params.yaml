@@ -52,9 +52,9 @@ vision_pipeline:
     min_hits_to_confirm: 3
     process_noise_std_pos: 1.0
     process_noise_std_vel: 3.0
-    base_meas_noise_m: 0.75
-    pixel_std_x: 2.0
-    pixel_std_y: 4.0
+    base_meas_noise_m: 2.0
+    pixel_std_x: 5.0
+    pixel_std_y: 10.0
     angular_vel_low_deg_s: 5.0
     angular_vel_high_deg_s: 30.0
     angular_vel_max_scale: 12.0
