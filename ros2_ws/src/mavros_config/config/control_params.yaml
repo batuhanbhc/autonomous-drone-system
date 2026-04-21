@@ -17,9 +17,9 @@ flight_params:
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 0.6
-  ki: 0.0001
-  kd: 0.35
+  kp: 0.5
+  ki: 0.0
+  kd: 0.5
   d_lpf_tau_s: 0.1
   output_min: -1.5
   output_max:  1.5
