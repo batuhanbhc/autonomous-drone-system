@@ -34,8 +34,8 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
   topic_output_ = base_ns + topic_output_;
   topic_mcu_    = base_ns + topic_mcu_;
 
-  RCLCPP_INFO(get_logger(), "PID gains — kp=%.3f  ki=%.3f  kd=%.3f", kp_, ki_, kd_);
-  RCLCPP_INFO(get_logger(), "D-term vz LPF tau: %.3f s", d_lpf_tau_s_);
+  RCLCPP_INFO(get_logger(), "PID gains — kp=%.5f  ki=%.5f  kd=%.5f", kp_, ki_, kd_);
+  RCLCPP_INFO(get_logger(), "D-term vz LPF tau: %.5f s", d_lpf_tau_s_);
   RCLCPP_INFO(get_logger(), "Output clamp  [%.2f, %.2f] m/s", output_min_, output_max_);
   RCLCPP_INFO(get_logger(), "Integral clamp[%.2f, %.2f]",      integral_min_, integral_max_);
   RCLCPP_INFO(get_logger(), "Subscribing  cmd    : %s", topic_cmd_.c_str());
@@ -125,7 +125,7 @@ bool AltitudeControllerNode::loadConfig()
     try {
       field = ac[key].as<float>();
     } catch (const YAML::Exception& e) {
-      RCLCPP_WARN(get_logger(), "YAML altitude_controller.%s missing, using default %.3f — %s",
+      RCLCPP_WARN(get_logger(), "YAML altitude_controller.%s missing, using default %.5f — %s",
                   key, field, e.what());
     }
   };
@@ -348,7 +348,7 @@ void AltitudeControllerNode::onSetPidGains(
   res->message = "Gains updated.";
 
   RCLCPP_INFO(get_logger(),
-    "[alt_ctrl_pid] Gains  kp: %.4f→%.4f  ki: %.4f→%.4f  kd: %.4f→%.4f%s",
+    "[alt_ctrl_pid] Gains  kp: %.5f→%.5f  ki: %.5f→%.5f  kd: %.5f→%.5f%s",
     old_kp, kp_change ? req->kp : old_kp,
     old_ki, ki_change ? req->ki : old_ki,
     old_kd, kd_change ? req->kd : old_kd,
