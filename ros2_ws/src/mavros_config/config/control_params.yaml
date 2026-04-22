@@ -31,7 +31,7 @@ camera:
   width: 640
   height: 480
   fps: 30
-  camera_mount_angle: 5.0     # degrees, positive downwards
+  camera_mount_angle: 11.5     # degrees, positive downwards
   use_gimbal: true            # true if camera is mounted on gimbal: roll and pitch values do not change
   reverse_mounted: false      # whether the camera is mounted in reverse orientation (upside down)
   
@@ -54,7 +54,7 @@ vision_pipeline:
     process_noise_std_vel: 3.0
     base_meas_noise_m: 2.0
     pixel_std_x: 5.0
-    pixel_std_y: 10.0
+    pixel_std_y: 20.0
     angular_vel_low_deg_s: 5.0
     angular_vel_high_deg_s: 30.0
     angular_vel_max_scale: 12.0
