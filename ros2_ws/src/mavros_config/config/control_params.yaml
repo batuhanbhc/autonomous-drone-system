@@ -43,23 +43,28 @@ vision_pipeline:
   obj_det_person_class_idx: 0     # person class index
 
   use_mcu_height_estimate: true
-  projection_altitude_lpf_alpha: 0.75  # current-height weight; 1.0 disables smoothing
+  projection_altitude_lpf_alpha: 0.3  # current-height weight; 1.0 disables smoothing
 
   tracker:
     max_association_distance_m: 5.0
     mahalanobis_gate: 16.0
-    max_missed_frames: 10
-    min_hits_to_confirm: 3
-    process_noise_std_pos: 1.0
-    process_noise_std_vel: 3.0
+    max_missed_frames: 20
+    min_hits_to_confirm: 6
+    process_noise_std_pos: 0.75
+    process_noise_std_vel: 2.0
     base_meas_noise_m: 2.0
     pixel_std_x: 5.0
-    pixel_std_y: 20.0
+    pixel_std_y: 15.0
+    height_ratio_normal_threshold: 0.8
+    height_ratio_suspicious_threshold: 0.2
+    height_ratio_r_inflation: 9.0
+    trusted_height_ema_alpha: 0.5
+    min_valid_box_height_px: 10.0
     angular_vel_low_deg_s: 5.0
     angular_vel_high_deg_s: 30.0
-    angular_vel_max_scale: 12.0
+    angular_vel_max_scale: 15.0
     new_track_min_dist_calm_m: 0.5
-    new_track_min_dist_noisy_m: 2.0
+    new_track_min_dist_noisy_m: 1.0
   
   camera_intrinsics:
     fx: 628.5174089378104

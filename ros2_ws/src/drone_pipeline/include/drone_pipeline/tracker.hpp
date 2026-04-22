@@ -17,6 +17,11 @@ struct TrackerConfig
   double base_meas_noise_m{0.75};
   double pixel_std_x{2.0};
   double pixel_std_y{4.0};
+  double height_ratio_normal_threshold{0.8};
+  double height_ratio_suspicious_threshold{0.2};
+  double height_ratio_r_inflation{9.0};
+  double trusted_height_ema_alpha{0.5};
+  double min_valid_box_height_px{10.0};
   double angular_vel_low_deg_s{5.0};
   double angular_vel_high_deg_s{30.0};
   double angular_vel_max_scale{12.0};
@@ -71,20 +76,27 @@ private:
     bool                  matched_in_frame{false};
     std::array<float, 4>  image_box{};
     double                score{0.0};
+    double                trusted_height_px{0.0};
+    bool                  has_trusted_height{false};
   };
 
   TrackerConfig config_;
   std::vector<Track> tracks_;
   int next_id_{1};
 
-  void predictTrack(Track & track, double dt, double noise_scale) const;
+  void predictTrack(Track & track, double dt) const;
   double mahalanobisDistance(
     const Track & track,
-    const DetectionMeasurement & detection) const;
+    const DetectionMeasurement & detection,
+    const std::array<double, 4> & measurement_covariance) const;
   double euclideanDistance(
     const Track & track,
     const DetectionMeasurement & detection) const;
-  void updateTrack(Track & track, const DetectionMeasurement & detection) const;
+  void updateTrack(
+    Track & track,
+    const DetectionMeasurement & detection,
+    const std::array<double, 4> & measurement_covariance,
+    bool update_trusted_height) const;
   void spawnTrack(const DetectionMeasurement & detection, double min_dist);
   bool nearConfirmedTrack(const std::array<double, 2> & world_xy, double min_dist) const;
   void pruneTracks();

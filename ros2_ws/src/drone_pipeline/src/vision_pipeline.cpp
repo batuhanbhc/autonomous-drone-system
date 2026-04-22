@@ -181,6 +181,16 @@ VisionConfig VisionPipeline::loadConfig()
       tracker, "pixel_std_x", cfg.tracker.pixel_std_x);
     cfg.tracker.pixel_std_y = yamlOr<double>(
       tracker, "pixel_std_y", cfg.tracker.pixel_std_y);
+    cfg.tracker.height_ratio_normal_threshold = yamlOr<double>(
+      tracker, "height_ratio_normal_threshold", cfg.tracker.height_ratio_normal_threshold);
+    cfg.tracker.height_ratio_suspicious_threshold = yamlOr<double>(
+      tracker, "height_ratio_suspicious_threshold", cfg.tracker.height_ratio_suspicious_threshold);
+    cfg.tracker.height_ratio_r_inflation = yamlOr<double>(
+      tracker, "height_ratio_r_inflation", cfg.tracker.height_ratio_r_inflation);
+    cfg.tracker.trusted_height_ema_alpha = yamlOr<double>(
+      tracker, "trusted_height_ema_alpha", cfg.tracker.trusted_height_ema_alpha);
+    cfg.tracker.min_valid_box_height_px = yamlOr<double>(
+      tracker, "min_valid_box_height_px", cfg.tracker.min_valid_box_height_px);
     cfg.tracker.angular_vel_low_deg_s = yamlOr<double>(
       tracker, "angular_vel_low_deg_s", cfg.tracker.angular_vel_low_deg_s);
     cfg.tracker.angular_vel_high_deg_s = yamlOr<double>(
@@ -217,7 +227,9 @@ VisionConfig VisionPipeline::loadConfig()
 
   RCLCPP_INFO(get_logger(),
     "Tracker → assoc=%.2fm  maha=%.2f  missed=%d  hits=%d  "
-    "proc=(%.2f,%.2f)  meas=%.2f  pixel_std=(%.2f,%.2f)  omega_deg_s=(%.2f,%.2f)->x%.2f",
+    "proc=(%.2f,%.2f)  meas=%.2f  pixel_std=(%.2f,%.2f)  "
+    "height_ratio=(%.2f,%.2f)x%.2f  trusted_height=(alpha=%.2f,min_px=%.2f)  "
+    "omega_deg_s=(%.2f,%.2f)->x%.2f",
     cfg.tracker.max_association_distance_m,
     cfg.tracker.mahalanobis_gate,
     cfg.tracker.max_missed_frames,
@@ -227,6 +239,11 @@ VisionConfig VisionPipeline::loadConfig()
     cfg.tracker.base_meas_noise_m,
     cfg.tracker.pixel_std_x,
     cfg.tracker.pixel_std_y,
+    cfg.tracker.height_ratio_normal_threshold,
+    cfg.tracker.height_ratio_suspicious_threshold,
+    cfg.tracker.height_ratio_r_inflation,
+    cfg.tracker.trusted_height_ema_alpha,
+    cfg.tracker.min_valid_box_height_px,
     cfg.tracker.angular_vel_low_deg_s,
     cfg.tracker.angular_vel_high_deg_s,
     cfg.tracker.angular_vel_max_scale);

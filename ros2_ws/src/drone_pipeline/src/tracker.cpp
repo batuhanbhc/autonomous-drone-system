@@ -13,6 +13,13 @@ namespace
 constexpr double kInvalidAssignmentCost = 1e6;
 constexpr double kAcceptedAssignmentCost = 1e5;
 
+enum class HeightRatioAction
+{
+  kNormal,
+  kSuspicious,
+  kReject
+};
+
 std::array<double, 16> makeIdentity4()
 {
   return {1.0, 0.0, 0.0, 0.0,
@@ -66,6 +73,11 @@ std::array<double, 16> add4(
     out[i] = a[i] + b[i];
   }
   return out;
+}
+
+double boxHeight(const std::array<float, 4> & box)
+{
+  return std::max(0.0, static_cast<double>(box[3] - box[1]));
 }
 
 std::array<double, 4> invert2x2(const std::array<double, 4> & a, bool & ok)
@@ -181,7 +193,7 @@ std::vector<TrackEstimate> MultiObjectTracker::step(
 {
   for (auto & track : tracks_) {
     track.matched_in_frame = false;
-    predictTrack(track, dt, noise_scale);
+    predictTrack(track, dt);
   }
 
   const double duplicate_track_min_dist =
@@ -205,11 +217,44 @@ std::vector<TrackEstimate> MultiObjectTracker::step(
 
   std::vector<std::vector<double>> cost(
     tracks_.size(), std::vector<double>(detections.size(), kInvalidAssignmentCost));
+  std::vector<std::vector<HeightRatioAction>> pair_actions(
+    tracks_.size(), std::vector<HeightRatioAction>(detections.size(), HeightRatioAction::kReject));
+  std::vector<std::vector<std::array<double, 4>>> pair_covariances(
+    tracks_.size(), std::vector<std::array<double, 4>>(detections.size()));
 
   for (std::size_t track_idx = 0; track_idx < tracks_.size(); ++track_idx) {
     for (std::size_t det_idx = 0; det_idx < detections.size(); ++det_idx) {
-      const double md = mahalanobisDistance(tracks_[track_idx], detections[det_idx]);
-      const double ed = euclideanDistance(tracks_[track_idx], detections[det_idx]);
+      const auto & detection = detections[det_idx];
+      auto measurement_covariance = detection.meas_cov;
+      HeightRatioAction action = HeightRatioAction::kNormal;
+
+      const double detection_height = boxHeight(detection.image_box);
+      if (
+        detection_height >= config_.min_valid_box_height_px &&
+        tracks_[track_idx].has_trusted_height &&
+        tracks_[track_idx].trusted_height_px >= config_.min_valid_box_height_px)
+      {
+        const double ratio =
+          detection_height / std::max(tracks_[track_idx].trusted_height_px, 1e-6);
+        if (ratio < config_.height_ratio_suspicious_threshold) {
+          action = HeightRatioAction::kReject;
+        } else if (ratio < config_.height_ratio_normal_threshold) {
+          action = HeightRatioAction::kSuspicious;
+          for (double & value : measurement_covariance) {
+            value *= config_.height_ratio_r_inflation;
+          }
+        }
+      }
+
+      pair_actions[track_idx][det_idx] = action;
+      pair_covariances[track_idx][det_idx] = measurement_covariance;
+      if (action == HeightRatioAction::kReject) {
+        continue;
+      }
+
+      const double md = mahalanobisDistance(
+        tracks_[track_idx], detection, measurement_covariance);
+      const double ed = euclideanDistance(tracks_[track_idx], detection);
       if (md <= config_.mahalanobis_gate && ed <= config_.max_association_distance_m) {
         cost[track_idx][det_idx] = md;
       }
@@ -229,7 +274,11 @@ std::vector<TrackEstimate> MultiObjectTracker::step(
       continue;
     }
 
-    updateTrack(tracks_[track_idx], detections[det_idx]);
+    updateTrack(
+      tracks_[track_idx],
+      detections[det_idx],
+      pair_covariances[track_idx][det_idx],
+      pair_actions[track_idx][det_idx] == HeightRatioAction::kNormal);
     matched_tracks[track_idx] = true;
     matched_detections[det_idx] = true;
   }
@@ -250,7 +299,7 @@ std::vector<TrackEstimate> MultiObjectTracker::step(
   return confirmedTracks();
 }
 
-void MultiObjectTracker::predictTrack(Track & track, double dt, double noise_scale) const
+void MultiObjectTracker::predictTrack(Track & track, double dt) const
 {
   track.state[0] += dt * track.state[2];
   track.state[1] += dt * track.state[3];
@@ -262,8 +311,8 @@ void MultiObjectTracker::predictTrack(Track & track, double dt, double noise_sca
     0.0, 0.0, 0.0, 1.0
   };
 
-  const double q_pos = config_.process_noise_std_pos * config_.process_noise_std_pos * noise_scale;
-  const double q_vel = config_.process_noise_std_vel * config_.process_noise_std_vel * noise_scale;
+  const double q_pos = config_.process_noise_std_pos * config_.process_noise_std_pos;
+  const double q_vel = config_.process_noise_std_vel * config_.process_noise_std_vel;
   const std::array<double, 16> q = makeDiagonal4(
     q_pos * dt * dt,
     q_pos * dt * dt,
@@ -277,16 +326,17 @@ void MultiObjectTracker::predictTrack(Track & track, double dt, double noise_sca
 
 double MultiObjectTracker::mahalanobisDistance(
   const Track & track,
-  const DetectionMeasurement & detection) const
+  const DetectionMeasurement & detection,
+  const std::array<double, 4> & measurement_covariance) const
 {
   const double y0 = detection.world_xy[0] - track.state[0];
   const double y1 = detection.world_xy[1] - track.state[1];
 
   std::array<double, 4> s = {
-    track.covariance[0] + detection.meas_cov[0],
-    track.covariance[1] + detection.meas_cov[1],
-    track.covariance[4] + detection.meas_cov[2],
-    track.covariance[5] + detection.meas_cov[3]
+    track.covariance[0] + measurement_covariance[0],
+    track.covariance[1] + measurement_covariance[1],
+    track.covariance[4] + measurement_covariance[2],
+    track.covariance[5] + measurement_covariance[3]
   };
 
   bool ok = false;
@@ -309,16 +359,20 @@ double MultiObjectTracker::euclideanDistance(
   return std::sqrt(dx * dx + dy * dy);
 }
 
-void MultiObjectTracker::updateTrack(Track & track, const DetectionMeasurement & detection) const
+void MultiObjectTracker::updateTrack(
+  Track & track,
+  const DetectionMeasurement & detection,
+  const std::array<double, 4> & measurement_covariance,
+  bool update_trusted_height) const
 {
   const double y0 = detection.world_xy[0] - track.state[0];
   const double y1 = detection.world_xy[1] - track.state[1];
 
   std::array<double, 4> s = {
-    track.covariance[0] + detection.meas_cov[0],
-    track.covariance[1] + detection.meas_cov[1],
-    track.covariance[4] + detection.meas_cov[2],
-    track.covariance[5] + detection.meas_cov[3]
+    track.covariance[0] + measurement_covariance[0],
+    track.covariance[1] + measurement_covariance[1],
+    track.covariance[4] + measurement_covariance[2],
+    track.covariance[5] + measurement_covariance[3]
   };
 
   bool ok = false;
@@ -354,9 +408,9 @@ void MultiObjectTracker::updateTrack(Track & track, const DetectionMeasurement &
   std::array<double, 8> kr{};
   for (int row = 0; row < 4; ++row) {
     kr[row * 2 + 0] =
-      k[row * 2 + 0] * detection.meas_cov[0] + k[row * 2 + 1] * detection.meas_cov[2];
+      k[row * 2 + 0] * measurement_covariance[0] + k[row * 2 + 1] * measurement_covariance[2];
     kr[row * 2 + 1] =
-      k[row * 2 + 0] * detection.meas_cov[1] + k[row * 2 + 1] * detection.meas_cov[3];
+      k[row * 2 + 0] * measurement_covariance[1] + k[row * 2 + 1] * measurement_covariance[3];
   }
 
   std::array<double, 16> krkt{};
@@ -381,6 +435,18 @@ void MultiObjectTracker::updateTrack(Track & track, const DetectionMeasurement &
   track.matched_in_frame = true;
   track.image_box = detection.image_box;
   track.score = detection.score;
+
+  const double detection_height = boxHeight(detection.image_box);
+  if (update_trusted_height && detection_height >= config_.min_valid_box_height_px) {
+    if (!track.has_trusted_height) {
+      track.trusted_height_px = detection_height;
+      track.has_trusted_height = true;
+    } else {
+      const double alpha = config_.trusted_height_ema_alpha;
+      track.trusted_height_px =
+        (1.0 - alpha) * track.trusted_height_px + alpha * detection_height;
+    }
+  }
 }
 
 void MultiObjectTracker::spawnTrack(const DetectionMeasurement & detection, double min_dist)
@@ -400,6 +466,11 @@ void MultiObjectTracker::spawnTrack(const DetectionMeasurement & detection, doub
   track.matched_in_frame = true;
   track.image_box = detection.image_box;
   track.score = detection.score;
+  const double detection_height = boxHeight(detection.image_box);
+  if (detection_height >= config_.min_valid_box_height_px) {
+    track.trusted_height_px = detection_height;
+    track.has_trusted_height = true;
+  }
   tracks_.push_back(track);
 }
 
