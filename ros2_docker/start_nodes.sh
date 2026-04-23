@@ -26,7 +26,7 @@ ros2 run mavros mavros_node \
   -r /tf:=tf -r /tf_static:=tf_static \
   -r /uas1/mavlink_source:=mavlink_source \
   -r /uas1/mavlink_sink:=mavlink_sink \
-  -p fcu_url:=/dev/ttyAMA0:115200 \
+  -p fcu_url:=/dev/ttyAMA0:460800 \
   --param system_id:=255 \
   >> "$LOG_DIR/mavros.log" 2>&1 &
 MAVROS_PID=$!
