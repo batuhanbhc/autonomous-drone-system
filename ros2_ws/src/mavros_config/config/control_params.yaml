@@ -64,7 +64,7 @@ vision_pipeline:
     angular_vel_high_deg_s: 30.0
     angular_vel_max_scale: 15.0
     new_track_min_dist_calm_m: 0.5
-    new_track_min_dist_noisy_m: 1.0
+    new_track_min_dist_noisy_m: 1.5
   
   camera_intrinsics:
     fx: 628.5174089378104
