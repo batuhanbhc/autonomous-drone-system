@@ -29,6 +29,7 @@ services:
       - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/start_nodes.sh
       - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
       - /home/batuhan/drone-project/ros2_docker/person_detector.hef:/person_detector.hef
+      - /home/batuhan/drone-project/ros2_docker/yolov11s.hef:/yolov11s.hef
       - /usr/share/hailo-models:/usr/share/hailo-models
       - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
 
