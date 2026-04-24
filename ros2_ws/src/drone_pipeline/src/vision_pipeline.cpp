@@ -42,6 +42,27 @@ int clampPixelCoord(int value, int limit)
   return std::max(0, std::min(limit - 1, value));
 }
 
+StreamCodec resolveStreamCodec(
+  rclcpp::Node & node,
+  const YAML::Node & root,
+  const std::string & param_override)
+{
+  const std::string configured_codec =
+    root["streaming"] && root["streaming"]["codec"] ?
+    root["streaming"]["codec"].as<std::string>() : "mjpeg";
+  const std::string requested_codec =
+    param_override.empty() ? configured_codec : param_override;
+
+  StreamCodec codec = StreamCodec::kMjpeg;
+  if (!parseStreamCodec(requested_codec, codec)) {
+    RCLCPP_WARN(node.get_logger(),
+      "Unknown stream codec '%s'; falling back to 'mjpeg'",
+      requested_codec.c_str());
+    codec = StreamCodec::kMjpeg;
+  }
+  return codec;
+}
+
 std::array<double, 4> estimateMeasurementCovariance(
   GroundProjector & projector,
   int u,
@@ -156,6 +177,8 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.k3 = dist["k3"].as<double>();
 
   cfg.logs_path = root["flight_params"]["logs_path"].as<std::string>();
+  cfg.stream_codec = resolveStreamCodec(
+    *this, root, get_parameter("stream_codec").as_string());
 
   cfg.use_mcu_height_estimate = yamlOr<bool>(vp, "use_mcu_height_estimate", false);
   cfg.projection_altitude_lpf_alpha =
@@ -204,10 +227,11 @@ VisionConfig VisionPipeline::loadConfig()
   }
 
   RCLCPP_INFO(get_logger(),
-    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  hef=%s  "
+    "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  stream_codec=%s  hef=%s  "
     "score_thresh=%.2f  model_input=%d  person_class=%d  use_mcu_height=%s  alt_lpf=%.2f",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
+    streamCodecName(cfg.stream_codec),
     cfg.hef_path.c_str(), cfg.score_threshold,
     cfg.model_input_size, cfg.person_class_idx,
     cfg.use_mcu_height_estimate ? "true" : "false",
@@ -375,7 +399,9 @@ void VisionPipeline::runYawCalibration()
 VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 : Node("vision_pipeline", options)
 {
-  config_           = loadConfig();
+  declare_parameter<std::string>("stream_codec", "");
+  config_ = loadConfig();
+  h264_streaming_enabled_ = config_.stream_codec == StreamCodec::kH264;
   mount_angle_rad_ = config_.camera_mount_angle * M_PI / 180.0;
 
   // ── De-letterbox constants ────────────────────────────────────────────────
@@ -426,6 +452,8 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 
   // ── ROS interfaces ────────────────────────────────────────────────────────
   const auto sensor_qos   = rclcpp::SensorDataQoS();
+  const auto stream_qos =
+    rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
   const std::string dp    = "/drone_" + std::to_string(config_.drone_id);
 
@@ -433,15 +461,21 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
     config_.frames_topic, sensor_qos,
     [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); });
 
-  stream_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
-    dp + "/camera/stream/cmd", reliable_qos,
-    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); });
+  if (h264_streaming_enabled_) {
+    stream_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
+      dp + "/camera/stream/cmd", reliable_qos,
+      [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); });
 
-  stream_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
-    dp + "/camera/stream/active", reliable_qos);
+    stream_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
+      dp + "/camera/stream/active", reliable_qos);
 
-  stream_out_pub_ = create_publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>(
-    dp + "/camera/stream/out", sensor_qos);
+    stream_out_pub_ = create_publisher<ffmpeg_image_transport_msgs::msg::FFMPEGPacket>(
+      dp + "/camera/stream/out", stream_qos);
+  } else {
+    RCLCPP_INFO(get_logger(),
+      "H264 stream path disabled; selected stream codec is '%s'",
+      streamCodecName(config_.stream_codec));
+  }
 
   record_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
     dp + "/camera/record/cmd", reliable_qos,
@@ -450,7 +484,9 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   record_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     dp + "/camera/record/active", reliable_qos);
 
-  publishStreamState();
+  if (h264_streaming_enabled_) {
+    publishStreamState();
+  }
   publishRecordState();
 
   // ── Periodic flush timer for recording data CSV ───────────────────────────
@@ -489,8 +525,10 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   mjpeg_thread_ = std::thread(&VisionPipeline::mjpegLoop, this);
 
   // H264 encoder (for streaming)
-  encoder_running_.store(true);
-  encoder_thread_ = std::thread(&VisionPipeline::encoderLoop, this);
+  if (h264_streaming_enabled_) {
+    encoder_running_.store(true);
+    encoder_thread_ = std::thread(&VisionPipeline::encoderLoop, this);
+  }
 
   // Hailo workers
   workers_running_.store(true);
@@ -516,12 +554,14 @@ VisionPipeline::~VisionPipeline()
   hailo_vdevice_.reset();
 
   // ── Stop encoder thread ───────────────────────────────────────────────────
-  encoder_running_.store(false);
-  encoder_queue_cv_.notify_all();
-  if (encoder_thread_.joinable()) encoder_thread_.join();
-  {
-    std::lock_guard<std::mutex> lk(encoder_open_mtx_);
-    if (h264_encoder_.isOpen()) h264_encoder_.close();
+  if (h264_streaming_enabled_) {
+    encoder_running_.store(false);
+    encoder_queue_cv_.notify_all();
+    if (encoder_thread_.joinable()) encoder_thread_.join();
+    {
+      std::lock_guard<std::mutex> lk(encoder_open_mtx_);
+      if (h264_encoder_.isOpen()) h264_encoder_.close();
+    }
   }
 
   // ── Stop MJPEG writer thread ──────────────────────────────────────────────
@@ -546,7 +586,7 @@ VisionPipeline::~VisionPipeline()
 //  Slot management
 // ─────────────────────────────────────────────────────────────────────────────
 
-int VisionPipeline::acquireSlot()
+int VisionPipeline::acquireSlot(int consumers)
 {
   for (int i = 0; i < kNumSlots; ++i) {
     bool expected = false;
@@ -555,7 +595,7 @@ int VisionPipeline::acquireSlot()
           std::memory_order_acquire,
           std::memory_order_relaxed))
     {
-      buffer_[i].consumers_remaining.store(3, std::memory_order_release);
+      buffer_[i].consumers_remaining.store(consumers, std::memory_order_release);
       buffer_[i].seq = next_seq_.fetch_add(1, std::memory_order_relaxed);
       return i;
     }
@@ -585,7 +625,9 @@ void VisionPipeline::releaseSlot(int idx)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg) {
-  const int idx = acquireSlot();
+  const bool enqueue_encoder =
+    h264_streaming_enabled_ && streaming_.load(std::memory_order_relaxed);
+  const int idx = acquireSlot(enqueue_encoder ? 3 : 2);
   if (idx == -1) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
       "Frame buffer full — dropping frame");
@@ -628,18 +670,28 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
 
   slot.detections.clear();
 
-  // ── Dispatch to all three consumer queues ─────────────────────────────────
+  // ── Dispatch to active consumer queues ────────────────────────────────────
   {
     std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
     mjpeg_queue_.push({idx});
   }
   mjpeg_queue_cv_.notify_one();
 
-  {
-    std::lock_guard<std::mutex> lk(encoder_queue_mtx_);
-    encoder_queue_.push({idx});
+  if (enqueue_encoder) {
+    int dropped_idx = -1;
+    {
+      std::lock_guard<std::mutex> lk(encoder_queue_mtx_);
+      if (!encoder_queue_.empty()) {
+        dropped_idx = encoder_queue_.front().idx;
+        encoder_queue_.pop();
+      }
+      encoder_queue_.push({idx});
+    }
+    if (dropped_idx != -1) {
+      releaseSlot(dropped_idx);
+    }
+    encoder_queue_cv_.notify_one();
   }
-  encoder_queue_cv_.notify_one();
 
   {
     std::lock_guard<std::mutex> lk(worker_queue_mtx_);
@@ -1316,6 +1368,13 @@ void VisionPipeline::drainResultsLocked()
 
 void VisionPipeline::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr /*msg*/)
 {
+  if (!h264_streaming_enabled_) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "Ignoring stream toggle because selected stream codec is '%s'",
+      streamCodecName(config_.stream_codec));
+    return;
+  }
+
   const bool was_streaming = streaming_.load();
 
   if (!was_streaming) {
@@ -1340,6 +1399,10 @@ void VisionPipeline::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr 
 
 void VisionPipeline::publishStreamState()
 {
+  if (!stream_state_pub_) {
+    return;
+  }
+
   drone_msgs::msg::Toggle msg;
   msg.state = streaming_.load();
   stream_state_pub_->publish(msg);

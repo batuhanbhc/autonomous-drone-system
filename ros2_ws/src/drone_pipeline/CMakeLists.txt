@@ -46,6 +46,7 @@ message(STATUS "HailoRT: ${HAILORT_LIBRARY}  includes: ${HAILORT_INCLUDE_DIR}")
 add_library(drone_pipeline_components SHARED
   src/camera_capture_node.cpp
   src/mjpeg_writer.cpp
+  src/mjpeg_streamer.cpp
   src/h264_encoder.cpp
   src/tracker.cpp
   src/vision_pipeline.cpp
@@ -87,6 +88,10 @@ rclcpp_components_register_node(drone_pipeline_components
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::VisionPipeline"
   EXECUTABLE vision_pipeline_node
+)
+rclcpp_components_register_node(drone_pipeline_components
+  PLUGIN "drone_pipeline::MjpegStreamer"
+  EXECUTABLE mjpeg_streamer_node
 )
 
 # ── flight_logger — built but not launched (disabled per current config) ──────

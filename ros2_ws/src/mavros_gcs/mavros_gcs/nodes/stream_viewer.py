@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import cv2
 import av
+import numpy as np
 from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
 
 
@@ -13,19 +14,22 @@ class StreamViewer(Node):
         super().__init__('stream_viewer')
 
         self.declare_parameter('drone_id', 0)
-        self.declare_parameter('rotate', False)                      
-        self._rotate = bool(self.get_parameter('rotate').value)      
+        self.declare_parameter('rotate', False)
+        self.declare_parameter('stream_codec', 'mjpeg')
+        self._rotate = bool(self.get_parameter('rotate').value)
         drone_id = int(self.get_parameter('drone_id').value)
+        self._codec_name = str(self.get_parameter('stream_codec').value).strip().lower() or 'mjpeg'
 
-        self.codec        = av.CodecContext.create('h264', 'r')
-        self.lock         = threading.Lock()
+        self.codec = None
+        self._set_codec(self._codec_name)
+        self.lock = threading.Lock()
         self.latest       = None
         self.got_keyframe = False
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,
         )
 
         topic = f'/drone_{drone_id}/camera/stream/out'
@@ -38,21 +42,47 @@ class StreamViewer(Node):
             target=self._gui_loop, daemon=True)
         self._gui_thread.start()
 
+    def _set_codec(self, codec_name: str):
+        codec_name = codec_name.lower()
+        self._codec_name = codec_name
+        self.got_keyframe = False
+        self.codec = av.CodecContext.create('h264', 'r') if codec_name == 'h264' else None
+        self.get_logger().info(f'Stream viewer codec set to {codec_name}')
+
     def callback(self, msg: FFMPEGPacket):
-        if not self.got_keyframe:
-            if not (msg.flags & 1):
-                return
-            self.got_keyframe = True
+        msg_codec = (msg.encoding or self._codec_name).lower()
+        if msg_codec not in ('h264', 'mjpeg', 'jpeg'):
+            self.get_logger().warn(f'unsupported stream encoding: {msg.encoding}')
+            return
+        if msg_codec == 'jpeg':
+            msg_codec = 'mjpeg'
+        if msg_codec != self._codec_name:
+            self._set_codec(msg_codec)
+
         try:
-            pkt = av.Packet(bytes(msg.data))
-            pkt.pts = msg.pts
-            pkt.dts = msg.pts
-            for f in self.codec.decode(pkt):
-                bgr = f.reformat(format='bgr24').to_ndarray()
+            if self._codec_name == 'h264':
+                if not self.got_keyframe:
+                    if not (msg.flags & 1):
+                        return
+                    self.got_keyframe = True
+
+                pkt = av.Packet(bytes(msg.data))
+                pkt.pts = msg.pts
+                pkt.dts = msg.pts
+                for f in self.codec.decode(pkt):
+                    bgr = f.reformat(format='bgr24').to_ndarray()
+                    if self._rotate:
+                        bgr = cv2.rotate(bgr, cv2.ROTATE_180)
+                    with self.lock:
+                        self.latest = bgr
+            else:
+                frame = cv2.imdecode(np.frombuffer(bytes(msg.data), dtype=np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    return
                 if self._rotate:
-                    bgr = cv2.rotate(bgr, cv2.ROTATE_180)
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
                 with self.lock:
-                    self.latest = bgr
+                    self.latest = frame
         except Exception as e:
             self.get_logger().warn(f'decode error: {e}')
 

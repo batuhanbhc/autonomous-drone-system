@@ -1,8 +1,17 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 
 def generate_launch_description():
+    stream_codec_arg = DeclareLaunchArgument(
+        "stream_codec",
+        default_value="",
+        description="Stream codec override: 'mjpeg' or 'h264'. Empty string uses mavros_config.",
+    )
+    stream_codec = LaunchConfiguration("stream_codec")
+
     container = ComposableNodeContainer(
         name="drone_pipeline_container",
         namespace="",
@@ -19,6 +28,14 @@ def generate_launch_description():
                 package="drone_pipeline",
                 plugin="drone_pipeline::VisionPipeline",
                 name="vision_pipeline",
+                parameters=[{"stream_codec": stream_codec}],
+                extra_arguments=[{"use_intra_process_comms": True}],
+            ),
+            ComposableNode(
+                package="drone_pipeline",
+                plugin="drone_pipeline::MjpegStreamer",
+                name="mjpeg_streamer",
+                parameters=[{"stream_codec": stream_codec}],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
         ],
@@ -38,4 +55,4 @@ def generate_launch_description():
     #     emulate_tty=True,
     # )
 
-    return LaunchDescription([container])
+    return LaunchDescription([stream_codec_arg, container])

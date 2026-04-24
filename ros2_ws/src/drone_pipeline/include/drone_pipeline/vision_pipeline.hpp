@@ -25,6 +25,7 @@ extern "C" {
 #include "drone_pipeline/h264_encoder.hpp"
 #include "drone_pipeline/mjpeg_writer.hpp"
 #include "drone_pipeline/ray_ground_intersection.hpp"
+#include "drone_pipeline/stream_codec.hpp"
 #include "drone_pipeline/tracker.hpp"
 
 // HailoRT high-level C++ API
@@ -68,6 +69,7 @@ struct VisionConfig
   bool use_mcu_height_estimate{false};
   double projection_altitude_lpf_alpha{0.35};
   TrackerConfig tracker;
+  StreamCodec  stream_codec{StreamCodec::kMjpeg};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,8 +88,8 @@ struct Detection
 // ─────────────────────────────────────────────────────────────────────────────
 //  Frame slot
 //
-//  Lifecycle: FREE → acquired by frameCallback → dispatched to three
-//  independent consumers (MJPEG writer, H264 encoder, Hailo workers).
+//  Lifecycle: FREE → acquired by frameCallback → dispatched to active
+//  consumers (MJPEG writer, optional H264 encoder, Hailo workers).
 //  Each consumer atomically decrements consumers_remaining_.  Whoever
 //  decrements to zero sets the slot back to FREE.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +98,7 @@ struct FrameSlot
 {
   // ── Pixel data ───────────────────────────────────────────────────────────
   // Zero-copy reference to the intra-process message from CameraCapture.
-  // All three consumers (MJPEG writer, encoder, worker) read image.data from
+  // All active consumers (MJPEG writer, encoder, worker) read image.data from
   // here.  Cleared in releaseSlot() when consumers_remaining hits 0.
   drone_msgs::msg::FrameData::ConstSharedPtr msg;
 
@@ -133,8 +135,9 @@ struct FrameSlot
   uint64_t seq{0};
 
   // ── Slot lifecycle ───────────────────────────────────────────────────────
-  // Set to 3 at acquire time (MJPEG writer + H264 encoder + Hailo worker).
-  // Each consumer decrements; whoever hits 0 sets in_use to false.
+  // Set to 2 or 3 at acquire time depending on whether H264 streaming is
+  // active for that frame. Each consumer decrements; whoever hits 0 sets
+  // in_use to false.
   std::atomic<int>  consumers_remaining{0};
   std::atomic<bool> in_use{false};
 };
@@ -203,6 +206,7 @@ private:
   // Recording
   rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr     record_cmd_sub_;
   rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr        record_state_pub_;
+  bool                                                         h264_streaming_enabled_{false};
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg);
@@ -218,7 +222,7 @@ private:
   // thread_local handle (defined in vision_pipeline.cpp).
 
   // Returns slot index, or -1 if all slots are in use.
-  int  acquireSlot();
+  int  acquireSlot(int consumers);
   // Called by each consumer when it finishes.  Frees the slot when all done.
   void releaseSlot(int idx);
 
@@ -248,7 +252,8 @@ private:
 
   // ── H264 encoder thread ───────────────────────────────────────────────────
   // Consumes: slot.msg JPEG bytes → tjDecompressToYUVPlanes → libx264.
-  // Publishes FFMPEGPacket if streaming_ is on; discards immediately if off.
+  // Publishes FFMPEGPacket if streaming_ is on. The pending queue is capped
+  // so old frames are dropped instead of accumulating stream latency.
   struct EncoderTask { int idx; };
 
   std::queue<EncoderTask>  encoder_queue_;

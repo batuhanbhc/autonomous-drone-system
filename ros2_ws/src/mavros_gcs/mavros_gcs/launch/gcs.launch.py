@@ -16,6 +16,10 @@ def generate_launch_description():
         'rotate', default_value='false',
         description='Rotate stream viewer 180 degrees'
     )
+    stream_codec_arg = DeclareLaunchArgument(
+        'stream_codec', default_value='mjpeg',
+        description="Expected stream codec for the viewer ('mjpeg' or 'h264')"
+    )
     use_odom_arg = DeclareLaunchArgument(          # NEW
         'use_odom', default_value='true',
         description='Enable odometry subscription in info_panel'
@@ -24,6 +28,7 @@ def generate_launch_description():
     drone_id = LaunchConfiguration('drone_id')
     gcs_id   = LaunchConfiguration('gcs_id')
     rotate   = LaunchConfiguration('rotate')
+    stream_codec = LaunchConfiguration('stream_codec')
     use_odom = LaunchConfiguration('use_odom')     # NEW
 
     teleop = Node(
@@ -46,7 +51,7 @@ def generate_launch_description():
         package='mavros_gcs',
         executable='stream_viewer',
         name='stream_viewer',
-        parameters=[{'drone_id': drone_id, 'rotate': rotate}],
+        parameters=[{'drone_id': drone_id, 'rotate': rotate, 'stream_codec': stream_codec}],
         output='screen',
         emulate_tty=True,
     )
@@ -61,6 +66,7 @@ def generate_launch_description():
         drone_id_arg,
         gcs_id_arg,
         rotate_arg,
+        stream_codec_arg,
         use_odom_arg,                                               # NEW
         teleop,
         info_panel,
