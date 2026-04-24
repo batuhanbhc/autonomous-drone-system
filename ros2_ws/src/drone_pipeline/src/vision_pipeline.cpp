@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -508,17 +509,11 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   publishRecordState();
 
   // ── Periodic flush timer for recording data CSV ───────────────────────────
-  // Runs on the ROS timer thread; the mjpeg loop itself is the only other
-  // writer of this buffer, so we coordinate via mjpeg_queue_mtx_.
+  // The logger thread owns the file; this timer only requests a flush.
   record_flush_timer_ = create_wall_timer(
     std::chrono::seconds(3),
     [this]() {
-      std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-      if (data_csv_file_.is_open()) {
-        for (const auto & line : data_csv_buf_) data_csv_file_ << line;
-        data_csv_buf_.clear();
-        data_csv_file_.flush();
-      }
+      flushDataCsv();
     },
     record_flush_cb_group_);
 
@@ -526,16 +521,13 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   track_flush_timer_ = create_wall_timer(
     std::chrono::seconds(3),
     [this]() {
-      std::lock_guard<std::mutex> lk(results_mtx_);
-      if (track_csv_file_.is_open()) {
-        for (const auto & line : track_csv_buf_) track_csv_file_ << line;
-        track_csv_buf_.clear();
-        track_csv_file_.flush();
-      }
+      flushTrackCsv();
     },
     track_flush_cb_group_);
 
   // ── Start threads ─────────────────────────────────────────────────────────
+  data_csv_thread_ = std::thread(&VisionPipeline::dataCsvLoggerLoop, this);
+  track_csv_thread_ = std::thread(&VisionPipeline::trackCsvLoggerLoop, this);
 
   // Yaw calibration
   yaw_calib_thread_ = std::thread(&VisionPipeline::runYawCalibration, this);
@@ -597,6 +589,24 @@ VisionPipeline::~VisionPipeline()
 
   // ── Flush and close track_results CSV ────────────────────────────────────
   closeTrackCsv();
+
+  {
+    std::lock_guard<std::mutex> lk(data_csv_mtx_);
+    DataCsvCommand cmd;
+    cmd.type = DataCsvCommandType::Stop;
+    data_csv_cmd_queue_.push(std::move(cmd));
+  }
+  data_csv_cv_.notify_one();
+  if (data_csv_thread_.joinable()) data_csv_thread_.join();
+
+  {
+    std::lock_guard<std::mutex> lk(track_csv_mtx_);
+    TrackCsvCommand cmd;
+    cmd.type = TrackCsvCommandType::Stop;
+    track_csv_cmd_queue_.push(std::move(cmd));
+  }
+  track_csv_cv_.notify_one();
+  if (track_csv_thread_.joinable()) track_csv_thread_.join();
 
   // ── Yaw calibration thread ────────────────────────────────────────────────
   if (yaw_calib_thread_.joinable()) yaw_calib_thread_.join();
@@ -724,8 +734,146 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
 // ─────────────────────────────────────────────────────────────────────────────
 //  MJPEG writer thread
 //  Writes raw JPEG bytes directly to AVI — no pixel work.
-//  Also writes one combined frame-data row to session_data.csv, buffered.
+//  Also enqueues one combined frame-data row to the dedicated CSV logger.
 // ─────────────────────────────────────────────────────────────────────────────
+
+void VisionPipeline::dataCsvLoggerLoop()
+{
+  std::vector<std::string> pending_lines;
+
+  auto flush_pending = [this, &pending_lines]() {
+    if (!data_csv_file_.is_open() || pending_lines.empty()) {
+      return;
+    }
+    for (const auto & line : pending_lines) {
+      data_csv_file_ << line;
+    }
+    pending_lines.clear();
+    data_csv_file_.flush();
+  };
+
+  while (true) {
+    DataCsvCommand cmd;
+    {
+      std::unique_lock<std::mutex> lk(data_csv_mtx_);
+      data_csv_cv_.wait(lk, [this] { return !data_csv_cmd_queue_.empty(); });
+      cmd = std::move(data_csv_cmd_queue_.front());
+      data_csv_cmd_queue_.pop();
+    }
+
+    switch (cmd.type) {
+      case DataCsvCommandType::Open: {
+        flush_pending();
+        if (data_csv_file_.is_open()) {
+          data_csv_file_.close();
+        }
+
+        data_csv_file_.open(cmd.path, std::ios::out | std::ios::trunc);
+        const bool opened = data_csv_file_.is_open();
+        if (opened) {
+          data_csv_file_
+            << "stamp_sec,stamp_nanosec,"
+            << "pos_x,pos_y,pos_z,"
+            << "quat_x,quat_y,quat_z,quat_w,"
+            << "vel_x,vel_y,vel_z,"
+            << "ang_vel_x,ang_vel_y,ang_vel_z,"
+            << "odom_valid,"
+            << "lat_deg_e7,lon_deg_e7,"
+            << "gps_valid,"
+            << "agl_m,vz_mps,"
+            << "mcu_valid\n";
+          data_csv_file_.flush();
+        }
+        pending_lines.clear();
+        if (cmd.completion) {
+          cmd.completion->set_value(opened);
+        }
+        break;
+      }
+      case DataCsvCommandType::AppendLine:
+        pending_lines.push_back(std::move(cmd.line));
+        if (pending_lines.size() >= kCsvFlushSize) {
+          flush_pending();
+        }
+        break;
+      case DataCsvCommandType::Flush:
+        flush_pending();
+        break;
+      case DataCsvCommandType::Close:
+        flush_pending();
+        if (data_csv_file_.is_open()) {
+          data_csv_file_.close();
+        }
+        pending_lines.clear();
+        if (cmd.completion) {
+          cmd.completion->set_value(true);
+        }
+        break;
+      case DataCsvCommandType::Stop:
+        flush_pending();
+        if (data_csv_file_.is_open()) {
+          data_csv_file_.close();
+        }
+        return;
+    }
+  }
+}
+
+void VisionPipeline::enqueueDataCsvLine(std::string line)
+{
+  {
+    std::lock_guard<std::mutex> lk(data_csv_mtx_);
+    DataCsvCommand cmd;
+    cmd.type = DataCsvCommandType::AppendLine;
+    cmd.line = std::move(line);
+    data_csv_cmd_queue_.push(std::move(cmd));
+  }
+  data_csv_cv_.notify_one();
+}
+
+bool VisionPipeline::openDataCsv(const std::string & path)
+{
+  auto completion = std::make_shared<std::promise<bool>>();
+  auto future = completion->get_future();
+
+  {
+    std::lock_guard<std::mutex> lk(data_csv_mtx_);
+    DataCsvCommand cmd;
+    cmd.type = DataCsvCommandType::Open;
+    cmd.path = path;
+    cmd.completion = completion;
+    data_csv_cmd_queue_.push(std::move(cmd));
+  }
+  data_csv_cv_.notify_one();
+  return future.get();
+}
+
+void VisionPipeline::flushDataCsv()
+{
+  {
+    std::lock_guard<std::mutex> lk(data_csv_mtx_);
+    DataCsvCommand cmd;
+    cmd.type = DataCsvCommandType::Flush;
+    data_csv_cmd_queue_.push(std::move(cmd));
+  }
+  data_csv_cv_.notify_one();
+}
+
+void VisionPipeline::closeDataCsv()
+{
+  auto completion = std::make_shared<std::promise<bool>>();
+  auto future = completion->get_future();
+
+  {
+    std::lock_guard<std::mutex> lk(data_csv_mtx_);
+    DataCsvCommand cmd;
+    cmd.type = DataCsvCommandType::Close;
+    cmd.completion = completion;
+    data_csv_cmd_queue_.push(std::move(cmd));
+  }
+  data_csv_cv_.notify_one();
+  (void)future.get();
+}
 
 void VisionPipeline::mjpegLoop()
 {
@@ -765,15 +913,7 @@ void VisionPipeline::mjpegLoop()
             << slot.agl_m   << ','
             << slot.vz_mps  << ','
             << slot.mcu_valid << '\n';
-
-        std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-        data_csv_buf_.push_back(oss.str());
-
-        if (data_csv_buf_.size() >= kCsvFlushSize && data_csv_file_.is_open()) {
-          for (const auto & line : data_csv_buf_) data_csv_file_ << line;
-          data_csv_buf_.clear();
-          data_csv_file_.flush();
-        }
+        enqueueDataCsvLine(oss.str());
       }
     }
 
@@ -801,31 +941,19 @@ void VisionPipeline::openRecordClip()
   // Open AVI — MjpegWriter throws on failure
   mjpeg_writer_.open(video_path, config_.width, config_.height, config_.fps);
 
-  // Open data CSV (under mjpeg_queue_mtx_ so the flush timer sees a consistent state)
-  {
-    std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-
-    data_csv_file_.open(data_csv_path, std::ios::out | std::ios::trunc);
-    if (!data_csv_file_.is_open())
-      throw std::runtime_error("Cannot open data CSV: " + data_csv_path);
-
-    data_csv_file_
-      << "stamp_sec,stamp_nanosec,"
-      << "pos_x,pos_y,pos_z,"
-      << "quat_x,quat_y,quat_z,quat_w,"
-      << "vel_x,vel_y,vel_z,"
-      << "ang_vel_x,ang_vel_y,ang_vel_z,"
-      << "odom_valid,"
-      << "lat_deg_e7,lon_deg_e7,"
-      << "gps_valid,"
-      << "agl_m,vz_mps,"
-      << "mcu_valid\n";
-
-    data_csv_buf_.clear();
+  if (!openDataCsv(data_csv_path)) {
+    mjpeg_writer_.close();
+    throw std::runtime_error("Cannot open data CSV: " + data_csv_path);
   }
 
   // Open track_results CSV
-  openTrackCsv(track_csv_path);
+  try {
+    openTrackCsv(track_csv_path);
+  } catch (...) {
+    closeDataCsv();
+    mjpeg_writer_.close();
+    throw;
+  }
 
   RCLCPP_INFO(get_logger(),
     "Recording started → %s | %s | %s",
@@ -838,16 +966,7 @@ void VisionPipeline::closeRecordClip()
 
   // Flush and close MJPEG + data CSV
   mjpeg_writer_.close();
-
-  {
-    std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
-    if (data_csv_file_.is_open()) {
-      for (const auto & line : data_csv_buf_) data_csv_file_ << line;
-      data_csv_buf_.clear();
-      data_csv_file_.flush();
-      data_csv_file_.close();
-    }
-  }
+  closeDataCsv();
 
   // Flush and close track_results CSV
   closeTrackCsv();
@@ -1130,7 +1249,6 @@ void VisionPipeline::resetTrackingStateLocked()
     results_pq_.pop();
   }
 
-  track_csv_buf_.clear();
   next_result_seq_ = next_seq_.load(std::memory_order_relaxed);
 }
 
@@ -1232,7 +1350,8 @@ void VisionPipeline::writeTrackRowsLocked(
   const PendingResult & result,
   const std::vector<TrackEstimate> & confirmed_tracks,
   double noise_scale,
-  double omega_deg_s)
+  double omega_deg_s,
+  std::vector<std::string> & ready_lines)
 {
   if (confirmed_tracks.empty()) {
     std::ostringstream oss;
@@ -1243,7 +1362,7 @@ void VisionPipeline::writeTrackRowsLocked(
     }
     oss << ',';
     oss << noise_scale << ',' << omega_deg_s << '\n';
-    track_csv_buf_.push_back(oss.str());
+    ready_lines.push_back(oss.str());
     return;
   }
 
@@ -1266,80 +1385,227 @@ void VisionPipeline::writeTrackRowsLocked(
         << track.state[2] << ',' << track.state[3] << ','
         << track.hits << ',' << track.missed << ','
         << noise_scale << ',' << omega_deg_s << '\n';
-    track_csv_buf_.push_back(oss.str());
+    ready_lines.push_back(oss.str());
   }
+}
+
+void VisionPipeline::trackCsvLoggerLoop()
+{
+  std::vector<std::string> pending_lines;
+
+  auto flush_pending = [this, &pending_lines]() {
+    if (!track_csv_file_.is_open() || pending_lines.empty()) {
+      return;
+    }
+    for (const auto & line : pending_lines) {
+      track_csv_file_ << line;
+    }
+    pending_lines.clear();
+    track_csv_file_.flush();
+  };
+
+  while (true) {
+    TrackCsvCommand cmd;
+    {
+      std::unique_lock<std::mutex> lk(track_csv_mtx_);
+      track_csv_cv_.wait(lk, [this] { return !track_csv_cmd_queue_.empty(); });
+      cmd = std::move(track_csv_cmd_queue_.front());
+      track_csv_cmd_queue_.pop();
+    }
+
+    switch (cmd.type) {
+      case TrackCsvCommandType::Open: {
+        flush_pending();
+        if (track_csv_file_.is_open()) {
+          track_csv_file_.close();
+        }
+
+        track_csv_file_.open(cmd.path, std::ios::out | std::ios::trunc);
+        const bool opened = track_csv_file_.is_open();
+        if (opened) {
+          track_csv_file_
+            << "seq,"
+            << "stamp_sec,stamp_nanosec,"
+            << "track_id,"
+            << "x_min,y_min,x_max,y_max,"
+            << "score,"
+            << "raw_world_x,raw_world_y,"
+            << "world_x,world_y,"
+            << "world_vx,world_vy,"
+            << "hits,missed,"
+            << "noise_scale,omega_deg_s\n";
+          track_csv_file_.flush();
+        }
+        pending_lines.clear();
+        if (cmd.completion) {
+          cmd.completion->set_value(opened);
+        }
+        break;
+      }
+      case TrackCsvCommandType::AppendLines:
+        if (!cmd.lines.empty()) {
+          pending_lines.insert(
+            pending_lines.end(),
+            std::make_move_iterator(cmd.lines.begin()),
+            std::make_move_iterator(cmd.lines.end()));
+          if (pending_lines.size() >= kCsvFlushSize) {
+            flush_pending();
+          }
+        }
+        break;
+      case TrackCsvCommandType::Flush:
+        flush_pending();
+        break;
+      case TrackCsvCommandType::Close:
+        flush_pending();
+        if (track_csv_file_.is_open()) {
+          track_csv_file_.close();
+        }
+        pending_lines.clear();
+        if (cmd.completion) {
+          cmd.completion->set_value(true);
+        }
+        break;
+      case TrackCsvCommandType::Stop:
+        flush_pending();
+        if (track_csv_file_.is_open()) {
+          track_csv_file_.close();
+        }
+        return;
+    }
+  }
+}
+
+void VisionPipeline::enqueueTrackCsvLines(std::vector<std::string> lines)
+{
+  if (lines.empty()) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(track_csv_mtx_);
+    TrackCsvCommand cmd;
+    cmd.type = TrackCsvCommandType::AppendLines;
+    cmd.lines = std::move(lines);
+    track_csv_cmd_queue_.push(std::move(cmd));
+  }
+  track_csv_cv_.notify_one();
+}
+
+bool VisionPipeline::openTrackCsvLogger(const std::string & path)
+{
+  auto completion = std::make_shared<std::promise<bool>>();
+  auto future = completion->get_future();
+
+  {
+    std::lock_guard<std::mutex> lk(track_csv_mtx_);
+    TrackCsvCommand cmd;
+    cmd.type = TrackCsvCommandType::Open;
+    cmd.path = path;
+    cmd.completion = completion;
+    track_csv_cmd_queue_.push(std::move(cmd));
+  }
+  track_csv_cv_.notify_one();
+  return future.get();
+}
+
+void VisionPipeline::flushTrackCsv()
+{
+  {
+    std::lock_guard<std::mutex> lk(track_csv_mtx_);
+    TrackCsvCommand cmd;
+    cmd.type = TrackCsvCommandType::Flush;
+    track_csv_cmd_queue_.push(std::move(cmd));
+  }
+  track_csv_cv_.notify_one();
+}
+
+void VisionPipeline::closeTrackCsvLogger()
+{
+  auto completion = std::make_shared<std::promise<bool>>();
+  auto future = completion->get_future();
+
+  {
+    std::lock_guard<std::mutex> lk(track_csv_mtx_);
+    TrackCsvCommand cmd;
+    cmd.type = TrackCsvCommandType::Close;
+    cmd.completion = completion;
+    track_csv_cmd_queue_.push(std::move(cmd));
+  }
+  track_csv_cv_.notify_one();
+  (void)future.get();
 }
 
 void VisionPipeline::openTrackCsv(const std::string & path)
 {
+  if (!openTrackCsvLogger(path)) {
+    throw std::runtime_error("Cannot open track_results CSV: " + path);
+  }
+
   std::lock_guard<std::mutex> lk(results_mtx_);
   resetTrackingStateLocked();
-  track_csv_file_.open(path, std::ios::out | std::ios::trunc);
-  if (!track_csv_file_.is_open())
-    throw std::runtime_error("Cannot open track_results CSV: " + path);
-
-  track_csv_file_
-    << "seq,"
-    << "stamp_sec,stamp_nanosec,"
-    << "track_id,"
-    << "x_min,y_min,x_max,y_max,"
-    << "score,"
-    << "raw_world_x,raw_world_y,"
-    << "world_x,world_y,"
-    << "world_vx,world_vy,"
-    << "hits,missed,"
-    << "noise_scale,omega_deg_s\n";
+  track_csv_active_ = true;
 }
 
 void VisionPipeline::closeTrackCsv()
 {
-  std::lock_guard<std::mutex> lk(results_mtx_);
-  if (!track_csv_file_.is_open()) return;
-
-  while (!results_pq_.empty()) {
-    const PendingResult & result = results_pq_.top();
-    const double timestamp_s =
-      static_cast<double>(result.stamp_sec) +
-      static_cast<double>(result.stamp_nanosec) * 1e-9;
-    const double dt = has_prev_track_timestamp_
-      ? std::max(1e-3, timestamp_s - prev_track_timestamp_s_)
-      : (1.0 / static_cast<double>(config_.fps));
-    has_prev_track_timestamp_ = true;
-    prev_track_timestamp_s_ = timestamp_s;
-
-    const double omega_deg_s = computeAngularVelocityDegPerSecLocked(result);
-    const double low = config_.tracker.angular_vel_low_deg_s;
-    const double high = config_.tracker.angular_vel_high_deg_s;
-    double noise_scale = 1.0;
-    if (omega_deg_s >= high) {
-      noise_scale = config_.tracker.angular_vel_max_scale;
-    } else if (omega_deg_s > low) {
-      const double t = (omega_deg_s - low) / std::max(1e-6, high - low);
-      noise_scale = 1.0 + t * (config_.tracker.angular_vel_max_scale - 1.0);
+  std::vector<std::string> ready_lines;
+  {
+    std::lock_guard<std::mutex> lk(results_mtx_);
+    if (!track_csv_active_) {
+      return;
     }
+    track_csv_active_ = false;
 
-    const auto measurements = buildTrackMeasurementsLocked(result, noise_scale);
-    const auto confirmed_tracks = tracker_->step(measurements, dt, noise_scale);
-    writeTrackRowsLocked(result, confirmed_tracks, noise_scale, omega_deg_s);
-    results_pq_.pop();
+    while (!results_pq_.empty()) {
+      const PendingResult result = results_pq_.top();
+      results_pq_.pop();
+
+      const double timestamp_s =
+        static_cast<double>(result.stamp_sec) +
+        static_cast<double>(result.stamp_nanosec) * 1e-9;
+      const double dt = has_prev_track_timestamp_
+        ? std::max(1e-3, timestamp_s - prev_track_timestamp_s_)
+        : (1.0 / static_cast<double>(config_.fps));
+      has_prev_track_timestamp_ = true;
+      prev_track_timestamp_s_ = timestamp_s;
+
+      const double omega_deg_s = computeAngularVelocityDegPerSecLocked(result);
+      const double low = config_.tracker.angular_vel_low_deg_s;
+      const double high = config_.tracker.angular_vel_high_deg_s;
+      double noise_scale = 1.0;
+      if (omega_deg_s >= high) {
+        noise_scale = config_.tracker.angular_vel_max_scale;
+      } else if (omega_deg_s > low) {
+        const double t = (omega_deg_s - low) / std::max(1e-6, high - low);
+        noise_scale = 1.0 + t * (config_.tracker.angular_vel_max_scale - 1.0);
+      }
+
+      const auto measurements = buildTrackMeasurementsLocked(result, noise_scale);
+      const auto confirmed_tracks = tracker_->step(measurements, dt, noise_scale);
+      writeTrackRowsLocked(result, confirmed_tracks, noise_scale, omega_deg_s, ready_lines);
+    }
   }
 
-  for (const auto & line : track_csv_buf_) track_csv_file_ << line;
-  track_csv_buf_.clear();
-  track_csv_file_.flush();
-  track_csv_file_.close();
+  enqueueTrackCsvLines(std::move(ready_lines));
+  closeTrackCsvLogger();
 }
 
 void VisionPipeline::depositResult(PendingResult && r)
 {
-  std::lock_guard<std::mutex> lk(results_mtx_);
-  results_pq_.push(std::move(r));
-  drainResultsLocked();
+  std::vector<std::string> ready_lines;
+  {
+    std::lock_guard<std::mutex> lk(results_mtx_);
+    results_pq_.push(std::move(r));
+    drainResultsLocked(ready_lines);
+  }
+
+  enqueueTrackCsvLines(std::move(ready_lines));
 }
 
-void VisionPipeline::drainResultsLocked()
+void VisionPipeline::drainResultsLocked(std::vector<std::string> & ready_lines)
 {
-  if (!track_csv_file_.is_open()) {
+  if (!track_csv_active_) {
     while (!results_pq_.empty())
       results_pq_.pop();
     next_result_seq_ = next_seq_.load(std::memory_order_relaxed);
@@ -1349,7 +1615,8 @@ void VisionPipeline::drainResultsLocked()
   while (!results_pq_.empty() &&
          results_pq_.top().seq == next_result_seq_)
   {
-    const PendingResult & result = results_pq_.top();
+    const PendingResult result = results_pq_.top();
+    results_pq_.pop();
     const double timestamp_s =
       static_cast<double>(result.stamp_sec) +
       static_cast<double>(result.stamp_nanosec) * 1e-9;
@@ -1372,16 +1639,8 @@ void VisionPipeline::drainResultsLocked()
 
     const auto measurements = buildTrackMeasurementsLocked(result, noise_scale);
     const auto confirmed_tracks = tracker_->step(measurements, dt, noise_scale);
-    writeTrackRowsLocked(result, confirmed_tracks, noise_scale, omega_deg_s);
-
-    results_pq_.pop();
+    writeTrackRowsLocked(result, confirmed_tracks, noise_scale, omega_deg_s, ready_lines);
     ++next_result_seq_;
-
-    if (track_csv_buf_.size() >= kCsvFlushSize) {
-      for (const auto & line : track_csv_buf_) track_csv_file_ << line;
-      track_csv_buf_.clear();
-      track_csv_file_.flush();
-    }
   }
 }
 

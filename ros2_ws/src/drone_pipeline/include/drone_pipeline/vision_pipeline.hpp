@@ -5,7 +5,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <fstream>
+#include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -155,12 +157,12 @@ public:
 private:
   // ── Constants ─────────────────────────────────────────────────────────────
   static constexpr int kNumSlots   = 30;
-  static constexpr int kNumWorkers = 4;
+  static constexpr int kNumWorkers = 2;
 
   static constexpr int    kYawCalibSamples = 10;
   static constexpr double kYawCalibTimeout = 30.0;   // seconds
 
-  static constexpr size_t kCsvFlushSize = 200;       // lines before eager flush
+  static constexpr size_t kCsvFlushSize = 2000;
 
   // ── Config ────────────────────────────────────────────────────────────────
   VisionConfig loadConfig();
@@ -247,10 +249,26 @@ private:
   MjpegWriter   mjpeg_writer_;
   std::ofstream data_csv_file_;
 
-  // Per-clip CSV buffer — flushed every 3 s or when kCsvFlushSize lines
-  std::vector<std::string> data_csv_buf_;
+  enum class DataCsvCommandType { Open, AppendLine, Flush, Close, Stop };
+  struct DataCsvCommand
+  {
+    DataCsvCommandType type{DataCsvCommandType::Flush};
+    std::string path;
+    std::string line;
+    std::shared_ptr<std::promise<bool>> completion;
+  };
+
+  std::mutex                 data_csv_mtx_;
+  std::condition_variable    data_csv_cv_;
+  std::queue<DataCsvCommand> data_csv_cmd_queue_;
+  std::thread                data_csv_thread_;
 
   void mjpegLoop();
+  void dataCsvLoggerLoop();
+  void enqueueDataCsvLine(std::string line);
+  bool openDataCsv(const std::string & path);
+  void flushDataCsv();
+  void closeDataCsv();
   void openRecordClip();
   void closeRecordClip();
 
@@ -325,10 +343,23 @@ private:
                       std::vector<PendingResult>,
                       PendingResultCmp> results_pq_;
   uint64_t          next_result_seq_{0};  // next seq we expect to write
-  std::mutex        results_mtx_;         // guards pq + next_result_seq_ + file/buf
+  std::mutex        results_mtx_;         // guards pq + next_result_seq_ + tracker state
+  bool              track_csv_active_{false};
 
-  std::ofstream            track_csv_file_;
-  std::vector<std::string> track_csv_buf_;
+  std::ofstream              track_csv_file_;
+  enum class TrackCsvCommandType { Open, AppendLines, Flush, Close, Stop };
+  struct TrackCsvCommand
+  {
+    TrackCsvCommandType type{TrackCsvCommandType::Flush};
+    std::string path;
+    std::vector<std::string> lines;
+    std::shared_ptr<std::promise<bool>> completion;
+  };
+
+  std::mutex                  track_csv_mtx_;
+  std::condition_variable     track_csv_cv_;
+  std::queue<TrackCsvCommand> track_csv_cmd_queue_;
+  std::thread                 track_csv_thread_;
   rclcpp::TimerBase::SharedPtr track_flush_timer_;
   bool   has_prev_track_timestamp_{false};
   double prev_track_timestamp_s_{0.0};
@@ -336,7 +367,12 @@ private:
   double smoothed_projection_height_m_{0.0};
 
   void depositResult(PendingResult && r);   // called from Hailo callback
-  void drainResultsLocked();                // called under results_mtx_
+  void drainResultsLocked(std::vector<std::string> & ready_lines);
+  void trackCsvLoggerLoop();
+  void enqueueTrackCsvLines(std::vector<std::string> lines);
+  bool openTrackCsvLogger(const std::string & path);
+  void flushTrackCsv();
+  void closeTrackCsvLogger();
   void openTrackCsv(const std::string & path);
   void closeTrackCsv();
   void resetTrackingStateLocked();
@@ -349,7 +385,8 @@ private:
     const PendingResult & result,
     const std::vector<TrackEstimate> & confirmed_tracks,
     double noise_scale,
-    double omega_deg_s);
+    double omega_deg_s,
+    std::vector<std::string> & ready_lines);
 
   // ── Hailo ─────────────────────────────────────────────────────────────────
   std::unique_ptr<hailort::VDevice>   hailo_vdevice_;
