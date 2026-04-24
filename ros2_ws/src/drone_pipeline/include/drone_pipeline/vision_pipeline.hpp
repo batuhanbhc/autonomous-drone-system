@@ -195,6 +195,12 @@ private:
   int         clip_index_{0};
 
   // ── ROS interfaces ────────────────────────────────────────────────────────
+  rclcpp::CallbackGroup::SharedPtr frame_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr stream_cmd_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr record_cmd_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr record_flush_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr track_flush_cb_group_;
+
   rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr  frame_sub_;
 
   // Streaming

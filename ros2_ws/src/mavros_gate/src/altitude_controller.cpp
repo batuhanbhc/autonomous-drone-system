@@ -294,9 +294,9 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
   out.data = vz_cmd;
   pub_output_->publish(out);
 
-  RCLCPP_INFO(get_logger(),
-    "[alt_ctrl_pid] tgt=%.3f agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",
-    target_agl_, current_agl, current_vz, dt_s, vz_cmd);
+  // RCLCPP_INFO(get_logger(),
+  //   "[alt_ctrl_pid] tgt=%.3f agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",
+  //   target_agl_, current_agl, current_vz, dt_s, vz_cmd);
 }
 
 

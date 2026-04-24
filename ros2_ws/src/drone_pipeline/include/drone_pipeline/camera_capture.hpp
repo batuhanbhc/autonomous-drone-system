@@ -74,6 +74,13 @@ private:
 
   rclcpp::Publisher<drone_msgs::msg::FrameData>::SharedPtr frame_pub_;
 
+  rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr gps_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr mcu_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr odom_timer_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr gps_timer_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr mcu_timer_cb_group_;
+
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr          odom_sub_;
   rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr         gps_sub_;
   rclcpp::Subscription<

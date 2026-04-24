@@ -457,14 +457,31 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
   const std::string dp    = "/drone_" + std::to_string(config_.drone_id);
 
+  frame_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  stream_cmd_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  record_cmd_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  record_flush_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  track_flush_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  rclcpp::SubscriptionOptions frame_sub_opts;
+  frame_sub_opts.callback_group = frame_cb_group_;
+
+  rclcpp::SubscriptionOptions stream_cmd_sub_opts;
+  stream_cmd_sub_opts.callback_group = stream_cmd_cb_group_;
+
+  rclcpp::SubscriptionOptions record_cmd_sub_opts;
+  record_cmd_sub_opts.callback_group = record_cmd_cb_group_;
+
   frame_sub_ = create_subscription<drone_msgs::msg::FrameData>(
     config_.frames_topic, sensor_qos,
-    [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); });
+    [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); },
+    frame_sub_opts);
 
   if (h264_streaming_enabled_) {
     stream_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
       dp + "/camera/stream/cmd", reliable_qos,
-      [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); });
+      [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); },
+      stream_cmd_sub_opts);
 
     stream_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
       dp + "/camera/stream/active", reliable_qos);
@@ -479,7 +496,8 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 
   record_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
     dp + "/camera/record/cmd", reliable_qos,
-    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { recordCmdCallback(msg); });
+    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { recordCmdCallback(msg); },
+    record_cmd_sub_opts);
 
   record_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     dp + "/camera/record/active", reliable_qos);
@@ -501,7 +519,8 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
         data_csv_buf_.clear();
         data_csv_file_.flush();
       }
-    });
+    },
+    record_flush_cb_group_);
 
   // ── Periodic flush timer for track_results CSV ────────────────────────────
   track_flush_timer_ = create_wall_timer(
@@ -513,7 +532,8 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
         track_csv_buf_.clear();
         track_csv_file_.flush();
       }
-    });
+    },
+    track_flush_cb_group_);
 
   // ── Start threads ─────────────────────────────────────────────────────────
 
@@ -956,8 +976,9 @@ void VisionPipeline::workerLoop()
       pending.odom_valid    = slot.odom_valid;
       pending.agl_m         = slot.agl_m;
       pending.mcu_valid     = slot.mcu_valid;
-      depositResult(std::move(pending));
+      // Result payload is copied out; do not hold the frame slot through CSV/tracking work.
       releaseSlot(idx);
+      depositResult(std::move(pending));
       continue;
     }
 
@@ -1008,8 +1029,8 @@ void VisionPipeline::workerLoop()
         RCLCPP_WARN(get_logger(), "Hailo async infer failed (slot %d): %d",
           idx, static_cast<int>(info.status));
         // Deposit empty result so ordering is preserved
-        depositResult(std::move(pending));
         releaseSlot(idx);
+        depositResult(std::move(pending));
         return;
       }
 
@@ -1053,8 +1074,9 @@ void VisionPipeline::workerLoop()
         }
       }
 
-      depositResult(std::move(pending));
+      // Result payload is copied out; free the slot before result ordering/tracking.
       releaseSlot(idx);
+      depositResult(std::move(pending));
     };  // end callback lambda
 
     auto job_exp = hailo_infer_model_.run_async(hailo_bindings_[idx], callback);
@@ -1079,8 +1101,9 @@ void VisionPipeline::workerLoop()
       pending.odom_valid    = slot.odom_valid;
       pending.agl_m         = slot.agl_m;
       pending.mcu_valid     = slot.mcu_valid;
-      depositResult(std::move(pending));
+      // Result payload is copied out; do not hold the frame slot through CSV/tracking work.
       releaseSlot(idx);
+      depositResult(std::move(pending));
     }
 
     (void)job_exp;  // job lifetime managed by HailoRT

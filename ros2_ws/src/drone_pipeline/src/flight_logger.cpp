@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <rclcpp/executors/multi_threaded_executor.hpp>
+
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "yaml-cpp/yaml.h"
 
@@ -142,42 +144,55 @@ FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
   // ── Subscriptions ─────────────────────────────────────────
   const auto qos = rclcpp::SensorDataQoS();
 
+  odom_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  gps_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  flush_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  rclcpp::SubscriptionOptions odom_sub_opts;
+  odom_sub_opts.callback_group = odom_cb_group_;
+
+  rclcpp::SubscriptionOptions gps_sub_opts;
+  gps_sub_opts.callback_group = gps_cb_group_;
+
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     config_.odom_topic, qos,
     [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
       odomCallback(msg);
-    });
+    },
+    odom_sub_opts);
 
   gps_sub_ = create_subscription<mavros_msgs::msg::GPSRAW>(
     config_.gps1_raw_topic, qos,
     [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) {
       gpsCallback(msg);
-    });
+    },
+    gps_sub_opts);
 
   RCLCPP_INFO(get_logger(), "flight_logger ready.  odom→%s  gps→%s",
     config_.odom_topic.c_str(), config_.gps1_raw_topic.c_str());
 
   // ── Flush timer ───────────────────────────────────────────
-   // Flushes buffers to disk every 3 seconds, or when buffer size exceeds threshold.
-   // This is a safeguard to prevent data loss on crash, since the destructor won't run.
+  // Flushes buffers to disk every 3 seconds, or when buffer size exceeds threshold.
+  // This is a safeguard to prevent data loss on crash, since the destructor won't run.
   flush_timer_ = create_wall_timer(
-  std::chrono::seconds(3),
-  [this]() {
-    {
-      std::lock_guard<std::mutex> lk(odom_mtx_);
-      for (const auto & line : odom_buffer_)
-        odom_file_ << line;
-      odom_buffer_.clear();
-      odom_file_.flush();
-    }
-    {
-      std::lock_guard<std::mutex> lk(gps_mtx_);
-      for (const auto & line : gps_buffer_)
-        gps_file_ << line;
-      gps_buffer_.clear();
-      gps_file_.flush();
-    }
-  });
+    std::chrono::seconds(3),
+    [this]() {
+      {
+        std::lock_guard<std::mutex> lk(odom_mtx_);
+        for (const auto & line : odom_buffer_)
+          odom_file_ << line;
+        odom_buffer_.clear();
+        odom_file_.flush();
+      }
+      {
+        std::lock_guard<std::mutex> lk(gps_mtx_);
+        for (const auto & line : gps_buffer_)
+          gps_file_ << line;
+        gps_buffer_.clear();
+        gps_file_.flush();
+      }
+    },
+    flush_cb_group_);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,7 +262,9 @@ int main(int argc, char * argv[])
   rclcpp::init(argc, argv);
   try {
     auto node = std::make_shared<drone_pipeline::FlightLogger>();
-    rclcpp::spin(node);
+    rclcpp::executors::MultiThreadedExecutor exec;
+    exec.add_node(node);
+    exec.spin();
   } catch (const std::exception & e) {
     RCLCPP_FATAL(
       rclcpp::get_logger("flight_logger"),

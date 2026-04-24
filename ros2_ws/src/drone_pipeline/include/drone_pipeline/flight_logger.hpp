@@ -49,6 +49,10 @@ private:
   std::mutex    odom_mtx_;
   std::mutex    gps_mtx_;
 
+  rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr gps_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr flush_cb_group_;
+
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
   rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr gps_sub_;
 };

@@ -74,14 +74,25 @@ MjpegStreamer::MjpegStreamer(const rclcpp::NodeOptions & options)
     rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 
+  frame_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  stream_cmd_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  rclcpp::SubscriptionOptions frame_sub_opts;
+  frame_sub_opts.callback_group = frame_cb_group_;
+
+  rclcpp::SubscriptionOptions stream_cmd_sub_opts;
+  stream_cmd_sub_opts.callback_group = stream_cmd_cb_group_;
+
   frame_sub_ = create_subscription<drone_msgs::msg::FrameData>(
     config_.frames_topic,
     rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile(),
-    [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); });
+    [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); },
+    frame_sub_opts);
 
   stream_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
     dp + "/camera/stream/cmd", reliable_qos,
-    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); });
+    [this](const drone_msgs::msg::Toggle::SharedPtr msg) { streamCmdCallback(msg); },
+    stream_cmd_sub_opts);
 
   stream_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     dp + "/camera/stream/active", reliable_qos);

@@ -39,6 +39,9 @@ private:
   bool                enabled_{false};
   std::atomic<bool>   streaming_{false};
 
+  rclcpp::CallbackGroup::SharedPtr frame_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr stream_cmd_cb_group_;
+
   rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr frame_sub_;
   rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr    stream_cmd_sub_;
   rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr       stream_state_pub_;

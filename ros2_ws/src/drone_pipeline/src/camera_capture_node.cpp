@@ -240,23 +240,41 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
   frame_pub_ = create_publisher<drone_msgs::msg::FrameData>(topic, rclcpp::SensorDataQoS());
 
   const auto sensor_qos   = rclcpp::SensorDataQoS();
-  const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 
   // mcu_bridge publishes with best_effort / volatile — match that profile.
   const auto best_effort_qos =
     rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
 
+  odom_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  gps_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  mcu_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  odom_timer_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  gps_timer_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  mcu_timer_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  rclcpp::SubscriptionOptions odom_sub_opts;
+  odom_sub_opts.callback_group = odom_cb_group_;
+
+  rclcpp::SubscriptionOptions gps_sub_opts;
+  gps_sub_opts.callback_group = gps_cb_group_;
+
+  rclcpp::SubscriptionOptions mcu_sub_opts;
+  mcu_sub_opts.callback_group = mcu_cb_group_;
+
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     config_.odom_topic, sensor_qos,
-    [this](const nav_msgs::msg::Odometry::SharedPtr msg) { odomCallback(msg); });
+    [this](const nav_msgs::msg::Odometry::SharedPtr msg) { odomCallback(msg); },
+    odom_sub_opts);
 
   gps_sub_ = create_subscription<mavros_msgs::msg::GPSRAW>(
-    config_.gps1_raw_topic, reliable_qos,
-    [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) { gpsCallback(msg); });
+    config_.gps1_raw_topic, sensor_qos,
+    [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) { gpsCallback(msg); },
+    gps_sub_opts);
 
   mcu_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
     config_.mcu_vertical_topic, best_effort_qos,
-    [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) { mcuCallback(msg); });
+    [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) { mcuCallback(msg); },
+    mcu_sub_opts);
 
   // ── Staleness timers ──────────────────────────────────────
   // Fire every 1 s; reset snapshot to nullopt if no fresh data arrived.
@@ -273,7 +291,8 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
           "Odom stale — FrameData will carry odom_valid=false");
       }
-    });
+    },
+    odom_timer_cb_group_);
 
   gps_staleness_timer_ = create_wall_timer(
     std::chrono::seconds(1),
@@ -284,7 +303,8 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
           "GPS stale — FrameData will carry gps_valid=false");
       }
-    });
+    },
+    gps_timer_cb_group_);
 
   mcu_staleness_timer_ = create_wall_timer(
     std::chrono::seconds(1),
@@ -295,7 +315,8 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
           "MCU vertical estimate stale — FrameData will carry mcu_valid=false");
       }
-    });
+    },
+    mcu_timer_cb_group_);
 
   openDevice();
   startStreaming();
