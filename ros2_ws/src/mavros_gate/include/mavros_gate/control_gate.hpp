@@ -116,6 +116,7 @@ private:
     bool connected{false};
     bool armed{false};
     bool guided{false};
+    std::string fcu_mode;
     bool kill_switch_window{false};
     bool system_killed{false};
   };
@@ -128,6 +129,7 @@ private:
     std::optional<bool>           connected;
     std::optional<bool>           armed;
     std::optional<bool>           guided;
+    std::optional<std::string>    fcu_mode;
     std::optional<bool>           kill_switch_window;
     std::optional<bool>           system_killed;
   };
@@ -274,6 +276,7 @@ private:
   // ── Altitude controller helpers ───────────────────────────────────────────
   void enterAltHold();
   void exitAltHold();
+  void closeAltitudeController(const std::string& reason);
   void activatePid(float target_agl);   // send active=true command to altitude_controller
   void deactivatePid();                 // send active=false command to altitude_controller
 

@@ -125,13 +125,30 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
 void ControlGateNode::onMavrosState(const mavros_msgs::msg::State::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
+  const InternalState prev_state = snapshotState();
+
   InternalStateUpdate update;
   update.connected = msg->connected;
   update.armed     = msg->armed;
   update.guided    = msg->guided;
+  update.fcu_mode  = msg->mode;
   updateInternalStateAtomic(update);
 
   fcu_state_.store(msg->system_status, std::memory_order_relaxed);
+
+  const bool was_guided_mode =
+    prev_state.guided || prev_state.fcu_mode == "GUIDED";
+  const bool is_guided_mode =
+    msg->guided || msg->mode == "GUIDED";
+
+  if (was_guided_mode && !is_guided_mode) {
+    const std::string prev_mode =
+      prev_state.fcu_mode.empty() ? std::string("GUIDED") : prev_state.fcu_mode;
+    const std::string next_mode =
+      msg->mode.empty() ? std::string("<unknown>") : msg->mode;
+    closeAltitudeController(
+      stringf("FCU mode changed %s -> %s.", prev_mode.c_str(), next_mode.c_str()));
+  }
 }
 
 

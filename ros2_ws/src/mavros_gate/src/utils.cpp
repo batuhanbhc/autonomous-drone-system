@@ -64,6 +64,7 @@ void ControlGateNode::updateInternalStateAtomic(const InternalStateUpdate & upda
   if (update.connected)          state_.connected          = *update.connected;
   if (update.armed)              state_.armed              = *update.armed;
   if (update.guided)             state_.guided             = *update.guided;
+  if (update.fcu_mode)           state_.fcu_mode           = *update.fcu_mode;
   if (update.kill_switch_window) state_.kill_switch_window = *update.kill_switch_window;
   if (update.system_killed)      state_.system_killed      = *update.system_killed;
 }
@@ -395,6 +396,25 @@ void ControlGateNode::exitAltHold()
 
   RCLCPP_INFO(get_logger(), "[alt_hold] Exited AltHold.");
   publishInfo(DroneInfo::LEVEL_INFO, "AltHold deactivated.");
+}
+
+void ControlGateNode::closeAltitudeController(const std::string& reason)
+{
+  alt_ctrl_mode_              = AltCtrlMode::Off;
+  alt_hold_operator_override_ = true;
+  alt_ctrl_vz_output_         = 0.0f;
+  alt_ctrl_output_fresh_      = false;
+  guided_cmd_                 = GuidedCmd{};
+
+  guided_setpoint_timer_->cancel();
+  deactivatePid();
+
+  const std::string msg = reason.empty()
+    ? "Altitude controller disabled."
+    : stringf("Altitude controller disabled: %s", reason.c_str());
+
+  RCLCPP_INFO(get_logger(), "[alt_hold] %s", msg.c_str());
+  publishInfo(DroneInfo::LEVEL_INFO, msg);
 }
 
 void ControlGateNode::activatePid(float target_agl)

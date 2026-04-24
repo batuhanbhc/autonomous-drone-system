@@ -208,6 +208,8 @@ ControlGateNode::executeLand(const TeleopCmd&, const InternalState&)
   req->base_mode = 0;
   req->custom_mode = "LAND";
 
+  closeAltitudeController("LAND command sent.");
+
   (void)set_mode_client_->async_send_request(
     req,
     [this](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture fut) {
@@ -252,6 +254,8 @@ ControlGateNode::executeRTL(const TeleopCmd&, const InternalState&)
   req->param5 = 0.0f;
   req->param6 = 0.0f;
   req->param7 = 0.0f;
+
+  closeAltitudeController("RTL command sent.");
 
   (void)command_long_client_->async_send_request(
     req,
