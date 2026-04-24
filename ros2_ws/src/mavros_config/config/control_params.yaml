@@ -17,7 +17,7 @@ flight_params:
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 0.75
+  kp: 1.0
   ki: 0.0
   kd: 1.0
   d_lpf_tau_s: 0.1
@@ -31,7 +31,7 @@ camera:
   width: 640
   height: 480
   fps: 30
-  camera_mount_angle: 11.5     # degrees, positive downwards
+  camera_mount_angle: 20.0     # degrees, positive downwards
   use_gimbal: true            # true if camera is mounted on gimbal: roll and pitch values do not change
   reverse_mounted: false      # whether the camera is mounted in reverse orientation (upside down)
 
