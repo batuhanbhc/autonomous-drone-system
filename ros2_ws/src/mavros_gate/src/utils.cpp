@@ -313,7 +313,7 @@ bool ControlGateNode::initializationRoutine() {
   requestMsgInterval(245, 2.0f,  "EXTENDED_SYS_STATE");
   requestMsgInterval(147, 1.0f,  "BATTERY_STATUS");
   requestMsgInterval(32,  60.0f, "LOCAL_POSITION_NED");
-  requestMsgInterval(24,  2.0f,  "GPS_RAW_INT");
+  requestMsgInterval(24,  4.0f,  "GPS_RAW_INT");
   requestMsgInterval(31,  60.0f, "ATTITUDE_QUATERNION");
 
   initCommandHandlers();
