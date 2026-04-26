@@ -30,12 +30,12 @@ struct AltitudeEkf {
   float P[5][5] = {};
 
   // Tuning
-  float qAcc_mps2           = 0.5f;    // accel driving noise
+  float qAcc_mps2           = 2.5f;    // accel driving noise
   float qAccelBias          = 0.01f;   // accel bias RW
   float qBaroBias_m         = 0.005f;  // baro bias RW
   float qGround_m           = 0.0005f; // ground RW (slow)
 
-  float rBaro_m             = 0.8f;    // baro stddev
+  float rBaro_m             = 0.6f;    // baro stddev
 
   // Lidar validity limits
   float lidarMinRange_m     = 0.05f;
@@ -45,14 +45,14 @@ struct AltitudeEkf {
 
   // One-sided obstacle / recovery logic.
   // Bands are combined with the lidar noise model so tuning stays minimal.
-  float minAcceptBand_m     = 0.12f;   // normal acceptance band around locked floor
-  float minObstacleBand_m   = 0.25f;   // upward floor jump => likely obstacle
+  float minAcceptBand_m     = 0.15f;   // normal acceptance band around locked floor
+  float minObstacleBand_m   = 0.50f;   // upward floor jump => likely obstacle
   uint8_t recoverConsecutiveNeeded = 3;
   uint32_t minBlockHoldMs   = 150;     // chatter protection only
   uint32_t lidarBlockedSinceMs = 0;
 
   // Statistical gate
-  float mahaGateSigma       = 4.0f;
+  float mahaGateSigma       = 3.5f;
 
   // Internal bookkeeping
   bool   hasLastAcceptedLidar = false;
