@@ -36,7 +36,7 @@ camera:
   reverse_mounted: false      # whether the camera is mounted in reverse orientation (upside down)
 
 streaming:
-  codec: mjpeg
+  codec: h264
 
 vision_pipeline:
   obj_det_hef_path: /yolov11s.hef # default path: "/usr/share/hailo-models/yolov8s_h8l.hef"
@@ -102,6 +102,17 @@ panel:
   refresh_hz: 10.0
   queue_size: 10
   stale_threshold_s: 5.0
+
+link:
+  port: 50010
+  reconnect_s: 1.0
+  video:
+    port: 50020
+    transport: udp
+  telemetry:
+    odom_hz: 10.0
+    vertical_estimate_hz: 10.0
+    altitude_output_hz: 5.0
 
   
 teleop:

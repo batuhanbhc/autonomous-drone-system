@@ -1,45 +1,58 @@
+x-ros-common: &ros-common
+  image: test-ros
+  build: .
+  privileged: true
+  network_mode: host
+  pid: host
+  ipc: host
+  devices:
+    - /dev/hailo0:/dev/hailo0
+    - /dev/ttyAMA0:/dev/ttyAMA0
+    - /dev/ttyUSB0:/dev/ttyUSB0
+  volumes:
+    - /dev:/dev
+    - /lib/firmware:/lib/firmware
+    - /lib/udev/rules.d:/lib/udev/rules.d:ro
+    - /lib/modules:/lib/modules:ro
+    - /run/udev:/run/udev:ro
+    - /sys:/sys
+    - /proc:/proc
+    - /run/dbus:/run/dbus
+    - /tmp/.X11-unix:/tmp/.X11-unix
+    - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
+    - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
+    - /home/batuhan/drone-project/tools/tune.py:/home/batuhan/tools/tune.py
+    - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/start_nodes.sh
+    - /home/batuhan/drone-project/ros2_docker/start_core.sh:/start_core.sh
+    - /home/batuhan/drone-project/ros2_docker/start_link.sh:/start_link.sh
+    - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
+    - /home/batuhan/drone-project/ros2_docker/person_detector.hef:/person_detector.hef
+    - /home/batuhan/drone-project/ros2_docker/yolov11s.hef:/yolov11s.hef
+    - /usr/share/hailo-models:/usr/share/hailo-models
+    - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
+  group_add:
+    - "20"
+  environment:
+    ROS_DOMAIN_ID: 10
+  working_dir: /home/batuhan/ros2_ws
+  stdin_open: true
+  tty: true
+
 services:
-  ros:
-    image: test-ros
-    build: .
-    privileged: true
-    network_mode: host
-    pid: host
-    ipc: host
-
-    devices:
-      - /dev/hailo0:/dev/hailo0
-      - /dev/ttyAMA0:/dev/ttyAMA0
-      - /dev/ttyUSB0:/dev/ttyUSB0
-
-    volumes:
-      - /dev:/dev
-      - /lib/firmware:/lib/firmware
-      - /lib/udev/rules.d:/lib/udev/rules.d:ro
-      - /lib/modules:/lib/modules:ro
-      - /run/udev:/run/udev:ro
-
-      - /sys:/sys
-      - /proc:/proc
-      - /run/dbus:/run/dbus
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /home/batuhan/drone-project/ros2_ws:/home/batuhan/ros2_ws
-      - /home/batuhan/drone-project/docker_shared:/home/batuhan/shared
-      - /home/batuhan/drone-project/tools/tune.py:/home/batuhan/tools/tune.py
-      - /home/batuhan/drone-project/ros2_docker/start_nodes.sh:/start_nodes.sh
-      - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
-      - /home/batuhan/drone-project/ros2_docker/person_detector.hef:/person_detector.hef
-      - /home/batuhan/drone-project/ros2_docker/yolov11s.hef:/yolov11s.hef
-      - /usr/share/hailo-models:/usr/share/hailo-models
-      - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
-
-    group_add:
-      - "20"
-
+  core:
+    <<: *ros-common
     environment:
       ROS_DOMAIN_ID: 10
+      ROS_LOCALHOST_ONLY: "1"
+    command: /bin/bash /start_core.sh
 
-    working_dir: /home/batuhan/ros2_ws
+  link:
+    <<: *ros-common
+    environment:
+      ROS_DOMAIN_ID: 10
+      ROS_LOCALHOST_ONLY: "1"
+    command: /bin/bash /start_link.sh
+
+  ros:
+    <<: *ros-common
     command: /bin/bash /start_nodes.sh
-    stdin_open: true
-    tty: true

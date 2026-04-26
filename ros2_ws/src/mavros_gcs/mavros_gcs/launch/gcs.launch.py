@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.actions import SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -17,8 +18,12 @@ def generate_launch_description():
         description='Rotate stream viewer 180 degrees'
     )
     stream_codec_arg = DeclareLaunchArgument(
-        'stream_codec', default_value='mjpeg',
+        'stream_codec', default_value='h264',
         description="Expected stream codec for the viewer ('mjpeg' or 'h264')"
+    )
+    listen_host_arg = DeclareLaunchArgument(
+        'listen_host', default_value='0.0.0.0',
+        description='Listen address for the local GCS bridge server'
     )
     use_odom_arg = DeclareLaunchArgument(          # NEW
         'use_odom', default_value='true',
@@ -29,7 +34,16 @@ def generate_launch_description():
     gcs_id   = LaunchConfiguration('gcs_id')
     rotate   = LaunchConfiguration('rotate')
     stream_codec = LaunchConfiguration('stream_codec')
+    listen_host = LaunchConfiguration('listen_host')
     use_odom = LaunchConfiguration('use_odom')     # NEW
+
+    gcs_bridge = Node(
+        package='drone_link',
+        executable='gcs_link_bridge',
+        name='gcs_link_bridge',
+        parameters=[{'drone_id': drone_id, 'listen_host': listen_host}],
+        output='screen',
+    )
 
     teleop = Node(
         package='mavros_gcs',
@@ -63,11 +77,14 @@ def generate_launch_description():
         output='screen',
     )
     return LaunchDescription([
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1'),
         drone_id_arg,
         gcs_id_arg,
         rotate_arg,
         stream_codec_arg,
+        listen_host_arg,
         use_odom_arg,                                               # NEW
+        gcs_bridge,
         teleop,
         info_panel,
         stream_viewer,

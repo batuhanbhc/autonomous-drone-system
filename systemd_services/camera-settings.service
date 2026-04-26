@@ -1,8 +1,9 @@
 [Unit]
 Description=Apply UVC camera settings
-After=dev-video0.device drone.service
+After=dev-video0.device drone-core.service drone.service
 Wants=dev-video0.device
-Requires=drone.service
+Wants=drone-core.service
+Wants=drone.service
 
 [Service]
 Type=oneshot

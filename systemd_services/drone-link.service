@@ -1,0 +1,20 @@
+[Unit]
+Description=Drone Link Bridge Docker Stack
+After=docker.service drone-core.service NetworkManager-wait-online.service
+Requires=docker.service drone-core.service
+Wants=NetworkManager-wait-online.service
+
+[Service]
+Type=simple
+User=batuhan
+WorkingDirectory=/home/batuhan/drone-project/ros2_docker
+ExecStartPre=/bin/bash -c '\
+  until ip addr show wlan0 | grep -q "inet "; \
+  do echo "[drone-link.service] Waiting for IP on wlan0..."; sleep 2; done'
+ExecStart=/usr/bin/docker compose up link
+ExecStop=/usr/bin/docker compose stop link
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

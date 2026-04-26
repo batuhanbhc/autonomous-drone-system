@@ -1,0 +1,16 @@
+[Unit]
+Description=Drone Core Docker Stack
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=batuhan
+WorkingDirectory=/home/batuhan/drone-project/ros2_docker
+ExecStart=/usr/bin/docker compose up core
+ExecStop=/usr/bin/docker compose stop core
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
