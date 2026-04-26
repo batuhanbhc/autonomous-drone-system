@@ -18,8 +18,12 @@ def generate_launch_description():
         description='Rotate stream viewer 180 degrees'
     )
     stream_codec_arg = DeclareLaunchArgument(
-        'stream_codec', default_value='h264',
-        description="Expected stream codec for the viewer ('mjpeg' or 'h264')"
+        'stream_codec', default_value='',
+        description="Stream codec override for the viewer ('mjpeg' or 'h264'). Empty uses mavros_config."
+    )
+    stream_transport_arg = DeclareLaunchArgument(
+        'stream_transport', default_value='',
+        description="Stream transport override for the viewer ('udp' or 'tcp'). Empty uses mavros_config."
     )
     listen_host_arg = DeclareLaunchArgument(
         'listen_host', default_value='0.0.0.0',
@@ -34,6 +38,7 @@ def generate_launch_description():
     gcs_id   = LaunchConfiguration('gcs_id')
     rotate   = LaunchConfiguration('rotate')
     stream_codec = LaunchConfiguration('stream_codec')
+    stream_transport = LaunchConfiguration('stream_transport')
     listen_host = LaunchConfiguration('listen_host')
     use_odom = LaunchConfiguration('use_odom')     # NEW
 
@@ -65,7 +70,13 @@ def generate_launch_description():
         package='mavros_gcs',
         executable='stream_viewer',
         name='stream_viewer',
-        parameters=[{'drone_id': drone_id, 'rotate': rotate, 'stream_codec': stream_codec}],
+        parameters=[{
+            'drone_id': drone_id,
+            'rotate': rotate,
+            'stream_codec': stream_codec,
+            'stream_transport': stream_transport,
+            'listen_host': listen_host,
+        }],
         output='screen',
         emulate_tty=True,
     )
@@ -82,6 +93,7 @@ def generate_launch_description():
         gcs_id_arg,
         rotate_arg,
         stream_codec_arg,
+        stream_transport_arg,
         listen_host_arg,
         use_odom_arg,                                               # NEW
         gcs_bridge,

@@ -108,7 +108,7 @@ link:
   reconnect_s: 1.0
   video:
     port: 50020
-    transport: udp
+    transport: udp   # direct ffmpeg transport used by video_streamer/stream_viewer: udp or tcp
   telemetry:
     odom_hz: 10.0
     vertical_estimate_hz: 10.0

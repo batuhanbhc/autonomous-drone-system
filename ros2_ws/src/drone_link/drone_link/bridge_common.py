@@ -17,7 +17,6 @@ from drone_msgs.msg import (
     TeleopCommand,
     Toggle,
 )
-from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
 from mavros_msgs.msg import ExtendedState, GPSRAW, State, StatusText
 from nav_msgs.msg import Odometry
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -29,8 +28,6 @@ import yaml
 
 MAGIC = b"DLNK"
 HEADER = struct.Struct("!4sHI")
-VIDEO_HEADER = struct.Struct("!4sI")
-MAX_UDP_PAYLOAD = 65507
 
 TOPIC_TELEOP_COMMAND = 1
 TOPIC_TELEOP_ACTION = 2
@@ -297,11 +294,3 @@ class SocketBridgeBase:
             self._close_socket()
             if on_disconnect is not None:
                 on_disconnect()
-
-
-def serialize_video_packet(msg: FFMPEGPacket) -> bytes:
-    return serialize_message(msg)
-
-
-def deserialize_video_packet(payload: bytes) -> FFMPEGPacket:
-    return deserialize_message(payload, FFMPEGPacket)

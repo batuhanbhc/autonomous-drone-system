@@ -15,10 +15,10 @@
            base_class_type="rclcpp::Node">
       <description>Vision pipeline node</description>
     </class>
-    <class name="drone_pipeline::MjpegStreamer"
-           type="drone_pipeline::MjpegStreamer"
+    <class name="drone_pipeline::VideoStreamer"
+           type="drone_pipeline::VideoStreamer"
            base_class_type="rclcpp::Node">
-      <description>MJPEG stream relay node</description>
+      <description>Best-effort network video streamer node</description>
     </class>
   </library>
 </class_libraries>
