@@ -13,15 +13,18 @@ Packet format:
   [N+1]  CRC low
   [N+2]  CRC high
 
-VerticalEstimatePayload (packed, 18 bytes):
+VerticalEstimatePayload (packed, 26 bytes):
   uint32  timestamp_ms
   float   z_world_m
   float   vz_world_mps
   float   agl_m
   uint8   ekf_initialized
   uint8   lidar_accepted
+  float   latest_lidar_m
+  uint32  lidar_age_ms
 """
 
+import math
 import struct
 import threading
 import time
@@ -34,8 +37,8 @@ import sys
 SYNC0          = 0xA5
 SYNC1          = 0x5A
 MSG_VERTICAL   = 0x01
-PAYLOAD_FMT    = "<IfffBB"   # little-endian: uint32 + 3×float + 2×uint8
-PAYLOAD_SIZE   = struct.calcsize(PAYLOAD_FMT)   # 18 bytes
+PAYLOAD_FMT    = "<IfffBBfI"
+PAYLOAD_SIZE   = struct.calcsize(PAYLOAD_FMT)   # 26 bytes
 
 SERIAL_PORT    = "/dev/ttyACM0"
 BAUD_RATE      = 460800
@@ -112,7 +115,7 @@ def parse_packets(ser, callback):
             stats["seq_last"] = seq
 
             if msg_id == MSG_VERTICAL and payload_len == PAYLOAD_SIZE:
-                ts_ms, z_m, vz_mps, agl_m, ekf_init, lidar_acc = \
+                ts_ms, z_m, vz_mps, agl_m, ekf_init, lidar_acc, latest_lidar_m, lidar_age_ms = \
                     struct.unpack(PAYLOAD_FMT, payload_bytes)
                 callback({
                     "timestamp_ms":    ts_ms,
@@ -121,6 +124,8 @@ def parse_packets(ser, callback):
                     "agl_m":           agl_m,
                     "ekf_initialized": bool(ekf_init),
                     "lidar_accepted":  bool(lidar_acc),
+                    "latest_lidar_m":  latest_lidar_m,
+                    "lidar_age_ms":    lidar_age_ms,
                     "seq":             seq,
                     "stats":           dict(stats),
                 })
@@ -142,6 +147,8 @@ CARDS = [
     ("Vz",          "vz_world_mps",  "m/s",  GREEN,    "Vertical velocity"),
     ("Z world",     "z_world_m",     "m",    YELLOW,   "World-frame altitude"),
     ("Lidar acc.",  "lidar_accepted", "",    RED_SOFT, "Last lidar update accepted"),
+    ("Lidar raw",   "latest_lidar_m", "m",   ACCENT,   "Latest decoded lidar reading"),
+    ("Lidar age",   "lidar_age_ms",  "ms",   YELLOW,   "Time since last lidar frame"),
 ]
 
 class DroneMonitor(tk.Tk):
@@ -150,7 +157,7 @@ class DroneMonitor(tk.Tk):
         self.title("Vertical Estimator")
         self.configure(bg=BG)
         self.resizable(True, True)
-        self.minsize(520, 520)
+        self.minsize(520, 680)
 
         self._data = {}
         self._lock = threading.Lock()
@@ -294,6 +301,12 @@ class DroneMonitor(tk.Tk):
                 if key == "lidar_accepted":
                     text  = "YES" if raw else "NO"
                     color_now = GREEN if raw else RED_SOFT
+                elif key == "lidar_age_ms":
+                    text = "—" if raw in (None, 0xFFFFFFFF) else str(raw)
+                    color_now = color
+                elif raw is None or (isinstance(raw, float) and math.isnan(raw)):
+                    text = "—"
+                    color_now = color
                 elif raw is None:
                     text = "—"
                     color_now = color

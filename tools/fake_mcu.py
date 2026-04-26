@@ -2,17 +2,14 @@
 """
 fake_mcu_bridge.py
 Mimics mcu_bridge for SITL: reads local_position/odom and publishes
-the same Vector3Stamped topic that control_gate expects.
-  vector.x = z_world_m   (position.z from odom)
-  vector.y = vz_mps      (twist.linear.z from odom)
-  vector.z = agl_m       (same as z_world for SITL)
+the same McuVerticalEstimate topic that control_gate expects.
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Vector3Stamped
+from drone_msgs.msg import McuVerticalEstimate
 
 
 class FakeMcuBridge(Node):
@@ -36,19 +33,23 @@ class FakeMcuBridge(Node):
                              reliability=ReliabilityPolicy.BEST_EFFORT,
                              durability=DurabilityPolicy.VOLATILE)
 
-        self.pub = self.create_publisher(Vector3Stamped, pub_topic, qos_pub)
+        self.pub = self.create_publisher(McuVerticalEstimate, pub_topic, qos_pub)
         self.sub = self.create_subscription(Odometry, odom_topic, self.on_odom, qos_sub)
 
     def on_odom(self, msg: Odometry):
         z  = msg.pose.pose.position.z
         vz = msg.twist.twist.linear.z
 
-        out = Vector3Stamped()
+        out = McuVerticalEstimate()
         out.header.stamp    = self.get_clock().now().to_msg()
         out.header.frame_id = 'world'
-        out.vector.x = z    # z_world_m
-        out.vector.y = vz   # vz_world_mps
-        out.vector.z = z    # agl_m (same as z for SITL, no ground offset)
+        out.z_world_m = z
+        out.vz_world_mps = vz
+        out.agl_m = z
+        out.ekf_initialized = True
+        out.lidar_accepted = True
+        out.latest_lidar_m = z
+        out.lidar_age_ms = 0
         self.pub.publish(out)
 
 

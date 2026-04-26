@@ -9,8 +9,8 @@
  *
  * Node topology (intra-process paths marked ★):
  *
- *   mcu_bridge ──★──► altitude_controller   (Vector3Stamped, ~20 Hz, sensor QoS)
- *   mcu_bridge ──★──► control_gate          (Vector3Stamped, ~20 Hz, best-effort)
+ *   mcu_bridge ──★──► altitude_controller   (McuVerticalEstimate, ~20 Hz, sensor QoS)
+ *   mcu_bridge ──★──► control_gate          (McuVerticalEstimate, ~20 Hz, best-effort)
  *   control_gate ──★─► altitude_controller  (AltitudeControllerInput, reliable)
  *   altitude_controller ──★──► control_gate (Float32, sensor QoS)
  *

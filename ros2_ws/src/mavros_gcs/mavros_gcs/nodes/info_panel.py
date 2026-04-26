@@ -25,8 +25,8 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
+from drone_msgs.msg import McuVerticalEstimate
 from drone_msgs.msg import Toggle
-from geometry_msgs.msg import Vector3Stamped
 from std_msgs.msg import Float32
 
 from ament_index_python.packages import get_package_share_directory
@@ -151,7 +151,7 @@ class InfoPanelNode(Node):
             reliable_qos,
         )
         self.create_subscription(
-            Vector3Stamped,
+            McuVerticalEstimate,
             t_vert_est,
             self._on_vert_est,
             qos_profile_sensor_data,
@@ -206,7 +206,7 @@ class InfoPanelNode(Node):
 
         # col_0: MCU Estimate (small, fixed) on top, Odometry fills the rest
         self._layout["col_0"].split_column(
-            Layout(name="vert_est", size=7),  # 3 data rows + panel chrome
+            Layout(name="vert_est", size=9),  # 5 data rows + panel chrome
             Layout(name="odom"),
         )
         # col_1: State + ExtState + CtrlGate stacked
@@ -287,7 +287,7 @@ class InfoPanelNode(Node):
             self.stream_active.update_from_msg(msg)
             self._mark_dirty("Drone Pipeline")
 
-    def _on_vert_est(self, msg: Vector3Stamped):
+    def _on_vert_est(self, msg: McuVerticalEstimate):
         with self._ui_lock:
             self.vert_est.update_from_msg(msg)
             self._mark_dirty("Vertical Estimate")
@@ -354,6 +354,8 @@ class InfoPanelNode(Node):
         return {
             "agl_m": self.vert_est.agl_m,
             "vz":    self.vert_est.vz_world_mps,
+            "latest_lidar_m": self.vert_est.latest_lidar_m,
+            "lidar_age_ms": self.vert_est.lidar_age_ms,
             "vz_cmd": self.alt_ctrl_out.vz_cmd_mps,
         }
     
@@ -630,6 +632,10 @@ class InfoPanelNode(Node):
         t = self._make_kv_table()
         t.add_row("AGL (m)",        _format_float_to_str(data["agl_m"], 3))
         t.add_row("Vz meas (m/s)",  _format_float_to_str(data["vz"],    3))
+        t.add_row("Latest lidar (m)", _format_float_to_str(data["latest_lidar_m"], 3))
+        age_ms = data["lidar_age_ms"]
+        age_str = None if age_ms in (None, 4294967295) else f"{age_ms:d}"
+        t.add_row("Lidar age (ms)", _format_str_to_str(age_str))
         t.add_row("Vz cmd  (m/s)",  _format_float_to_str(data["vz_cmd"], 3))
         title  = "MCU Estimate [STALE]" if stale else "MCU Estimate"
         border = "bright_red" if stale else "cyan"

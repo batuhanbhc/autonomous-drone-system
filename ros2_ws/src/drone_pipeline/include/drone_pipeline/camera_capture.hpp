@@ -10,8 +10,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "mavros_msgs/msg/gpsraw.hpp"
-#include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "drone_msgs/msg/frame_data.hpp"
+#include "drone_msgs/msg/mcu_vertical_estimate.hpp"
 
 namespace drone_pipeline
 {
@@ -46,8 +46,8 @@ struct GpsSnapshot
 
 struct McuSnapshot
 {
-  float agl_m{};    // Vector3Stamped.z
-  float vz_mps{};   // Vector3Stamped.y
+  float agl_m{};
+  float vz_mps{};
 };
 
 class CameraCapture : public rclcpp::Node
@@ -67,7 +67,7 @@ private:
   // ── Sensor callbacks ──────────────────────────────────────
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void gpsCallback (const mavros_msgs::msg::GPSRAW::SharedPtr msg);
-  void mcuCallback (const geometry_msgs::msg::Vector3Stamped::SharedPtr msg);
+  void mcuCallback (const drone_msgs::msg::McuVerticalEstimate::SharedPtr msg);
 
   // ── Members ───────────────────────────────────────────────
   CameraConfig config_;
@@ -83,8 +83,7 @@ private:
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr          odom_sub_;
   rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr         gps_sub_;
-  rclcpp::Subscription<
-    geometry_msgs::msg::Vector3Stamped>::SharedPtr                  mcu_sub_;
+  rclcpp::Subscription<drone_msgs::msg::McuVerticalEstimate>::SharedPtr mcu_sub_;
 
   // Staleness timers — each fires independently at ~1 Hz
   rclcpp::TimerBase::SharedPtr odom_staleness_timer_;

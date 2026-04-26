@@ -30,9 +30,9 @@
 #include <drone_msgs/msg/altitude_controller_input.hpp>
 #include <drone_msgs/srv/set_target_height.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
-#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <builtin_interfaces/msg/time.hpp>
+#include <drone_msgs/msg/mcu_vertical_estimate.hpp>
 
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
@@ -61,7 +61,7 @@ private:
   using DroneState          = drone_msgs::msg::DroneState;
   using GcsHeartbeat        = drone_msgs::msg::GcsHeartbeat;
   using MavrosExtendedState = mavros_msgs::msg::ExtendedState;
-  using VerticalEstimate    = geometry_msgs::msg::Vector3Stamped;
+  using VerticalEstimate    = drone_msgs::msg::McuVerticalEstimate;
   using AltCtrlInput        = drone_msgs::msg::AltitudeControllerInput;
   using AltCtrlOutput       = std_msgs::msg::Float32;   // vz m/s from PID
   using SetTargetHeight     = drone_msgs::srv::SetTargetHeight;

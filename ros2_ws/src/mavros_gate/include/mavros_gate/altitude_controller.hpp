@@ -16,12 +16,12 @@
  *      target_agl_m    – desired hold altitude [m]
  *      reset_integral  – edge-triggered: zero the integral before next tick
  *
- *  <base_ns>/<mcu_bridge_topic>          (geometry_msgs/Vector3Stamped)
+ *  <base_ns>/<mcu_bridge_topic>          (drone_msgs/McuVerticalEstimate)
  *    MEASUREMENT topic — sensor QoS (best-effort, keep-last 1).
  *    Published directly by mcu_bridge at ~20 Hz:
- *      vector.x = z_world_m      (height above origin, m)
- *      vector.y = vz_world_mps   (vertical velocity,   m/s)
- *      vector.z = agl_m          (above-ground-level,  m)
+ *      z_world_m      (height above origin, m)
+ *      vz_world_mps   (vertical velocity,   m/s)
+ *      agl_m          (above-ground-level,  m)
  *    The controller reads agl_m and vz_world_mps from this topic.
  *    Measurements are IGNORED while active == false.
  *
@@ -76,8 +76,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float32.hpp>
-#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <drone_msgs/msg/altitude_controller_input.hpp>
+#include <drone_msgs/msg/mcu_vertical_estimate.hpp>
 #include <drone_msgs/srv/set_pid_gains.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -92,7 +92,7 @@ public:
 private:
   using AltCtrlInput    = drone_msgs::msg::AltitudeControllerInput;
   using AltCtrlOutput   = std_msgs::msg::Float32;
-  using VerticalEst     = geometry_msgs::msg::Vector3Stamped;
+  using VerticalEst     = drone_msgs::msg::McuVerticalEstimate;
   using SetPidGains     = drone_msgs::srv::SetPidGains;
 
   // ── Config ────────────────────────────────────────────────────────────────

@@ -37,6 +37,8 @@ struct VerticalEstimatePayload {
   float agl_m;
   uint8_t ekf_initialized;
   uint8_t lidar_accepted;
+  float latest_lidar_m;
+  uint32_t lidar_age_ms;
 };
 #pragma pack(pop)
 
@@ -94,12 +96,20 @@ static uint16_t crc16CcittFalse(const uint8_t* data, size_t len) {
 // =========================
 static void sendVerticalEstimatePacket() {
   VerticalEstimatePayload p{};
-  p.timestamp_ms       = millis();
+  const uint32_t nowMs = millis();
+  p.timestamp_ms       = nowMs;
   p.z_world_m          = altitudeEkf.s.z_m;
   p.vz_world_mps       = altitudeEkf.s.vz_mps;
   p.agl_m              = altitudeEkf.s.agl_m;
   p.ekf_initialized    = altitudeEkf.s.initialized ? 1 : 0;
   p.lidar_accepted     = altitudeEkf.s.lastLidarAccepted ? 1 : 0;
+  if (lidarData.timestampMs == 0) {
+    p.latest_lidar_m = NAN;
+    p.lidar_age_ms = 0xFFFFFFFFu;
+  } else {
+    p.latest_lidar_m = 0.01f * static_cast<float>(lidarData.distanceCm);
+    p.lidar_age_ms = nowMs - lidarData.timestampMs;
+  }
 
   const uint8_t payloadLen = (uint8_t)sizeof(VerticalEstimatePayload);
 

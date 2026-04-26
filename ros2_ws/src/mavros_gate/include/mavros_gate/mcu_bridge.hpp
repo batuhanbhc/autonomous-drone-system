@@ -7,10 +7,10 @@
 #include <atomic>
 
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/vector3_stamped.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
+#include <drone_msgs/msg/mcu_vertical_estimate.hpp>
 
 
 // ---------------------------------------------------------------------------
@@ -25,6 +25,8 @@
 //    float     agl_m
 //    uint8_t   ekf_initialized
 //    uint8_t   lidar_accepted
+//    float     latest_lidar_m
+//    uint32_t  lidar_age_ms
 // ---------------------------------------------------------------------------
 
 class McuBridgeNode : public rclcpp::Node
@@ -38,7 +40,7 @@ private:
   static constexpr uint8_t SYNC0               = 0xA5;
   static constexpr uint8_t SYNC1               = 0x5A;
   static constexpr uint8_t MSG_VERTICAL        = 0x01;
-  static constexpr uint8_t EXPECTED_PAYLOAD_LEN = 18;
+  static constexpr uint8_t EXPECTED_PAYLOAD_LEN = 26;
 
 #pragma pack(push, 1)
   struct VerticalEstimatePayload
@@ -49,6 +51,8 @@ private:
     float    agl_m;
     uint8_t  ekf_initialized;
     uint8_t  lidar_accepted;
+    float    latest_lidar_m;
+    uint32_t lidar_age_ms;
   };
 #pragma pack(pop)
 
@@ -71,16 +75,7 @@ private:
 
   // ── publisher ───────────────────────────────────────────────────────────
   //
-  // We publish on geometry_msgs/Vector3Stamped (built-in, no custom msg needed):
-  //   vector.x  →  z_world_m      (height above origin, m)
-  //   vector.y  →  vz_world_mps   (vertical velocity,   m/s)
-  //   vector.z  →  agl_m          (above-ground-level,  m)
-  //
-  // The header stamp carries the ROS wall-clock time of reception.
-  // ekf_initialized and lidar_accepted are logged at DEBUG level only;
-  // add a custom message if you need them on the wire.
-  //
-  rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr pub_vertical_;
+  rclcpp::Publisher<drone_msgs::msg::McuVerticalEstimate>::SharedPtr pub_vertical_;
 };
 
 #endif  // MAVROS_GATE__MCU_BRIDGE_HPP_

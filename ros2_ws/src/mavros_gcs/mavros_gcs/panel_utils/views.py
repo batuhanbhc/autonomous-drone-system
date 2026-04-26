@@ -7,7 +7,7 @@ from mavros_msgs.msg import GPSRAW
 from drone_msgs.msg import DroneState
 from drone_msgs.msg import DroneInfo
 from drone_msgs.msg import Toggle
-from geometry_msgs.msg import Vector3Stamped
+from drone_msgs.msg import McuVerticalEstimate
 
 from pymavlink import mavutil
 from tf_transformations import euler_from_quaternion
@@ -305,16 +305,19 @@ class GPSView:
 @dataclass
 class VerticalEstimateView:
     """
-    Receives geometry_msgs/Vector3Stamped from mcu_bridge:
-      vector.x = z_world_m
-      vector.y = vz_world_mps
-      vector.z = agl_m
+    Receives drone_msgs/McuVerticalEstimate from mcu_bridge.
     """
     agl_m: float | None = None
     vz_world_mps: float | None = None
     z_world_m: float | None = None
+    latest_lidar_m: float | None = None
+    lidar_age_ms: int | None = None
 
-    def update_from_msg(self, msg: Vector3Stamped):
-        self.z_world_m    = float(msg.vector.x)
-        self.vz_world_mps = float(msg.vector.y)
-        self.agl_m        = float(msg.vector.z)
+    def update_from_msg(self, msg: McuVerticalEstimate):
+        self.z_world_m = float(msg.z_world_m)
+        self.vz_world_mps = float(msg.vz_world_mps)
+        self.agl_m = float(msg.agl_m)
+        latest_lidar_m = float(msg.latest_lidar_m)
+        self.latest_lidar_m = None if math.isnan(latest_lidar_m) else latest_lidar_m
+        lidar_age_ms = int(msg.lidar_age_ms)
+        self.lidar_age_ms = None if lidar_age_ms == 0xFFFFFFFF else lidar_age_ms

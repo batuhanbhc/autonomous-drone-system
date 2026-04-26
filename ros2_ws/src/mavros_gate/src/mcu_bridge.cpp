@@ -40,7 +40,7 @@ McuBridgeNode::McuBridgeNode(const rclcpp::NodeOptions & options)
 
   // ── publisher (best-effort, estimated ~20 Hz) ────────────────────────────
   auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  pub_vertical_ = this->create_publisher<geometry_msgs::msg::Vector3Stamped>(pub_topic_, qos);
+  pub_vertical_ = this->create_publisher<drone_msgs::msg::McuVerticalEstimate>(pub_topic_, qos);
 
   RCLCPP_INFO(get_logger(), "Publishing vertical estimates on: %s", pub_topic_.c_str());
 
@@ -268,20 +268,24 @@ void McuBridgeNode::serialReadLoop()
     std::memcpy(&p, payloadBytes, sizeof(p));
 
     RCLCPP_DEBUG(get_logger(),
-      "seq=%u t_ms=%u z=%.3f vz=%.3f agl=%.3f init=%u lidar=%u",
+      "seq=%u t_ms=%u z=%.3f vz=%.3f agl=%.3f init=%u lidar=%u latest_lidar=%.3f age_ms=%u",
       seq, p.timestamp_ms, p.z_world_m, p.vz_world_mps, p.agl_m,
-      p.ekf_initialized, p.lidar_accepted);
+      p.ekf_initialized, p.lidar_accepted, p.latest_lidar_m, p.lidar_age_ms);
 
     // ── publish ───────────────────────────────────────────────────────────
     //   x = z_world_m  (height above origin)
     //   y = vz_world_mps (vertical velocity)
     //   z = agl_m      (above ground level)
-    geometry_msgs::msg::Vector3Stamped msg;
-    msg.header.stamp    = this->now();
+    drone_msgs::msg::McuVerticalEstimate msg;
+    msg.header.stamp = this->now();
     msg.header.frame_id = "world";
-    msg.vector.x = static_cast<double>(p.z_world_m);
-    msg.vector.y = static_cast<double>(p.vz_world_mps);
-    msg.vector.z = static_cast<double>(p.agl_m);
+    msg.z_world_m = p.z_world_m;
+    msg.vz_world_mps = p.vz_world_mps;
+    msg.agl_m = p.agl_m;
+    msg.ekf_initialized = (p.ekf_initialized != 0);
+    msg.lidar_accepted = (p.lidar_accepted != 0);
+    msg.latest_lidar_m = p.latest_lidar_m;
+    msg.lidar_age_ms = p.lidar_age_ms;
 
     pub_vertical_->publish(msg);
   }

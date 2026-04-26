@@ -8,9 +8,16 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from ament_index_python.packages import get_package_share_directory
-from drone_msgs.msg import DroneInfo, DroneState, GcsHeartbeat, TeleopAction, TeleopCommand, Toggle
+from drone_msgs.msg import (
+    DroneInfo,
+    DroneState,
+    GcsHeartbeat,
+    McuVerticalEstimate,
+    TeleopAction,
+    TeleopCommand,
+    Toggle,
+)
 from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
-from geometry_msgs.msg import Vector3Stamped
 from mavros_msgs.msg import ExtendedState, GPSRAW, State, StatusText
 from nav_msgs.msg import Odometry
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -136,7 +143,7 @@ def build_bridge_config(drone_id: int, root_cfg: dict) -> BridgeConfig:
         TOPIC_MCU_VERTICAL_ESTIMATE: OutboundTopic(
             TOPIC_MCU_VERTICAL_ESTIMATE,
             base + custom_topics["mcu_bridge"],
-            Vector3Stamped,
+            McuVerticalEstimate,
             sensor_qos,
             float(telemetry_cfg.get("vertical_estimate_hz", 10.0)),
         ),

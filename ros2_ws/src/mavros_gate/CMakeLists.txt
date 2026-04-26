@@ -52,7 +52,7 @@ target_include_directories(mcu_bridge PUBLIC
 
 ament_target_dependencies(mcu_bridge
   rclcpp
-  geometry_msgs
+  drone_msgs
   ament_index_cpp
 )
 
@@ -63,7 +63,7 @@ target_link_libraries(mcu_bridge yaml-cpp)
 # Soft-PID controller node.
 # Subscribes:
 #   <ns>/altitude_controller/input  (drone_msgs/AltitudeControllerInput) — COMMANDS
-#   <ns>/<mcu_bridge_topic>         (geometry_msgs/Vector3Stamped)        — MEASUREMENTS
+#   <ns>/<mcu_bridge_topic>         (drone_msgs/McuVerticalEstimate)      — MEASUREMENTS
 # Publishes:
 #   <ns>/altitude_controller/output (std_msgs/Float32)
 # Service:
@@ -82,7 +82,6 @@ ament_target_dependencies(altitude_controller
   rclcpp
   drone_msgs
   std_msgs
-  geometry_msgs
   ament_index_cpp
 )
 

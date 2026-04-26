@@ -271,9 +271,9 @@ CameraCapture::CameraCapture(const rclcpp::NodeOptions & options)
     [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) { gpsCallback(msg); },
     gps_sub_opts);
 
-  mcu_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+  mcu_sub_ = create_subscription<drone_msgs::msg::McuVerticalEstimate>(
     config_.mcu_vertical_topic, best_effort_qos,
-    [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) { mcuCallback(msg); },
+    [this](const drone_msgs::msg::McuVerticalEstimate::SharedPtr msg) { mcuCallback(msg); },
     mcu_sub_opts);
 
   // ── Staleness timers ──────────────────────────────────────
@@ -368,12 +368,11 @@ void CameraCapture::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
   gps_valid_.store(true);
 }
 
-void CameraCapture::mcuCallback(const geometry_msgs::msg::Vector3Stamped::SharedPtr msg)
+void CameraCapture::mcuCallback(const drone_msgs::msg::McuVerticalEstimate::SharedPtr msg)
 {
-  // mcu_bridge packs:  x = z_world_m,  y = vz_world_mps,  z = agl_m
   McuSnapshot snap;
-  snap.agl_m  = static_cast<float>(msg->vector.z);
-  snap.vz_mps = static_cast<float>(msg->vector.y);
+  snap.agl_m  = msg->agl_m;
+  snap.vz_mps = msg->vz_world_mps;
 
   {
     std::lock_guard<std::mutex> lk(mcu_mtx_);

@@ -258,9 +258,9 @@ void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) 
   if (inInitializationPhase()) return;
 
   std::lock_guard<std::mutex> lk(vert_est_mtx_);
-  vert_est_.z_world_m = static_cast<float>(msg->vector.x);
-  vert_est_.vz_mps    = static_cast<float>(msg->vector.y);
-  vert_est_.agl_m     = static_cast<float>(msg->vector.z);
+  vert_est_.z_world_m = msg->z_world_m;
+  vert_est_.vz_mps    = msg->vz_world_mps;
+  vert_est_.agl_m     = msg->agl_m;
   vert_est_.valid     = true;
 }
 

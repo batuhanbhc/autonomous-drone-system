@@ -252,9 +252,9 @@ void AltitudeControllerNode::onCommand(const AltCtrlInput::SharedPtr msg)
 //
 // This is the PID tick: runs at MCU rate (~20 Hz) while the controller is
 // active.  Measurement fields:
-//   msg->vector.x  = z_world_m      (unused here)
-//   msg->vector.y  = vz_world_mps   (vertical velocity, m/s)
-//   msg->vector.z  = agl_m          (above-ground-level, m)
+//   msg->z_world_m      (unused here)
+//   msg->vz_world_mps   (vertical velocity, m/s)
+//   msg->agl_m          (above-ground-level, m)
 // ============================================================================
 
 void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
@@ -262,8 +262,8 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
   // Ignore all measurements while the controller is inactive.
   if (!active_) return;
 
-  const float current_agl = static_cast<float>(msg->vector.z);  // agl_m
-  const float current_vz  = static_cast<float>(msg->vector.y);  // vz_world_mps
+  const float current_agl = msg->agl_m;
+  const float current_vz  = msg->vz_world_mps;
 
   const auto now = std::chrono::steady_clock::now();
 
