@@ -145,10 +145,7 @@ public:
       throw std::runtime_error("video sink is not open");
     }
 
-    AVPacket pkt;
-    av_init_packet(&pkt);
-    pkt.data = nullptr;
-    pkt.size = 0;
+    AVPacket pkt{};
 
     const int alloc_rc = av_new_packet(&pkt, static_cast<int>(size));
     if (alloc_rc < 0) {
