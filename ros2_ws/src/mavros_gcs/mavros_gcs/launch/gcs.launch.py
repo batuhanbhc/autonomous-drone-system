@@ -79,6 +79,9 @@ def generate_launch_description():
         }],
         output='screen',
         emulate_tty=True,
+        additional_env={
+            'QT_QPA_PLATFORM': 'xcb',
+        },
     )
     heartbeat = Node(
         package='mavros_gcs',
