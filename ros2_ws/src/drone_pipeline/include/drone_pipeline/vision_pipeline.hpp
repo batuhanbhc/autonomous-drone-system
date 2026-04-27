@@ -142,6 +142,10 @@ struct FrameSlot
   // in_use to false.
   std::atomic<int>  consumers_remaining{0};
   std::atomic<bool> in_use{false};
+
+  // Temporary debug flags: which consumer is still holding this slot.
+  std::atomic<bool> awaiting_mjpeg{false};
+  std::atomic<bool> awaiting_worker{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +237,17 @@ private:
   int  acquireSlot(int consumers);
   // Called by each consumer when it finishes.  Frees the slot when all done.
   void releaseSlot(int idx);
+
+  struct BufferDebugSnapshot
+  {
+    int in_use{0};
+    int awaiting_mjpeg{0};
+    int awaiting_worker{0};
+    int awaiting_both{0};
+    int mjpeg_queue_depth{0};
+    int worker_queue_depth{0};
+  };
+  BufferDebugSnapshot snapshotBufferDebug();
 
   // ── MJPEG writer thread ───────────────────────────────────────────────────
   // Consumes: slot.msg->image.data (zero-copy JPEG), slot odom/gps/mcu snapshot.

@@ -582,11 +582,48 @@ int VisionPipeline::acquireSlot(int consumers)
           std::memory_order_relaxed))
     {
       buffer_[i].consumers_remaining.store(consumers, std::memory_order_release);
+      buffer_[i].awaiting_mjpeg.store(false, std::memory_order_release);
+      buffer_[i].awaiting_worker.store(false, std::memory_order_release);
       buffer_[i].seq = next_seq_.fetch_add(1, std::memory_order_relaxed);
       return i;
     }
   }
   return -1;
+}
+
+VisionPipeline::BufferDebugSnapshot VisionPipeline::snapshotBufferDebug()
+{
+  BufferDebugSnapshot snapshot;
+
+  for (const auto & slot : buffer_) {
+    if (!slot.in_use.load(std::memory_order_acquire)) {
+      continue;
+    }
+
+    ++snapshot.in_use;
+    const bool waiting_mjpeg = slot.awaiting_mjpeg.load(std::memory_order_acquire);
+    const bool waiting_worker = slot.awaiting_worker.load(std::memory_order_acquire);
+    if (waiting_mjpeg) {
+      ++snapshot.awaiting_mjpeg;
+    }
+    if (waiting_worker) {
+      ++snapshot.awaiting_worker;
+    }
+    if (waiting_mjpeg && waiting_worker) {
+      ++snapshot.awaiting_both;
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(mjpeg_queue_mtx_);
+    snapshot.mjpeg_queue_depth = static_cast<int>(mjpeg_queue_.size());
+  }
+  {
+    std::lock_guard<std::mutex> lk(worker_queue_mtx_);
+    snapshot.worker_queue_depth = static_cast<int>(worker_queue_.size());
+  }
+
+  return snapshot;
 }
 
 void VisionPipeline::releaseSlot(int idx)
@@ -596,6 +633,8 @@ void VisionPipeline::releaseSlot(int idx)
     buffer_[idx].consumers_remaining.fetch_sub(1, std::memory_order_acq_rel) - 1;
   if (remaining == 0) {
     buffer_[idx].msg.reset();   // release the intra-process message reference
+    buffer_[idx].awaiting_mjpeg.store(false, std::memory_order_release);
+    buffer_[idx].awaiting_worker.store(false, std::memory_order_release);
     buffer_[idx].in_use.store(false, std::memory_order_release);
   }
 }
@@ -613,8 +652,18 @@ void VisionPipeline::releaseSlot(int idx)
 void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg) {
   const int idx = acquireSlot(2);
   if (idx == -1) {
+    const auto snapshot = snapshotBufferDebug();
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-      "Frame buffer full — dropping frame");
+      "Frame buffer full — dropping frame "
+      "(in_use=%d/%d awaiting_mjpeg=%d awaiting_worker=%d awaiting_both=%d "
+      "mjpeg_q=%d worker_q=%d recording=%s)",
+      snapshot.in_use, kNumSlots,
+      snapshot.awaiting_mjpeg,
+      snapshot.awaiting_worker,
+      snapshot.awaiting_both,
+      snapshot.mjpeg_queue_depth,
+      snapshot.worker_queue_depth,
+      recording_.load(std::memory_order_relaxed) ? "true" : "false");
     return;
   }
 
@@ -653,6 +702,8 @@ void VisionPipeline::frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr ms
   slot.mcu_valid = msg->mcu_valid;
 
   slot.detections.clear();
+  slot.awaiting_mjpeg.store(true, std::memory_order_release);
+  slot.awaiting_worker.store(true, std::memory_order_release);
 
   // ── Dispatch to active consumer queues ────────────────────────────────────
   {
@@ -855,6 +906,7 @@ void VisionPipeline::mjpegLoop()
       }
     }
 
+    buffer_[idx].awaiting_mjpeg.store(false, std::memory_order_release);
     releaseSlot(idx);
   }
 }
@@ -1034,6 +1086,7 @@ void VisionPipeline::workerLoop()
       pending.agl_m         = slot.agl_m;
       pending.mcu_valid     = slot.mcu_valid;
       // Result payload is copied out; do not hold the frame slot through CSV/tracking work.
+      buffer_[idx].awaiting_worker.store(false, std::memory_order_release);
       releaseSlot(idx);
       depositResult(std::move(pending));
       continue;
@@ -1086,6 +1139,7 @@ void VisionPipeline::workerLoop()
         RCLCPP_WARN(get_logger(), "Hailo async infer failed (slot %d): %d",
           idx, static_cast<int>(info.status));
         // Deposit empty result so ordering is preserved
+        cb_slot.awaiting_worker.store(false, std::memory_order_release);
         releaseSlot(idx);
         depositResult(std::move(pending));
         return;
@@ -1132,6 +1186,7 @@ void VisionPipeline::workerLoop()
       }
 
       // Result payload is copied out; free the slot before result ordering/tracking.
+      cb_slot.awaiting_worker.store(false, std::memory_order_release);
       releaseSlot(idx);
       depositResult(std::move(pending));
     };  // end callback lambda
@@ -1159,6 +1214,7 @@ void VisionPipeline::workerLoop()
       pending.agl_m         = slot.agl_m;
       pending.mcu_valid     = slot.mcu_valid;
       // Result payload is copied out; do not hold the frame slot through CSV/tracking work.
+      buffer_[idx].awaiting_worker.store(false, std::memory_order_release);
       releaseSlot(idx);
       depositResult(std::move(pending));
     }
