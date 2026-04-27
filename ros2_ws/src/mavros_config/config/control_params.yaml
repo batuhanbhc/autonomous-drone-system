@@ -104,6 +104,7 @@ panel:
   stale_threshold_s: 5.0
 
 link:
+  gcs_host: 10.42.0.1
   port: 50010
   reconnect_s: 1.0
   video:
