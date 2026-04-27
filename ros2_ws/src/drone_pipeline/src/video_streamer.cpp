@@ -89,6 +89,8 @@ VideoStreamerConfig loadVideoStreamerConfig(
   return cfg;
 }
 
+}  // namespace
+
 class VideoStreamer::NetworkVideoSink
 {
 public:
@@ -240,8 +242,6 @@ private:
   bool header_written_{false};
 };
 
-}  // namespace
-
 VideoStreamer::VideoStreamer(const rclcpp::NodeOptions & options)
 : Node("video_streamer", options)
 {
@@ -358,11 +358,11 @@ bool VideoStreamer::ensureStreamOpen()
     return true;
   }
 
-  const rclcpp::Time now = now();
-  if ((now - last_open_attempt_).seconds() < 1.0) {
+  const rclcpp::Time current_time = this->now();
+  if ((current_time - last_open_attempt_).seconds() < 1.0) {
     return false;
   }
-  last_open_attempt_ = now;
+  last_open_attempt_ = current_time;
 
   try {
     if (config_.stream_codec == StreamCodec::kH264) {
