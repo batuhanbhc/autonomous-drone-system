@@ -74,11 +74,11 @@ static void updateDerivedOutputs() {
 
 static float computeBaseLidarStdM(uint16_t distanceCm) {
   const float raw_m = 0.01f * distanceCm;
-
+  const float base_meas_std = 0.1f;
   if (raw_m <= 6.0f) {
-    return 0.02f;
+    return 0.02f + base_meas_std;
   }
-  return 0.01f * raw_m;
+  return 0.01f * raw_m + base_meas_std;
 }
 
 static void resetLidarRecoveryWindow() {
