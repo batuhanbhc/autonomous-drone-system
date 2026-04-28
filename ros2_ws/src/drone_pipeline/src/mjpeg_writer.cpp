@@ -69,7 +69,8 @@ void MjpegWriter::writeFrame(const std::vector<uint8_t> & jpeg_data)
   pkt->flags       |= AV_PKT_FLAG_KEY;   // every MJPEG frame is a keyframe
   ++pts_;
 
-  av_interleaved_write_frame(fmt_ctx_, pkt);
+  // Single-stream MJPEG does not need FFmpeg's interleaving path.
+  av_write_frame(fmt_ctx_, pkt);
   av_packet_free(&pkt);
 }
 
