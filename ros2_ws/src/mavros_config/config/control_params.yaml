@@ -30,7 +30,7 @@ camera:
   device_path: "/dev/video0"
   width: 640
   height: 480
-  fps: 30
+  fps: 24
   camera_mount_angle: 20.0     # degrees, positive downwards
   use_gimbal: true            # true if camera is mounted on gimbal: roll and pitch values do not change
   reverse_mounted: false      # whether the camera is mounted in reverse orientation (upside down)
@@ -117,7 +117,7 @@ link:
 
   
 teleop:
-  hz: 8.0
+  hz: 10.0
   keyboard_devices: ["/dev/input/by-id/usb-Razer_Razer_Ornata_V3-event-kbd",
                      "/dev/input/by-id/usb-ASUSTek_Computer_Inc._N-KEY_Device-event-mouse"]
 
