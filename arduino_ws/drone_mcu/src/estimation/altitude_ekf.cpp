@@ -4,13 +4,12 @@
 
 AltitudeEkf altitudeEkf;
 
-static constexpr int NX = 5;
+static constexpr int NX = 4;
 enum {
   IX_Z  = 0,
   IX_VZ = 1,
   IX_BA = 2,
-  IX_BB = 3,
-  IX_ZG = 4
+  IX_BB = 3
 };
 
 static inline float sqf(float x) { return x * x; }
@@ -73,25 +72,32 @@ static void updateDerivedOutputs() {
   altitudeEkf.s.agl_m = altitudeEkf.s.z_m - altitudeEkf.s.groundZ_m;
 }
 
-static float computeLidarStdM(uint16_t distanceCm, float r22_abs) {
+static float computeBaseLidarStdM(uint16_t distanceCm) {
   const float raw_m = 0.01f * distanceCm;
 
-  float slantStd;
   if (raw_m <= 6.0f) {
-    slantStd = 0.02f;
-  } else {
-    slantStd = 0.005f * raw_m;
+    return 0.02f;
   }
+  return 0.01f * raw_m;
+}
 
-  const float r22_safe = fmaxf(r22_abs, cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD));
-  return slantStd / r22_safe;
+static void resetLidarRecoveryWindow() {
+  altitudeEkf.s.lidarFastRecoveryCount = 0;
+  altitudeEkf.s.lidarRecoveryCount = 0;
+  altitudeEkf.reacquireGroundSum_m = 0.0f;
+  altitudeEkf.reacquireGroundMin_m = 0.0f;
+  altitudeEkf.reacquireGroundMax_m = 0.0f;
+}
+
+static void beginLidarRecoveryWindow(float impliedGroundZ) {
+  altitudeEkf.s.lidarRecoveryCount = 1;
+  altitudeEkf.reacquireGroundSum_m = impliedGroundZ;
+  altitudeEkf.reacquireGroundMin_m = impliedGroundZ;
+  altitudeEkf.reacquireGroundMax_m = impliedGroundZ;
 }
 
 void altitudeEkfReset() {
   altitudeEkf = {};
-  altitudeEkf.lidarMinRange_m = LIDAR_MIN_RANGE_M;
-  altitudeEkf.lidarMaxRange_m = LIDAR_MAX_RANGE_M;
-  altitudeEkf.lidarMinStrength = LIDAR_MIN_STRENGTH;
   setIdentityScaled(altitudeEkf.P, 10.0f);
 }
 
@@ -107,11 +113,13 @@ void altitudeEkfInitialize(float initialBaroRel_m,
 
   if (lidarValid) {
     altitudeEkf.s.groundZ_m = altitudeEkf.s.z_m - initialLidarAgl_m;
+    altitudeEkf.hasGroundEstimate = true;
     altitudeEkf.hasLastAcceptedLidar = true;
     altitudeEkf.lastLidarAccepted_m = initialLidarAgl_m;
     altitudeEkf.lastLidarAcceptedMs = millis();
   } else {
     altitudeEkf.s.groundZ_m = altitudeEkf.s.z_m;
+    altitudeEkf.hasGroundEstimate = false;
     altitudeEkf.hasLastAcceptedLidar = false;
   }
 
@@ -120,11 +128,11 @@ void altitudeEkfInitialize(float initialBaroRel_m,
   altitudeEkf.P[IX_VZ][IX_VZ] = 1.0f;
   altitudeEkf.P[IX_BA][IX_BA] = 1.0f;
   altitudeEkf.P[IX_BB][IX_BB] = 2.0f;
-  altitudeEkf.P[IX_ZG][IX_ZG] = lidarValid ? 0.5f : 4.0f;
 
   altitudeEkf.s.initialized = true;
-  altitudeEkf.s.lidarBlocked = false;
-  altitudeEkf.s.lidarRecoveryCount = 0;
+  altitudeEkf.s.lidarBlocked = !lidarValid;
+  resetLidarRecoveryWindow();
+  altitudeEkf.s.lidarRejectCount = 0;
   altitudeEkf.s.lastImpliedGroundZ_m = altitudeEkf.s.groundZ_m;
   altitudeEkf.s.lastGroundConsistencyErr_m = 0.0f;
   updateDerivedOutputs();
@@ -158,7 +166,6 @@ void altitudeEkfPredict(float accelWorldZ_mps2, float dt_s) {
 
   Q[IX_BA][IX_BA] = dt_s * sqf(altitudeEkf.qAccelBias);
   Q[IX_BB][IX_BB] = dt_s * sqf(altitudeEkf.qBaroBias_m);
-  Q[IX_ZG][IX_ZG] = dt_s * sqf(altitudeEkf.qGround_m);
 
   float FP[NX][NX], FT[NX][NX], FPFt[NX][NX];
   mulMat(F, altitudeEkf.P, FP);
@@ -193,7 +200,6 @@ static void scalarUpdate(const float H[NX], float meas, float pred, float R, flo
   altitudeEkf.s.vz_mps     += K[IX_VZ] * residual;
   altitudeEkf.s.accelBias  += K[IX_BA] * residual;
   altitudeEkf.s.baroBias_m += K[IX_BB] * residual;
-  altitudeEkf.s.groundZ_m  += K[IX_ZG] * residual;
 
   float I_KH[NX][NX] = {};
   for (int r = 0; r < NX; ++r) {
@@ -228,24 +234,26 @@ void altitudeEkfUpdateBaro(float baroRel_m) {
 
   float rBaro = altitudeEkf.rBaro_m;
 
-  // Simple rule: when lidar is trusted and not currently blocked, let baro
-  // have less authority. This replaces the previous altitude-shaped heuristic.
-  const bool lidarTrustedRecent = altitudeEkf.hasLastAcceptedLidar &&
-      !altitudeEkf.s.lidarBlocked &&
-      (millis() - altitudeEkf.lastLidarAcceptedMs) < 500;
+  const bool lidarTrustedNow = altitudeEkf.hasGroundEstimate &&
+      altitudeEkf.s.lastLidarAccepted &&
+      !altitudeEkf.s.lidarBlocked;
 
-  if (lidarTrustedRecent) {
-    rBaro *= 3.0f;
+  if (lidarTrustedNow) {
+    rBaro *= 1.5f;
   }
 
-  // Inflate baro noise a bit more when recent baro residuals stay large.
-  baroResidAbsLPF = 0.95f * baroResidAbsLPF +
-                    0.05f * fabsf(altitudeEkf.s.lastBaroResidual_m);
+  // Only let residual-driven baro downweighting happen while lidar is healthy.
+  if (lidarTrustedNow) {
+    baroResidAbsLPF = 0.95f * baroResidAbsLPF +
+                      0.05f * fabsf(altitudeEkf.s.lastBaroResidual_m);
+    rBaro += clampf((baroResidAbsLPF - 0.5f) * 1.5f, 0.0f, 3.0f);
+  } else {
+    baroResidAbsLPF = 0.0f;
+  }
 
-  rBaro += clampf((baroResidAbsLPF - 0.5f) * 1.5f, 0.0f, 3.0f);
   rBaro = clampf(rBaro, altitudeEkf.rBaro_m, 6.0f);
 
-  const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+  const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f};
   const float pred = altitudeEkf.s.z_m + altitudeEkf.s.baroBias_m;
   scalarUpdate(H, baroRel_m, pred, sqf(rBaro),
                &altitudeEkf.s.lastBaroResidual_m);
@@ -275,60 +283,104 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
   altitudeEkf.s.lastLidarAccepted = false;
   if (!altitudeEkf.s.initialized) return false;
 
-  if (strength < altitudeEkf.lidarMinStrength) return false;
-  if (!(lidarVertical_m >= altitudeEkf.lidarMinRange_m && lidarVertical_m <= altitudeEkf.lidarMaxRange_m)) return false;
-  if (r22_abs < cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD)) return false;
-
-  const float predAgl = altitudeEkf.s.z_m - altitudeEkf.s.groundZ_m;
-  const float residual = lidarVertical_m - predAgl;
-  const float lidarStd = computeLidarStdM(distanceCm, r22_abs);
-  const float acceptBand = fmaxf(altitudeEkf.minAcceptBand_m, 3.0f * lidarStd);
-  const float obstacleBand = fmaxf(altitudeEkf.minObstacleBand_m, 5.0f * lidarStd);
+  const bool validStrength = strength >= LIDAR_MIN_STRENGTH;
+  const bool validRange =
+      lidarVertical_m >= LIDAR_MIN_RANGE_M &&
+      lidarVertical_m <= LIDAR_MAX_RANGE_M;
+  const bool validTilt = r22_abs >= cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD);
+  if (!(validStrength && validRange && validTilt)) {
+    if (altitudeEkf.s.lidarBlocked) {
+      resetLidarRecoveryWindow();
+    }
+    return false;
+  }
 
   const float impliedGroundZ = altitudeEkf.s.z_m - lidarVertical_m;
-  const float groundErr = impliedGroundZ - altitudeEkf.s.groundZ_m;
   altitudeEkf.s.lastImpliedGroundZ_m = impliedGroundZ;
+
+  float groundErr = 0.0f;
+  if (altitudeEkf.hasGroundEstimate) {
+    groundErr = impliedGroundZ - altitudeEkf.s.groundZ_m;
+  }
   altitudeEkf.s.lastGroundConsistencyErr_m = groundErr;
 
-  // If the implied ground suddenly moves upward, the beam likely hit an obstacle.
-  if (!altitudeEkf.s.lidarBlocked && groundErr > obstacleBand) {
-    altitudeEkf.s.lidarBlocked = true;
-    altitudeEkf.s.lidarRecoveryCount = 0;
-    altitudeEkf.lidarBlockedSinceMs = nowMs;
-    return false;
-  }
-
   if (altitudeEkf.s.lidarBlocked) {
-    const bool minHoldDone = (uint32_t)(nowMs - altitudeEkf.lidarBlockedSinceMs) >= altitudeEkf.minBlockHoldMs;
-    if (minHoldDone && fabsf(groundErr) <= acceptBand) {
-      if (altitudeEkf.s.lidarRecoveryCount < 255) altitudeEkf.s.lidarRecoveryCount++;
-      if (altitudeEkf.s.lidarRecoveryCount >= altitudeEkf.recoverConsecutiveNeeded) {
+    const bool canFastRejoin =
+        altitudeEkf.hasGroundEstimate &&
+        fabsf(groundErr) <= altitudeEkf.recoverRejoinBand_m;
+
+    if (canFastRejoin) {
+      if (altitudeEkf.s.lidarFastRecoveryCount < 255) {
+        altitudeEkf.s.lidarFastRecoveryCount++;
+      }
+      altitudeEkf.s.lidarRecoveryCount = 0;
+      altitudeEkf.reacquireGroundSum_m = 0.0f;
+      altitudeEkf.reacquireGroundMin_m = 0.0f;
+      altitudeEkf.reacquireGroundMax_m = 0.0f;
+
+      if (altitudeEkf.s.lidarFastRecoveryCount >= altitudeEkf.recoverRejoinNeeded) {
         altitudeEkf.s.lidarBlocked = false;
-        altitudeEkf.s.lidarRecoveryCount = 0;
+        altitudeEkf.s.lidarRejectCount = 0;
+        resetLidarRecoveryWindow();
+      } else {
+        return false;
       }
     } else {
-      altitudeEkf.s.lidarRecoveryCount = 0;
-    }
+      altitudeEkf.s.lidarFastRecoveryCount = 0;
 
-    if (altitudeEkf.s.lidarBlocked) {
-      return false;
+      if (altitudeEkf.s.lidarRecoveryCount == 0) {
+        beginLidarRecoveryWindow(impliedGroundZ);
+      } else {
+        altitudeEkf.reacquireGroundSum_m += impliedGroundZ;
+        altitudeEkf.reacquireGroundMin_m = fminf(altitudeEkf.reacquireGroundMin_m, impliedGroundZ);
+        altitudeEkf.reacquireGroundMax_m = fmaxf(altitudeEkf.reacquireGroundMax_m, impliedGroundZ);
+        if (altitudeEkf.s.lidarRecoveryCount < 255) altitudeEkf.s.lidarRecoveryCount++;
+      }
+
+      if (altitudeEkf.s.lidarRecoveryCount >= altitudeEkf.recoverConsecutiveNeeded) {
+        const float spread = altitudeEkf.reacquireGroundMax_m - altitudeEkf.reacquireGroundMin_m;
+        if (spread <= altitudeEkf.recoverStableBand_m) {
+          const float sampleCount = (float)altitudeEkf.s.lidarRecoveryCount;
+          altitudeEkf.s.groundZ_m = altitudeEkf.reacquireGroundSum_m / sampleCount;
+          altitudeEkf.hasGroundEstimate = true;
+          altitudeEkf.s.lidarBlocked = false;
+          altitudeEkf.s.lidarRejectCount = 0;
+          resetLidarRecoveryWindow();
+          groundErr = impliedGroundZ - altitudeEkf.s.groundZ_m;
+          altitudeEkf.s.lastGroundConsistencyErr_m = groundErr;
+          updateDerivedOutputs();
+        } else {
+          beginLidarRecoveryWindow(impliedGroundZ);
+          return false;
+        }
+      }
+
+      if (altitudeEkf.s.lidarBlocked) return false;
     }
   }
 
-  // In normal mode, require floor consistency before giving the EKF a chance to update.
-  if (fabsf(groundErr) > acceptBand) {
-    return false;
-  }
-
+  const float lidarStd = clampf(computeBaseLidarStdM(distanceCm),
+                                0.0f,
+                                altitudeEkf.maxLidarStd_m);
   const float R = sqf(lidarStd);
-  const float H[NX] = {1.0f, 0.0f, 0.0f, 0.0f, -1.0f};
+  const float zMeas = altitudeEkf.s.groundZ_m + lidarVertical_m;
+  const float predZ = altitudeEkf.s.z_m;
+  const float residual = zMeas - predZ;
+  const float H[NX] = {1.0f, 0.0f, 0.0f, 0.0f};
   if (!lidarMahalanobisPass(H, residual, R)) {
+    altitudeEkf.s.lastLidarResidual_m = residual;
+    if (altitudeEkf.s.lidarRejectCount < 255) altitudeEkf.s.lidarRejectCount++;
+    if (altitudeEkf.s.lidarRejectCount >= altitudeEkf.rejectConsecutiveNeeded) {
+      altitudeEkf.s.lidarBlocked = true;
+      resetLidarRecoveryWindow();
+    }
     return false;
   }
 
-  scalarUpdate(H, lidarVertical_m, predAgl, R, &altitudeEkf.s.lastLidarResidual_m);
+  scalarUpdate(H, zMeas, predZ, R, &altitudeEkf.s.lastLidarResidual_m);
 
   altitudeEkf.s.lastLidarAccepted = true;
+  altitudeEkf.s.lidarRejectCount = 0;
   altitudeEkf.hasLastAcceptedLidar = true;
   altitudeEkf.lastLidarAccepted_m = lidarVertical_m;
   altitudeEkf.lastLidarAcceptedMs = nowMs;

@@ -2,11 +2,13 @@
 #include <Arduino.h>
 
 struct AltitudeEkfState {
-  // Core states
+  // EKF states
   float z_m        = 0.0f;   // vehicle world altitude
   float vz_mps     = 0.0f;   // vertical velocity
   float accelBias  = 0.0f;   // residual vertical accel bias
   float baroBias_m = 0.0f;   // baro drift / bias in meters
+
+  // Floor tracker output (not part of EKF covariance state)
   float groundZ_m  = 0.0f;   // local ground world altitude
 
   // Outputs
@@ -20,41 +22,44 @@ struct AltitudeEkfState {
   bool  lidarBlocked               = false;
   float lastImpliedGroundZ_m       = 0.0f;
   float lastGroundConsistencyErr_m = 0.0f;
+  uint8_t lidarFastRecoveryCount   = 0;
   uint8_t lidarRecoveryCount       = 0;
+  uint8_t lidarRejectCount         = 0;
 };
 
 struct AltitudeEkf {
   AltitudeEkfState s;
 
-  // Covariance P[5x5]
-  float P[5][5] = {};
+  // Covariance P[4x4] for [z, vz, accelBias, baroBias]
+  float P[4][4] = {};
 
   // Tuning
   float qAcc_mps2           = 2.5f;    // accel driving noise
   float qAccelBias          = 0.01f;   // accel bias RW
   float qBaroBias_m         = 0.005f;  // baro bias RW
-  float qGround_m           = 0.0005f; // ground RW (slow)
 
-  float rBaro_m             = 0.6f;    // baro stddev
+  float rBaro_m             = 0.7f;    // baro stddev
 
-  // Lidar validity limits
-  float lidarMinRange_m     = 0.05f;
-  float lidarMaxRange_m     = 20.0f;
-  uint16_t lidarMinStrength = 200;
+  // Lidar validity limits live in sensors/lidar.h. Only keep EKF-specific tilt here.
   float maxTiltDeg          = 45.0f;
 
-  // One-sided obstacle / recovery logic.
-  // Bands are combined with the lidar noise model so tuning stays minimal.
-  float minAcceptBand_m     = 0.15f;   // normal acceptance band around locked floor
-  float minObstacleBand_m   = 0.50f;   // upward floor jump => likely obstacle
-  uint8_t recoverConsecutiveNeeded = 3;
-  uint32_t minBlockHoldMs   = 150;     // chatter protection only
-  uint32_t lidarBlockedSinceMs = 0;
+  // Surface tracking / acceptance logic.
+  uint8_t recoverRejoinNeeded      = 2;
+  float recoverRejoinBand_m        = 0.1f;
+  uint8_t recoverConsecutiveNeeded = 40;
+  uint8_t rejectConsecutiveNeeded  = 5;
+  float recoverStableBand_m        = 0.15f;
+  float reacquireGroundSum_m       = 0.0f;
+  float reacquireGroundMin_m       = 0.0f;
+  float reacquireGroundMax_m       = 0.0f;
 
-  // Statistical gate
-  float mahaGateSigma       = 3.5f;
+  // Lidar statistical gate
+  float maxLidarStd_m       = 2.5f;
+
+  float mahaGateSigma       = 4.0f;
 
   // Internal bookkeeping
+  bool   hasGroundEstimate    = false;
   bool   hasLastAcceptedLidar = false;
   float  lastLidarAccepted_m  = 0.0f;
   uint32_t lastLidarAcceptedMs = 0;
