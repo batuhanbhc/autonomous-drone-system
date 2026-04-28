@@ -40,8 +40,8 @@ struct AltitudeEkf {
 
   float rBaro_m             = 1.2f;    // baro stddev
   float maxPredictAccel_mps2 = 10.0f;  // reject impossible vertical accel spikes
-  float maxBaroRate_mps      = 5.0f;  // reject implausible baro step-to-step jumps
-  float maxBaroResidual_m    = 30.0f;  // hard cap on single baro innovation
+  float maxBaroRate_mps      = 2.5f;  // reject implausible baro step-to-step jumps
+  float maxBaroResidual_m    = 10.0f;  // hard cap on single baro innovation
 
   // Lidar validity limits live in sensors/lidar.h. Only keep EKF-specific tilt here.
   float maxTiltDeg          = 45.0f;
