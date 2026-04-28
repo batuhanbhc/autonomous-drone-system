@@ -21,12 +21,33 @@ static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
 // Set to 1 if you want to stop text prints after boot and only emit binary.
 static constexpr bool USB_BINARY_ONLY_AFTER_INIT = true;
 static constexpr bool PRINT_EULER_DEBUG_AFTER_INIT = false;
+static constexpr bool PRINT_ESTIMATOR_DEBUG_AFTER_INIT = false;
+static constexpr bool PRINT_WORLD_ACCEL_Z_DEBUG_AFTER_INIT = false;
 static constexpr uint32_t EULER_DEBUG_PERIOD_MS = 100;
+static constexpr uint32_t ESTIMATOR_DEBUG_PERIOD_MS = 100;
+static constexpr uint32_t WORLD_ACCEL_Z_DEBUG_PERIOD_MS = 100;
 
 // Rolling sequence number so the Pi can detect packet loss/reordering.
 static uint8_t companionSeq = 0;
 static uint32_t nextCompanionSendMs = 0;
 static uint32_t nextEulerDebugMs = 0;
+static uint32_t nextEstimatorDebugMs = 0;
+static uint32_t nextWorldAccelZDebugMs = 0;
+
+struct EstimatorDebugState {
+  float lastPredictDt_s = 0.0f;
+  float lastPredictAccelWorldZ_mps2 = 0.0f;
+  float lastBaroRel_m = 0.0f;
+  float lastBaroStep_m = 0.0f;
+  float lastBaroRate_mps = 0.0f;
+  bool  hasLastBaroSample = false;
+  uint32_t lastBaroMs = 0;
+  float lastLidarVertical_m = NAN;
+  float lastLidarAbsR22 = 0.0f;
+  bool  lastLidarGeomValid = false;
+};
+
+static EstimatorDebugState estimatorDbg;
 
 // Packed payload that the Pi will decode.
 #pragma pack(push, 1)
@@ -134,7 +155,9 @@ static void sendVerticalEstimatePacket() {
 }
 
 static void maybeSendCompanionPacket() {
-  if (PRINT_EULER_DEBUG_AFTER_INIT) {
+  if (PRINT_EULER_DEBUG_AFTER_INIT ||
+      PRINT_ESTIMATOR_DEBUG_AFTER_INIT ||
+      PRINT_WORLD_ACCEL_Z_DEBUG_AFTER_INIT) {
     return;
   }
 
@@ -201,6 +224,118 @@ static void maybePrintEulerDebug() {
     Serial.printf("[ATT] roll_deg=%.2f pitch_deg=%.2f yaw_deg=%.2f\r\n",
       rollDeg, pitchDeg, yawDeg);
   }
+}
+
+static void maybePrintEstimatorDebug() {
+  if (!PRINT_ESTIMATOR_DEBUG_AFTER_INIT) {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  if (nextEstimatorDebugMs == 0) {
+    nextEstimatorDebugMs = nowMs;
+  }
+
+  if ((int32_t)(nowMs - nextEstimatorDebugMs) < 0) {
+    return;
+  }
+  nextEstimatorDebugMs += ESTIMATOR_DEBUG_PERIOD_MS;
+
+  float rollDeg = 0.0f;
+  float pitchDeg = 0.0f;
+  float yawDeg = 0.0f;
+  quatToFluEulerDeg(
+    imuData.droneQuat[0], imuData.droneQuat[1],
+    imuData.droneQuat[2], imuData.droneQuat[3],
+    &rollDeg, &pitchDeg, &yawDeg
+  );
+
+  const float imuStepDv_mps =
+      estimatorDbg.lastPredictAccelWorldZ_mps2 * estimatorDbg.lastPredictDt_s;
+  const float imuStepDz_m =
+      altitudeEkf.s.vz_mps * estimatorDbg.lastPredictDt_s +
+      0.5f * estimatorDbg.lastPredictAccelWorldZ_mps2 *
+      estimatorDbg.lastPredictDt_s * estimatorDbg.lastPredictDt_s;
+
+  const unsigned long lidarAgeMs =
+      (unsigned long)((lidarData.timestampMs == 0) ? 0xFFFFFFFFu : (nowMs - lidarData.timestampMs));
+
+  Serial.printf(
+    "[ESTDBG] state z=%.3f vz=%.3f agl=%.3f gnd=%.3f\r\n",
+    altitudeEkf.s.z_m,
+    altitudeEkf.s.vz_mps,
+    altitudeEkf.s.agl_m,
+    altitudeEkf.s.groundZ_m);
+
+  Serial.printf(
+    "[ESTDBG] att rpy=(%.1f %.1f %.1f) dt=%.4f aWz=%.3f\r\n",
+    rollDeg, pitchDeg, yawDeg,
+    estimatorDbg.lastPredictDt_s,
+    estimatorDbg.lastPredictAccelWorldZ_mps2);
+
+  Serial.printf(
+    "[ESTDBG] imu step dvz=%.4f dz=%.4f\r\n",
+    imuStepDv_mps,
+    imuStepDz_m);
+
+  Serial.printf(
+    "[ESTDBG] imu raw=(%.3f %.3f %.3f)\r\n",
+    imuData.imuLinAccel[0], imuData.imuLinAccel[1], imuData.imuLinAccel[2]);
+
+  Serial.printf(
+    "[ESTDBG] imu body=(%.3f %.3f %.3f)\r\n",
+    imuData.droneLinAccel[0], imuData.droneLinAccel[1], imuData.droneLinAccel[2]);
+
+  Serial.printf(
+    "[ESTDBG] imu gyro=(%.3f %.3f %.3f)\r\n",
+    imuData.droneGyro[0], imuData.droneGyro[1], imuData.droneGyro[2]);
+
+  Serial.printf(
+    "[ESTDBG] baro pa=%.1f p0=%.1f rel=%.3f\r\n",
+    baroData.pressurePa,
+    baroData.launchPressurePa,
+    estimatorDbg.lastBaroRel_m);
+
+  Serial.printf(
+    "[ESTDBG] baro step=%.3f rate=%.3f res=%.3f bb=%.3f\r\n",
+    estimatorDbg.lastBaroStep_m,
+    estimatorDbg.lastBaroRate_mps,
+    altitudeEkf.s.lastBaroResidual_m,
+    altitudeEkf.s.baroBias_m);
+
+  Serial.printf(
+    "[ESTDBG] lidar raw=%.3f vert=%.3f geom=%d acc=%d block=%d\r\n",
+    0.01f * static_cast<float>(lidarData.distanceCm),
+    estimatorDbg.lastLidarVertical_m,
+    estimatorDbg.lastLidarGeomValid ? 1 : 0,
+    altitudeEkf.s.lastLidarAccepted ? 1 : 0,
+    altitudeEkf.s.lidarBlocked ? 1 : 0);
+
+  Serial.printf(
+    "[ESTDBG] lidar r22=%.3f gres=%.3f lres=%.3f str=%u age=%lu\r\n",
+    estimatorDbg.lastLidarAbsR22,
+    altitudeEkf.s.lastGroundConsistencyErr_m,
+    altitudeEkf.s.lastLidarResidual_m,
+    lidarData.strength,
+    lidarAgeMs);
+  }
+
+static void maybePrintWorldAccelZDebug() {
+  if (!PRINT_WORLD_ACCEL_Z_DEBUG_AFTER_INIT) {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  if (nextWorldAccelZDebugMs == 0) {
+    nextWorldAccelZDebugMs = nowMs;
+  }
+
+  if ((int32_t)(nowMs - nextWorldAccelZDebugMs) < 0) {
+    return;
+  }
+  nextWorldAccelZDebugMs += WORLD_ACCEL_Z_DEBUG_PERIOD_MS;
+
+  Serial.printf("[IMU] world_lin_accel_z=%.3f\r\n", imuData.worldLinAccelZ);
 }
 
 static void beginInitializationRoutine() {
@@ -324,6 +459,10 @@ static bool updateInitializationRoutine() {
 
   if (PRINT_EULER_DEBUG_AFTER_INIT) {
     Serial.println("[DEBUG] Euler debug enabled; companion binary packets are disabled.");
+  } else if (PRINT_ESTIMATOR_DEBUG_AFTER_INIT) {
+    Serial.println("[DEBUG] Estimator debug enabled; companion binary packets are disabled.");
+  } else if (PRINT_WORLD_ACCEL_Z_DEBUG_AFTER_INIT) {
+    Serial.println("[DEBUG] World linear accel Z debug enabled; companion binary packets are disabled.");
   } else if (USB_BINARY_ONLY_AFTER_INIT) {
     Serial.println("[COMPANION] Starting binary vertical packets at 20 Hz");
     delay(20);
@@ -394,6 +533,8 @@ void loop() {
     imuData.fresh = false;
 
     const float dt_s = imuData.dt_us * 1e-6f;
+    estimatorDbg.lastPredictDt_s = dt_s;
+    estimatorDbg.lastPredictAccelWorldZ_mps2 = imuData.worldLinAccelZ;
     altitudeEkfPredict(imuData.worldLinAccelZ, dt_s);
   }
 
@@ -402,6 +543,23 @@ void loop() {
     baroData.fresh = false;
 
     const float zBaroRel_m = baroGetRelativeAltitudeM();
+    const uint32_t nowMs = millis();
+    if (estimatorDbg.hasLastBaroSample) {
+      estimatorDbg.lastBaroStep_m = zBaroRel_m - estimatorDbg.lastBaroRel_m;
+      const uint32_t dtMs = nowMs - estimatorDbg.lastBaroMs;
+      if (dtMs > 0) {
+        estimatorDbg.lastBaroRate_mps =
+            estimatorDbg.lastBaroStep_m / (0.001f * static_cast<float>(dtMs));
+      } else {
+        estimatorDbg.lastBaroRate_mps = 0.0f;
+      }
+    } else {
+      estimatorDbg.hasLastBaroSample = true;
+      estimatorDbg.lastBaroStep_m = 0.0f;
+      estimatorDbg.lastBaroRate_mps = 0.0f;
+    }
+    estimatorDbg.lastBaroRel_m = zBaroRel_m;
+    estimatorDbg.lastBaroMs = nowMs;
     altitudeEkfUpdateBaro(zBaroRel_m);
   }
 
@@ -419,6 +577,9 @@ void loop() {
     float lidarVertical_m = 0.0f;
     if (lidarGetVerticalM(&lidarVertical_m, qx, qy, qz, qw, dist_cm, strength)) {
         const float absR22 = lidarGetAbsR22(qx, qy, qz, qw);
+        estimatorDbg.lastLidarVertical_m = lidarVertical_m;
+        estimatorDbg.lastLidarAbsR22 = absR22;
+        estimatorDbg.lastLidarGeomValid = true;
 
         altitudeEkfUpdateLidar(
           lidarVertical_m,
@@ -427,11 +588,17 @@ void loop() {
           absR22,
           millis()
         );
+    } else {
+        estimatorDbg.lastLidarVertical_m = NAN;
+        estimatorDbg.lastLidarAbsR22 = lidarGetAbsR22(qx, qy, qz, qw);
+        estimatorDbg.lastLidarGeomValid = false;
     };
   }
 
   // 4) Send binary packet
-  //maybePrintEulerDebug();
+  maybePrintEulerDebug();
+  maybePrintEstimatorDebug();
+  maybePrintWorldAccelZDebug();
   maybeSendCompanionPacket();
 
   /*

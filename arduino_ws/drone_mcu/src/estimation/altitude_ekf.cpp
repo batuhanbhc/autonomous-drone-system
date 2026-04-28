@@ -142,7 +142,10 @@ void altitudeEkfPredict(float accelWorldZ_mps2, float dt_s) {
   if (!altitudeEkf.s.initialized) return;
   if (!(dt_s > 0.0f) || dt_s > 0.1f) return;
 
-  const float a = accelWorldZ_mps2 - altitudeEkf.s.accelBias;
+  const float a = clampf(
+      accelWorldZ_mps2 - altitudeEkf.s.accelBias,
+      -altitudeEkf.maxPredictAccel_mps2,
+      altitudeEkf.maxPredictAccel_mps2);
 
   altitudeEkf.s.z_m    += altitudeEkf.s.vz_mps * dt_s + 0.5f * a * dt_s * dt_s;
   altitudeEkf.s.vz_mps += a * dt_s;
@@ -255,8 +258,33 @@ void altitudeEkfUpdateBaro(float baroRel_m) {
 
   const float H[NX] = {1.0f, 0.0f, 0.0f, 1.0f};
   const float pred = altitudeEkf.s.z_m + altitudeEkf.s.baroBias_m;
-  scalarUpdate(H, baroRel_m, pred, sqf(rBaro),
-               &altitudeEkf.s.lastBaroResidual_m);
+  const float residual = baroRel_m - pred;
+  const uint32_t nowMs = millis();
+
+  if (altitudeEkf.hasLastBaroSample) {
+    const uint32_t dtMs = nowMs - altitudeEkf.lastBaroMs;
+    if (dtMs > 0 && dtMs <= 500) {
+      const float dt_s = 0.001f * static_cast<float>(dtMs);
+      const float baroRate_mps = fabsf(baroRel_m - altitudeEkf.lastBaroRel_m) / dt_s;
+      if (baroRate_mps > altitudeEkf.maxBaroRate_mps) {
+        altitudeEkf.s.lastBaroResidual_m = residual;
+        altitudeEkf.lastBaroRel_m = baroRel_m;
+        altitudeEkf.lastBaroMs = nowMs;
+        return;
+      }
+    }
+  }
+
+  altitudeEkf.hasLastBaroSample = true;
+  altitudeEkf.lastBaroRel_m = baroRel_m;
+  altitudeEkf.lastBaroMs = nowMs;
+
+  if (fabsf(residual) > altitudeEkf.maxBaroResidual_m) {
+    altitudeEkf.s.lastBaroResidual_m = residual;
+    return;
+  }
+
+  scalarUpdate(H, baroRel_m, pred, sqf(rBaro), &altitudeEkf.s.lastBaroResidual_m);
 }
 
 static bool lidarMahalanobisPass(const float H[NX], float residual, float R) {

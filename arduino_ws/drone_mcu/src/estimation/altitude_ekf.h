@@ -34,21 +34,24 @@ struct AltitudeEkf {
   float P[4][4] = {};
 
   // Tuning
-  float qAcc_mps2           = 2.5f;    // accel driving noise
+  float qAcc_mps2           = 5.0f;    // accel driving noise
   float qAccelBias          = 0.01f;   // accel bias RW
   float qBaroBias_m         = 0.005f;  // baro bias RW
 
-  float rBaro_m             = 0.7f;    // baro stddev
+  float rBaro_m             = 1.2f;    // baro stddev
+  float maxPredictAccel_mps2 = 10.0f;  // reject impossible vertical accel spikes
+  float maxBaroRate_mps      = 5.0f;  // reject implausible baro step-to-step jumps
+  float maxBaroResidual_m    = 30.0f;  // hard cap on single baro innovation
 
   // Lidar validity limits live in sensors/lidar.h. Only keep EKF-specific tilt here.
   float maxTiltDeg          = 45.0f;
 
   // Surface tracking / acceptance logic.
   uint8_t recoverRejoinNeeded      = 2;
-  float recoverRejoinBand_m        = 0.1f;
-  uint8_t recoverConsecutiveNeeded = 40;
+  float recoverRejoinBand_m        = 0.15f;
+  uint8_t recoverConsecutiveNeeded = 20;
   uint8_t rejectConsecutiveNeeded  = 5;
-  float recoverStableBand_m        = 0.15f;
+  float recoverStableBand_m        = 0.30f;
   float reacquireGroundSum_m       = 0.0f;
   float reacquireGroundMin_m       = 0.0f;
   float reacquireGroundMax_m       = 0.0f;
@@ -63,6 +66,9 @@ struct AltitudeEkf {
   bool   hasLastAcceptedLidar = false;
   float  lastLidarAccepted_m  = 0.0f;
   uint32_t lastLidarAcceptedMs = 0;
+  bool   hasLastBaroSample    = false;
+  float  lastBaroRel_m        = 0.0f;
+  uint32_t lastBaroMs         = 0;
 };
 
 extern AltitudeEkf altitudeEkf;
