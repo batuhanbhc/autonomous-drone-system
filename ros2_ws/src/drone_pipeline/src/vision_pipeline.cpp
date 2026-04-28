@@ -1656,7 +1656,11 @@ void VisionPipeline::streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr 
   if (!was_streaming) {
     try {
       std::lock_guard<std::mutex> lk(encoder_open_mtx_);
-      h264_encoder_.open(config_.width, config_.height, config_.fps, 60);
+      h264_encoder_.open(
+        config_.width,
+        config_.height,
+        config_.fps,
+        h264GopSizeForFps(config_.fps));
     } catch (const std::exception & e) {
       RCLCPP_ERROR(get_logger(), "Failed to open H264 encoder: %s", e.what());
       return;

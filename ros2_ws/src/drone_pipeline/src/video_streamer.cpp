@@ -364,7 +364,11 @@ bool VideoStreamer::ensureStreamOpen()
   try {
     if (config_.stream_codec == StreamCodec::kH264) {
       if (!h264_encoder_.isOpen()) {
-        h264_encoder_.open(config_.width, config_.height, config_.fps, 60);
+        h264_encoder_.open(
+          config_.width,
+          config_.height,
+          config_.fps,
+          h264GopSizeForFps(config_.fps));
       }
       sink_->openH264(config_, h264_encoder_);
     } else {

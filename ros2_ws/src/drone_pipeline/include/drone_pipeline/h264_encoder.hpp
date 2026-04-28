@@ -13,6 +13,12 @@ extern "C" {
 namespace drone_pipeline
 {
 
+constexpr int h264GopSizeForFps(int fps, int keyframe_interval_seconds = 2)
+{
+  return (fps > 0 && keyframe_interval_seconds > 0) ?
+    fps * keyframe_interval_seconds : 1;
+}
+
 class H264Encoder
 {
 public:
