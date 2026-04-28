@@ -5,7 +5,7 @@ import socket
 import struct
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from ament_index_python.packages import get_package_share_directory
 from drone_msgs.msg import (
@@ -46,6 +46,14 @@ TOPIC_MCU_VERTICAL_ESTIMATE = 109
 TOPIC_ALTITUDE_OUTPUT = 110
 TOPIC_RECORD_ACTIVE = 111
 TOPIC_STREAM_ACTIVE = 112
+
+BRIDGE_RECV_POLL_S = 1.0
+BRIDGE_IDLE_TIMEOUT_S = 3.0
+TCP_KEEPIDLE_S = 3
+TCP_KEEPINTVL_S = 1
+TCP_KEEPCNT = 3
+
+
 def make_reliable_qos(depth: int = 10) -> QoSProfile:
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
@@ -182,14 +190,27 @@ def build_bridge_config(drone_id: int, root_cfg: dict) -> BridgeConfig:
     )
 
 
-def recvall(sock: socket.socket, size: int) -> bytes:
+def recvall(
+    sock: socket.socket,
+    size: int,
+    last_data_s: float,
+    idle_timeout_s: float,
+) -> Tuple[bytes, float]:
     chunks = bytearray()
     while len(chunks) < size:
-        chunk = sock.recv(size - len(chunks))
+        try:
+            chunk = sock.recv(size - len(chunks))
+        except socket.timeout:
+            if (time.monotonic() - last_data_s) >= idle_timeout_s:
+                raise TimeoutError(
+                    f"Bridge receive idle timeout after {idle_timeout_s:.1f} s"
+                )
+            continue
         if not chunk:
             raise ConnectionError("Socket closed while receiving data")
         chunks.extend(chunk)
-    return bytes(chunks)
+        last_data_s = time.monotonic()
+    return bytes(chunks), last_data_s
 
 
 class SocketBridgeBase:
@@ -223,6 +244,24 @@ class SocketBridgeBase:
 
     def _set_socket(self, sock: socket.socket) -> None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.settimeout(BRIDGE_RECV_POLL_S)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            pass
+
+        for opt_name, value in (
+            ("TCP_KEEPIDLE", TCP_KEEPIDLE_S),
+            ("TCP_KEEPINTVL", TCP_KEEPINTVL_S),
+            ("TCP_KEEPCNT", TCP_KEEPCNT),
+        ):
+            opt = getattr(socket, opt_name, None)
+            if opt is None:
+                continue
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, opt, value)
+            except OSError:
+                pass
         with self._socket_lock:
             self._socket = sock
 
@@ -276,18 +315,29 @@ class SocketBridgeBase:
         on_disconnect: Optional[Callable[[], None]] = None,
     ) -> None:
         try:
+            last_data_s = time.monotonic()
             while not self._stop_event.is_set():
-                header = recvall(sock, HEADER.size)
+                header, last_data_s = recvall(
+                    sock,
+                    HEADER.size,
+                    last_data_s,
+                    BRIDGE_IDLE_TIMEOUT_S,
+                )
                 magic, topic_id, payload_len = HEADER.unpack(header)
                 if magic != MAGIC:
                     raise ConnectionError("Invalid bridge frame magic")
-                payload = recvall(sock, payload_len)
+                payload, last_data_s = recvall(
+                    sock,
+                    payload_len,
+                    last_data_s,
+                    BRIDGE_IDLE_TIMEOUT_S,
+                )
                 inbound = inbound_topics.get(topic_id)
                 if inbound is None:
                     self._node.get_logger().warn(f"Dropping unknown inbound topic_id={topic_id}")
                     continue
                 self.handle_incoming_ros_message(inbound, payload, publishers)
-        except (ConnectionError, OSError) as exc:
+        except (ConnectionError, OSError, TimeoutError) as exc:
             if not self._stop_event.is_set():
                 self._node.get_logger().warn(f"Bridge connection closed: {exc}")
         finally:
