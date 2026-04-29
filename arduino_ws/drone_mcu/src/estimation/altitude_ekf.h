@@ -34,11 +34,11 @@ struct AltitudeEkf {
   float P[4][4] = {};
 
   // Tuning
-  float qAcc_mps2           = 5.0f;    // accel driving noise
+  float qAcc_mps2           = 4.0f;    // accel driving noise
   float qAccelBias          = 0.01f;   // accel bias RW
   float qBaroBias_m         = 0.005f;  // baro bias RW
 
-  float rBaro_m             = 1.2f;    // baro stddev
+  float rBaro_m             = 0.7f;    // baro stddev
   float maxPredictAccel_mps2 = 10.0f;  // reject impossible vertical accel spikes
   float maxBaroRate_mps      = 2.5f;  // reject implausible baro step-to-step jumps
   float maxBaroResidual_m    = 10.0f;  // hard cap on single baro innovation

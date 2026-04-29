@@ -50,11 +50,11 @@ bool baroBegin() {
         return false;
     }
 
-    // Sampling config — same as before
+    // Sampling config
     bmp.setTemperatureOversampling(BMP3_NO_OVERSAMPLING);
     bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
     bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-    bmp.setOutputDataRate(BMP3_ODR_12_5_HZ);
+    bmp.setOutputDataRate(BMP3_ODR_25_HZ);
 
     // ── INT_CTRL (0x19) ───────────────────────────────────────────────────
     // Bit 6: drdy_en   = 1  → data-ready fires INT pin
