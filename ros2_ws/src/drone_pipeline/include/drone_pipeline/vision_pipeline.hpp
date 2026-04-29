@@ -160,8 +160,8 @@ public:
 
 private:
   // ── Constants ─────────────────────────────────────────────────────────────
-  static constexpr int kNumSlots   = 30;
-  static constexpr int kNumWorkers = 2;
+  static constexpr int kNumSlots   = 60;
+  static constexpr int kNumWorkers = 3;
 
   static constexpr int    kYawCalibSamples = 10;
   static constexpr double kYawCalibTimeout = 30.0;   // seconds

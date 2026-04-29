@@ -31,7 +31,7 @@ camera:
   width: 640
   height: 480
   fps: 24
-  camera_mount_angle: 20.0     # degrees, positive downwards
+  camera_mount_angle: 18.5    # degrees, positive downwards
   use_gimbal: true            # true if camera is mounted on gimbal: roll and pitch values do not change
   reverse_mounted: false      # whether the camera is mounted in reverse orientation (upside down)
 
@@ -49,7 +49,7 @@ vision_pipeline:
 
   tracker:
     max_association_distance_m: 5.0
-    mahalanobis_gate: 16.0
+    mahalanobis_gate: 12.25
     max_missed_frames: 20
     min_hits_to_confirm: 6
     process_noise_std_pos: 0.75
@@ -66,7 +66,7 @@ vision_pipeline:
     angular_vel_high_deg_s: 30.0
     angular_vel_max_scale: 15.0
     new_track_min_dist_calm_m: 0.5
-    new_track_min_dist_noisy_m: 1.5
+    new_track_min_dist_noisy_m: 2.0
   
   camera_intrinsics:
     fx: 628.5174089378104
