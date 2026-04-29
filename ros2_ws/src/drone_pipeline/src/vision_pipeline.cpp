@@ -1253,7 +1253,9 @@ double VisionPipeline::computeAngularVelocityDegPerSecLocked(
   const double wy = result.ang_vel_y;
   const double wz = result.ang_vel_z;
   // nav_msgs/Odometry twist uses ROS SI units, so MAVROS body rates arrive in rad/s.
-  const double omega_rad_s = std::sqrt(wx * wx + wy * wy + wz * wz);
+  const double omega_rad_s = config_.use_gimbal
+    ? std::abs(wz)
+    : std::sqrt(wx * wx + wy * wy + wz * wz);
   return omega_rad_s * 180.0 / M_PI;
 }
 
