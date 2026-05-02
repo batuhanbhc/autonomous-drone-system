@@ -261,11 +261,10 @@ static void maybePrintEstimatorDebug() {
       (unsigned long)((lidarData.timestampMs == 0) ? 0xFFFFFFFFu : (nowMs - lidarData.timestampMs));
 
   Serial.printf(
-    "[ESTDBG] state z=%.3f vz=%.3f agl=%.3f gnd=%.3f\r\n",
+    "[ESTDBG] state z=%.3f vz=%.3f agl=%.3f\r\n",
     altitudeEkf.s.z_m,
     altitudeEkf.s.vz_mps,
-    altitudeEkf.s.agl_m,
-    altitudeEkf.s.groundZ_m);
+    altitudeEkf.s.agl_m);
 
   Serial.printf(
     "[ESTDBG] att rpy=(%.1f %.1f %.1f) dt=%.4f aWz=%.3f\r\n",
@@ -312,9 +311,9 @@ static void maybePrintEstimatorDebug() {
     altitudeEkf.s.lidarBlocked ? 1 : 0);
 
   Serial.printf(
-    "[ESTDBG] lidar r22=%.3f gres=%.3f lres=%.3f str=%u age=%lu\r\n",
+    "[ESTDBG] lidar r22=%.3f rec_spread=%.3f lres=%.3f str=%u age=%lu\r\n",
     estimatorDbg.lastLidarAbsR22,
-    altitudeEkf.s.lastGroundConsistencyErr_m,
+    altitudeEkf.s.lastRecoverySpread_m,
     altitudeEkf.s.lastLidarResidual_m,
     lidarData.strength,
     lidarAgeMs);
@@ -382,7 +381,8 @@ static bool updateInitializationRoutine() {
 
   if (lidarData.fresh) {
     float initLidarAgl_m = 0.0f;
-    if (lidarGetVerticalM(
+    if (lidarIsRawMeasurementValid(lidarData.distanceCm, lidarData.strength) &&
+        lidarGetVerticalM(
             &initLidarAgl_m,
             imuData.droneQuat[0], imuData.droneQuat[1],
             imuData.droneQuat[2], imuData.droneQuat[3],

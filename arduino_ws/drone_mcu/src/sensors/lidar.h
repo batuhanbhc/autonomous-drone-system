@@ -54,8 +54,10 @@ void lidarTrigger();
 // valid frame is decoded.
 void lidarUpdate();
 
+bool lidarIsRawMeasurementValid(uint16_t distanceCm, uint16_t strength);
+
 bool lidarGetVerticalM(float*, 
     const float& qx, const float& qy, const float& qz, const float& qw,
-    const uint16_t distanceCm, const uint16_t strength);  // tilt-corrected vertical distance in metres
+    const uint16_t distanceCm, const uint16_t strength);  // tilt-corrected vertical distance in metres from raw range
 
 float lidarGetAbsR22(const float& qx, const float& qy, const float& qz, const float& qw);

@@ -91,14 +91,17 @@ void lidarUpdate() {
     }
 }
 
+bool lidarIsRawMeasurementValid(uint16_t distanceCm, uint16_t strength) {
+    return distanceCm >= LIDAR_MIN_RANGE_CM &&
+           distanceCm <= LIDAR_MAX_RANGE_CM &&
+           strength >= LIDAR_MIN_STRENGTH;
+}
+
 bool lidarGetVerticalM(float* out_m,
     const float& qx, const float& qy, const float& qz, const float& qw,
     const uint16_t distanceCm, const uint16_t strength) {
+    (void)strength;
     if (!out_m) return false;
-
-    if (distanceCm < LIDAR_MIN_RANGE_CM || distanceCm > LIDAR_MAX_RANGE_CM || strength < LIDAR_MIN_STRENGTH) {
-        return false;
-    }
 
     const float R20 = 2.0f * (qx * qz - qy * qw);
     const float R21 = 2.0f * (qy * qz + qx * qw);
