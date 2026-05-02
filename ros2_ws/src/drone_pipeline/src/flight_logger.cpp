@@ -44,17 +44,10 @@ LoggerConfig FlightLogger::loadConfig() {
   if (!root["mavros_topics"])
     throw std::runtime_error("Missing 'mavros_topics' section");
 
-  const auto & mv = root["mavros_topics"];
-
-  if (!mv["odom"])
-    throw std::runtime_error("Missing 'mavros_topics/odom'");
-  cfg.odom_topic = "/drone_" + std::to_string(cfg.drone_id) +
-                   mv["odom"].as<std::string>();
-
-  if (!mv["gps1_raw"])
-    throw std::runtime_error("Missing 'mavros_topics/gps1_raw'");
-  cfg.gps1_raw_topic = "/drone_" + std::to_string(cfg.drone_id) +
-                       mv["gps1_raw"].as<std::string>();
+  if (!root["custom_topics"] || !root["custom_topics"]["images"])
+    throw std::runtime_error("Missing 'custom_topics/images'");
+  cfg.frames_topic = "/drone_" + std::to_string(cfg.drone_id) +
+                     "/" + root["custom_topics"]["images"].as<std::string>();
 
   if (!root["flight_params"]["logs_path"])
     throw std::runtime_error("Missing 'flight_params/logs_path'");
@@ -62,10 +55,9 @@ LoggerConfig FlightLogger::loadConfig() {
 
   RCLCPP_INFO(
     get_logger(),
-    "Config → drone_id=%u  odom=%s  gps=%s  logs=%s",
+    "Config → drone_id=%u  frames=%s  logs=%s",
     cfg.drone_id,
-    cfg.odom_topic.c_str(),
-    cfg.gps1_raw_topic.c_str(),
+    cfg.frames_topic.c_str(),
     cfg.logs_path.c_str());
 
   return cfg;
@@ -78,6 +70,13 @@ LoggerConfig FlightLogger::loadConfig() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::string FlightLogger::createSessionDir(const std::string & logs_path) {
+  const std::string configured_session_dir = get_parameter("session_dir").as_string();
+  if (!configured_session_dir.empty()) {
+    fs::create_directories(configured_session_dir);
+    RCLCPP_INFO(get_logger(), "Session directory: %s", configured_session_dir.c_str());
+    return configured_session_dir;
+  }
+
   fs::create_directories(logs_path);
 
   std::size_t dir_count = 0;
@@ -103,6 +102,7 @@ std::string FlightLogger::createSessionDir(const std::string & logs_path) {
 
 FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
 : Node("flight_logger", options) {
+  declare_parameter<std::string>("session_dir", "");
   config_ = loadConfig();
 
   const std::string session_dir = createSessionDir(config_.logs_path);
@@ -111,65 +111,46 @@ FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
   // '\n' is used in callbacks (not std::endl) — no per-line flush.
   // The OS page cache batches writes; explicit flush + close on clean shutdown.
 
-  const std::string odom_path = session_dir + "/odom.csv";
-  const std::string gps_path  = session_dir + "/gps.csv";
+  const std::string frame_path = session_dir + "/flight_data.csv";
 
-  odom_file_.open(odom_path, std::ios::out | std::ios::app);
-  if (!odom_file_.is_open())
-    throw std::runtime_error("Cannot open odom CSV: " + odom_path);
-
-  gps_file_.open(gps_path, std::ios::out | std::ios::app);
-  if (!gps_file_.is_open())
-    throw std::runtime_error("Cannot open gps CSV: " + gps_path);
+  frame_file_.open(frame_path, std::ios::out | std::ios::app);
+  if (!frame_file_.is_open())
+    throw std::runtime_error("Cannot open frame CSV: " + frame_path);
 
   // Write header only for brand-new files
-  odom_file_.seekp(0, std::ios::end);
-  if (odom_file_.tellp() == 0) {
-    odom_file_
+  frame_file_.seekp(0, std::ios::end);
+  if (frame_file_.tellp() == 0) {
+    frame_file_
       << "timestamp_sec,timestamp_nanosec,"
       << "pos_x,pos_y,pos_z,"
       << "quat_x,quat_y,quat_z,quat_w,"
-      << "vel_lin_x,vel_lin_y,vel_lin_z\n";
-  }
-
-  gps_file_.seekp(0, std::ios::end);
-  if (gps_file_.tellp() == 0) {
-    gps_file_
-      << "timestamp_sec,timestamp_nanosec,"
-      << "lat_deg_e7,lon_deg_e7,alt_mm,"
-      << "vel_m_s,cog_cdeg,"
-      << "satellites_visible,fix_type\n";
+      << "vel_x,vel_y,vel_z,"
+      << "ang_vel_x,ang_vel_y,ang_vel_z,"
+      << "odom_valid,"
+      << "lat_deg_e7,lon_deg_e7,"
+      << "gps_valid,"
+      << "agl_m,vz_mps,"
+      << "mcu_valid\n";
   }
 
   // ── Subscriptions ─────────────────────────────────────────
   const auto qos = rclcpp::SensorDataQoS();
 
-  odom_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  gps_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  frame_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   flush_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
-  rclcpp::SubscriptionOptions odom_sub_opts;
-  odom_sub_opts.callback_group = odom_cb_group_;
+  rclcpp::SubscriptionOptions frame_sub_opts;
+  frame_sub_opts.callback_group = frame_cb_group_;
 
-  rclcpp::SubscriptionOptions gps_sub_opts;
-  gps_sub_opts.callback_group = gps_cb_group_;
-
-  odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-    config_.odom_topic, qos,
-    [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
-      odomCallback(msg);
+  frame_sub_ = create_subscription<drone_msgs::msg::FrameData>(
+    config_.frames_topic, qos,
+    [this](const drone_msgs::msg::FrameData::SharedPtr msg) {
+      frameCallback(msg);
     },
-    odom_sub_opts);
+    frame_sub_opts);
 
-  gps_sub_ = create_subscription<mavros_msgs::msg::GPSRAW>(
-    config_.gps1_raw_topic, qos,
-    [this](const mavros_msgs::msg::GPSRAW::SharedPtr msg) {
-      gpsCallback(msg);
-    },
-    gps_sub_opts);
-
-  RCLCPP_INFO(get_logger(), "flight_logger ready.  odom→%s  gps→%s",
-    config_.odom_topic.c_str(), config_.gps1_raw_topic.c_str());
+  RCLCPP_INFO(get_logger(), "flight_logger ready. frames→%s",
+    config_.frames_topic.c_str());
 
   // ── Flush timer ───────────────────────────────────────────
   // Flushes buffers to disk every 3 seconds, or when buffer size exceeds threshold.
@@ -178,18 +159,11 @@ FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
     std::chrono::seconds(3),
     [this]() {
       {
-        std::lock_guard<std::mutex> lk(odom_mtx_);
-        for (const auto & line : odom_buffer_)
-          odom_file_ << line;
-        odom_buffer_.clear();
-        odom_file_.flush();
-      }
-      {
-        std::lock_guard<std::mutex> lk(gps_mtx_);
-        for (const auto & line : gps_buffer_)
-          gps_file_ << line;
-        gps_buffer_.clear();
-        gps_file_.flush();
+        std::lock_guard<std::mutex> lk(frame_mtx_);
+        for (const auto & line : frame_buffer_)
+          frame_file_ << line;
+        frame_buffer_.clear();
+        frame_file_.flush();
       }
     },
     flush_cb_group_);
@@ -202,55 +176,30 @@ FlightLogger::FlightLogger(const rclcpp::NodeOptions & options)
 FlightLogger::~FlightLogger()
 {
   // Flush any remaining buffered lines
-  for (const auto & line : odom_buffer_) odom_file_ << line;
-  for (const auto & line : gps_buffer_)  gps_file_  << line;
+  for (const auto & line : frame_buffer_) frame_file_ << line;
 
-  if (odom_file_.is_open()) { odom_file_.flush(); odom_file_.close(); }
-  if (gps_file_.is_open())  { gps_file_.flush();  gps_file_.close();  }
+  if (frame_file_.is_open()) { frame_file_.flush(); frame_file_.close(); }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Odom callback
-// ─────────────────────────────────────────────────────────────────────────────
-
-void FlightLogger::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+void FlightLogger::frameCallback(const drone_msgs::msg::FrameData::SharedPtr msg)
 {
-  const auto & p = msg->pose.pose.position;
-  const auto & q = msg->pose.pose.orientation;
-  const auto & v = msg->twist.twist.linear;
-
   std::ostringstream oss;
-  oss << msg->header.stamp.sec     << ','
-      << msg->header.stamp.nanosec << ','
-      << p.x << ',' << p.y << ',' << p.z << ','
-      << q.x << ',' << q.y << ',' << q.z << ',' << q.w << ','
-      << v.x << ',' << v.y << ',' << v.z << '\n';
+  oss << msg->image.header.stamp.sec     << ','
+      << msg->image.header.stamp.nanosec << ','
+      << msg->pos_x      << ',' << msg->pos_y      << ',' << msg->pos_z      << ','
+      << msg->quat_x     << ',' << msg->quat_y     << ',' << msg->quat_z     << ','
+      << msg->quat_w     << ','
+      << msg->vel_x      << ',' << msg->vel_y      << ',' << msg->vel_z      << ','
+      << msg->ang_vel_x  << ',' << msg->ang_vel_y  << ',' << msg->ang_vel_z  << ','
+      << msg->odom_valid << ','
+      << msg->lat        << ',' << msg->lon        << ','
+      << msg->gps_valid  << ','
+      << msg->agl_m      << ',' << msg->vz_mps     << ','
+      << msg->mcu_valid  << '\n';
 
-  std::lock_guard<std::mutex> lk(odom_mtx_);
-  odom_buffer_.push_back(oss.str());
+  std::lock_guard<std::mutex> lk(frame_mtx_);
+  frame_buffer_.push_back(oss.str());
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  GPS callback
-// ─────────────────────────────────────────────────────────────────────────────
-
-void FlightLogger::gpsCallback(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
-{
-  std::lock_guard<std::mutex> lk(gps_mtx_);
-
-  gps_file_
-    << msg->header.stamp.sec     << ','
-    << msg->header.stamp.nanosec << ','
-    << msg->lat                  << ','   // deg * 1e7  (int32)
-    << msg->lon                  << ','   // deg * 1e7  (int32)
-    << msg->alt                  << ','   // mm above MSL (int32)
-    << msg->vel                  << ','   // cm/s ground speed (uint16)
-    << msg->cog                  << ','   // course over ground, cdeg (uint16)
-    << static_cast<int>(msg->satellites_visible) << ','
-    << static_cast<int>(msg->fix_type)
-    << '\n';
-}
-
 }  // namespace drone_pipeline
 
 // ─────────────────────────────────────────────────────────────────────────────

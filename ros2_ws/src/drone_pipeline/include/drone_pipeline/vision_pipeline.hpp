@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <future>
 #include <map>
@@ -143,9 +144,6 @@ struct FrameSlot
   std::atomic<int>  consumers_remaining{0};
   std::atomic<bool> in_use{false};
 
-  // Temporary debug flags: which consumer is still holding this slot.
-  std::atomic<bool> awaiting_mjpeg{false};
-  std::atomic<bool> awaiting_worker{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,9 +202,6 @@ private:
   rclcpp::CallbackGroup::SharedPtr frame_cb_group_;
   rclcpp::CallbackGroup::SharedPtr stream_cmd_cb_group_;
   rclcpp::CallbackGroup::SharedPtr record_cmd_cb_group_;
-  rclcpp::CallbackGroup::SharedPtr record_flush_cb_group_;
-  rclcpp::CallbackGroup::SharedPtr track_flush_cb_group_;
-
   rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr  frame_sub_;
 
   // Streaming
@@ -238,56 +233,33 @@ private:
   // Called by each consumer when it finishes.  Frees the slot when all done.
   void releaseSlot(int idx);
 
-  struct BufferDebugSnapshot
+  // ── Recording thread ─────────────────────────────────────────────────────
+  // Consumes copied JPEG frames and writes AVI plus a frame-index map.
+  struct RecordTask
   {
-    int in_use{0};
-    int awaiting_mjpeg{0};
-    int awaiting_worker{0};
-    int awaiting_both{0};
-    int mjpeg_queue_depth{0};
-    int worker_queue_depth{0};
+    std::vector<uint8_t> jpeg_data;
+    uint32_t stamp_sec{};
+    uint32_t stamp_nanosec{};
   };
-  BufferDebugSnapshot snapshotBufferDebug();
 
-  // ── MJPEG writer thread ───────────────────────────────────────────────────
-  // Consumes: slot.msg->image.data (zero-copy JPEG), slot odom/gps/mcu snapshot.
-  // Writes:   .avi file via MjpegWriter, data.csv — all buffered.
-  struct MjpegTask { int idx; };
-
-  std::queue<MjpegTask>   mjpeg_queue_;
-  std::mutex              mjpeg_queue_mtx_;
-  std::condition_variable mjpeg_queue_cv_;
-  std::thread             mjpeg_thread_;
-  std::atomic<bool>       mjpeg_running_{false};
+  std::deque<RecordTask>  record_queue_;
+  std::mutex              record_queue_mtx_;
+  std::condition_variable record_queue_cv_;
+  std::condition_variable record_idle_cv_;
+  std::thread             record_thread_;
+  std::atomic<bool>       record_running_{false};
+  bool                    record_worker_busy_{false};
   std::atomic<bool>       recording_{false};
 
   MjpegWriter   mjpeg_writer_;
-  std::ofstream data_csv_file_;
+  std::ofstream frame_index_file_;
+  uint64_t      record_frame_index_{0};
 
-  enum class DataCsvCommandType { Open, AppendLine, Flush, Close, Stop };
-  struct DataCsvCommand
-  {
-    DataCsvCommandType type{DataCsvCommandType::Flush};
-    std::string path;
-    std::string line;
-    std::shared_ptr<std::promise<bool>> completion;
-  };
-
-  std::mutex                 data_csv_mtx_;
-  std::condition_variable    data_csv_cv_;
-  std::queue<DataCsvCommand> data_csv_cmd_queue_;
-  std::thread                data_csv_thread_;
-
-  void mjpegLoop();
-  void dataCsvLoggerLoop();
-  void enqueueDataCsvLine(std::string line);
-  bool openDataCsv(const std::string & path);
-  void flushDataCsv();
-  void closeDataCsv();
+  void recordLoop();
+  void enqueueRecordTask(RecordTask task);
+  void waitForRecordQueueDrained();
   void openRecordClip();
   void closeRecordClip();
-
-  rclcpp::TimerBase::SharedPtr record_flush_timer_;
 
   // ── H264 encoder thread ───────────────────────────────────────────────────
   // Consumes: slot.msg JPEG bytes → tjDecompressToYUVPlanes → libx264.
@@ -361,21 +333,6 @@ private:
   std::mutex        results_mtx_;         // guards pq + next_result_seq_ + tracker state
   bool              track_csv_active_{false};
 
-  std::ofstream              track_csv_file_;
-  enum class TrackCsvCommandType { Open, AppendLines, Flush, Close, Stop };
-  struct TrackCsvCommand
-  {
-    TrackCsvCommandType type{TrackCsvCommandType::Flush};
-    std::string path;
-    std::vector<std::string> lines;
-    std::shared_ptr<std::promise<bool>> completion;
-  };
-
-  std::mutex                  track_csv_mtx_;
-  std::condition_variable     track_csv_cv_;
-  std::queue<TrackCsvCommand> track_csv_cmd_queue_;
-  std::thread                 track_csv_thread_;
-  rclcpp::TimerBase::SharedPtr track_flush_timer_;
   bool   has_prev_track_timestamp_{false};
   double prev_track_timestamp_s_{0.0};
   bool   has_smoothed_projection_height_{false};
@@ -383,11 +340,6 @@ private:
 
   void depositResult(PendingResult && r);   // called from Hailo callback
   void drainResultsLocked(std::vector<std::string> & ready_lines);
-  void trackCsvLoggerLoop();
-  void enqueueTrackCsvLines(std::vector<std::string> lines);
-  bool openTrackCsvLogger(const std::string & path);
-  void flushTrackCsv();
-  void closeTrackCsvLogger();
   void openTrackCsv(const std::string & path);
   void closeTrackCsv();
   void resetTrackingStateLocked();

@@ -1,8 +1,31 @@
+import os
+
+import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
+from ament_index_python.packages import get_package_share_directory
+
+
+def create_session_dir():
+    share_dir = get_package_share_directory("mavros_config")
+    config_path = os.path.join(share_dir, "config", "control_params.yaml")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        root = yaml.safe_load(f)
+
+    logs_path = root["flight_params"]["logs_path"]
+    os.makedirs(logs_path, exist_ok=True)
+
+    dir_count = sum(
+        1 for entry in os.scandir(logs_path) if entry.is_dir()
+    )
+    session_dir = os.path.join(logs_path, f"{dir_count + 1:04d}")
+    os.makedirs(session_dir, exist_ok=False)
+    return session_dir
 
 def generate_launch_description():
     stream_codec_arg = DeclareLaunchArgument(
@@ -17,6 +40,7 @@ def generate_launch_description():
     )
     stream_codec = LaunchConfiguration("stream_codec")
     gcs_host = LaunchConfiguration("gcs_host")
+    session_dir = create_session_dir()
 
     container = ComposableNodeContainer(
         name="drone_pipeline_container",
@@ -34,7 +58,7 @@ def generate_launch_description():
                 package="drone_pipeline",
                 plugin="drone_pipeline::VisionPipeline",
                 name="vision_pipeline",
-                parameters=[{"stream_codec": stream_codec}],
+                parameters=[{"stream_codec": stream_codec}, {"session_dir": session_dir}],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
             ComposableNode(
@@ -49,16 +73,13 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    # FlightLogger is disabled — odom/gps per-frame data is now written
-    # directly by the MJPEG writer thread inside VisionPipeline.
-    # Re-enable by uncommenting below when needed.
-    #
-    # flight_logger = Node(
-    #     package="drone_pipeline",
-    #     executable="flight_logger_node",
-    #     name="flight_logger",
-    #     output="screen",
-    #     emulate_tty=True,
-    # )
+    flight_logger = Node(
+        package="drone_pipeline",
+        executable="flight_logger_node",
+        name="flight_logger",
+        parameters=[{"session_dir": session_dir}],
+        output="screen",
+        emulate_tty=True,
+    )
 
-    return LaunchDescription([stream_codec_arg, gcs_host_arg, container])
+    return LaunchDescription([stream_codec_arg, gcs_host_arg, container, flight_logger])

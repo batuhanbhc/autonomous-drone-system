@@ -105,6 +105,7 @@ target_include_directories(flight_logger_node PUBLIC
 target_link_libraries(flight_logger_node yaml-cpp)
 ament_target_dependencies(flight_logger_node
   rclcpp
+  drone_msgs
   nav_msgs
   mavros_msgs
 )

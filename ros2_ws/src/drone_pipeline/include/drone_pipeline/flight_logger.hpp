@@ -4,10 +4,10 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
-#include "nav_msgs/msg/odometry.hpp"
-#include "mavros_msgs/msg/gpsraw.hpp"
+#include "drone_msgs/msg/frame_data.hpp"
 
 namespace drone_pipeline
 {
@@ -15,8 +15,7 @@ namespace drone_pipeline
 struct LoggerConfig
 {
   uint8_t     drone_id;
-  std::string odom_topic;      // full topic path from yaml (mavros_topics/odom)
-  std::string gps1_raw_topic;  // full topic path from yaml (mavros_topics/gps1_raw)
+  std::string frames_topic;    // full topic path from yaml (custom_topics/images)
   std::string logs_path;       // root directory where session folders live
 };
 
@@ -32,29 +31,23 @@ private:
   std::string  createSessionDir(const std::string & logs_path);
 
   // write buffer
-  std::vector<std::string> odom_buffer_;
-  std::vector<std::string> gps_buffer_;
+  std::vector<std::string> frame_buffer_;
   rclcpp::TimerBase::SharedPtr flush_timer_;
   static constexpr size_t kBufferFlushSize = 100;
 
   // ── callbacks ─────────────────────────────────────────────
-  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
-  void gpsCallback (const mavros_msgs::msg::GPSRAW::SharedPtr msg);
+  void frameCallback(const drone_msgs::msg::FrameData::SharedPtr msg);
 
   // ── state ─────────────────────────────────────────────────
   LoggerConfig config_;
 
-  std::ofstream odom_file_;
-  std::ofstream gps_file_;
-  std::mutex    odom_mtx_;
-  std::mutex    gps_mtx_;
+  std::ofstream frame_file_;
+  std::mutex    frame_mtx_;
 
-  rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
-  rclcpp::CallbackGroup::SharedPtr gps_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr frame_cb_group_;
   rclcpp::CallbackGroup::SharedPtr flush_cb_group_;
 
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
-  rclcpp::Subscription<mavros_msgs::msg::GPSRAW>::SharedPtr gps_sub_;
+  rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr frame_sub_;
 };
 
 }  // namespace drone_pipeline
