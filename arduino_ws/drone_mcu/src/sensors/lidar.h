@@ -22,10 +22,8 @@
 #define LIDAR_TRIGGER_HZ  20
 #define LIDAR_TRIGGER_US  (1000000UL / LIDAR_TRIGGER_HZ)
 
-#define LIDAR_MIN_RANGE_M   0.0f
-#define LIDAR_MAX_RANGE_M   20.0f
-#define LIDAR_MIN_RANGE_CM  0
-#define LIDAR_MAX_RANGE_CM  2000
+#define LIDAR_MIN_RAW_RANGE_M  0.0f
+#define LIDAR_MAX_RAW_RANGE_M  20.0f
 #define LIDAR_MIN_STRENGTH  100
 
 // LiDAR position relative to drone center, in the body frame using FLU axes.

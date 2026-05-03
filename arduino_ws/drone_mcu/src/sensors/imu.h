@@ -6,7 +6,7 @@
 #define IMU_INT_PIN           D1
 #define IMU_RESET_PIN        -1
 #define IMU_ADDR              0x4A
-#define IMU_REPORT_RATE_US    10000 // ~100 hz 
+#define IMU_REPORT_RATE_US    5000 // ~200 hz 
 
 // IMU position in the drone body frame using FLU axes:
 // x = forward, y = left.

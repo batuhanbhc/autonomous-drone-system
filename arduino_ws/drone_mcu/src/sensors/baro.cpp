@@ -5,6 +5,7 @@
 #define BARO_ADDR       0x77
 #define BARO_INT_PIN    19
 #define SEA_LEVEL_HPA   1013.25f
+#define BARO_FILTER_TAU_S 0.75f
 
 // BMP390 register addresses
 #define BMP3_REG_INT_CTRL   0x19
@@ -14,6 +15,7 @@ static Adafruit_BMP3XX bmp;
 BaroData baroData = {};
 
 static volatile bool baroIntFired = false;
+static uint32_t lastBaroSampleMs = 0;
 
 
 // ── Low-level register helpers (I2C) ─────────────────────────────────────────
@@ -43,6 +45,15 @@ static float pressureToAltitude(float pressurePa, float seaLevelHpa) {
     return 44330.0f * (1.0f - powf(atmospheric / seaLevelHpa, 0.1903f));
 }
 
+static float computeLpfAlpha(float dt_s, float tau_s) {
+    if (!(dt_s > 0.0f) || !(tau_s > 0.0f)) {
+        return 1.0f;
+    }
+
+    const float alpha = dt_s / (tau_s + dt_s);
+    return constrain(alpha, 0.0f, 1.0f);
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 bool baroBegin() {
     if (!bmp.begin_I2C(BARO_ADDR, &Wire)) {
@@ -53,7 +64,7 @@ bool baroBegin() {
     // Sampling config
     bmp.setTemperatureOversampling(BMP3_NO_OVERSAMPLING);
     bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
-    bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+    bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_7);
     bmp.setOutputDataRate(BMP3_ODR_25_HZ);
 
     // ── INT_CTRL (0x19) ───────────────────────────────────────────────────
@@ -79,7 +90,7 @@ bool baroBegin() {
     pinMode(BARO_INT_PIN, INPUT);
     attachInterrupt(digitalPinToInterrupt(BARO_INT_PIN), baroISR, RISING);
 
-    Serial.println("[BARO] BMP390 ready — normal mode 50Hz, INT→GPIO19");
+    Serial.println("[BARO] BMP390 ready - normal mode 25Hz, INT->GPIO19");
     return true;
 }
 
@@ -89,8 +100,22 @@ void baroUpdate() {
 
     if (!bmp.performReading()) return;
 
+    const float rawPressurePa = bmp.pressure;
+    const uint32_t nowMs = millis();
+
+    if (baroData.pressurePa <= 1000.0f) {
+        baroData.pressurePa = rawPressurePa;
+    } else {
+        const uint32_t dtMs = nowMs - lastBaroSampleMs;
+        const float dt_s = 0.001f * static_cast<float>(dtMs);
+        const float alpha = computeLpfAlpha(dt_s, BARO_FILTER_TAU_S);
+        baroData.pressurePa += alpha * (rawPressurePa - baroData.pressurePa);
+    }
+
+    lastBaroSampleMs = nowMs;
+
     // ── Store results ─────────────────────────────────────────────────────
-    baroData.pressurePa = bmp.pressure;
+    baroData.rawPressurePa = rawPressurePa;
     baroData.tempC      = bmp.temperature;
     baroData.altitudeM  = pressureToAltitude(baroData.pressurePa, SEA_LEVEL_HPA);
     baroData.fresh      = true;

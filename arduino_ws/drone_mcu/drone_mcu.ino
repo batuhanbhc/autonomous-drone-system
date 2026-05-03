@@ -536,6 +536,9 @@ void loop() {
     estimatorDbg.lastPredictDt_s = dt_s;
     estimatorDbg.lastPredictAccelWorldZ_mps2 = imuData.worldLinAccelZ;
     altitudeEkfPredict(imuData.worldLinAccelZ, dt_s);
+    
+    // temp test to see if we can get better baro updates by not predicting with accel
+    //altitudeEkfPredict(0.0f, dt_s);
   }
 
   // 2) Update on baro
@@ -560,6 +563,7 @@ void loop() {
     }
     estimatorDbg.lastBaroRel_m = zBaroRel_m;
     estimatorDbg.lastBaroMs = nowMs;
+    
     altitudeEkfUpdateBaro(zBaroRel_m);
   }
 

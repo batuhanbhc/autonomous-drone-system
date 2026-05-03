@@ -2,6 +2,7 @@
 #include <Arduino.h>
 
 struct BaroData {
+    float rawPressurePa = 0.0f;
     float pressurePa = 0.0f;
     float launchPressurePa = 0.0f;
     float tempC = 0.0f;

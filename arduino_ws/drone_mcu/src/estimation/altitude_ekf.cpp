@@ -362,12 +362,9 @@ bool altitudeEkfUpdateLidar(float lidarVertical_m,
   altitudeEkf.s.lastLidarAccepted = false;
   if (!altitudeEkf.s.initialized) return false;
 
-  const bool validStrength = strength >= LIDAR_MIN_STRENGTH;
-  const bool validRange =
-      lidarVertical_m >= LIDAR_MIN_RANGE_M &&
-      lidarVertical_m <= LIDAR_MAX_RANGE_M;
+  const bool validRawMeasurement = lidarIsRawMeasurementValid(distanceCm, strength);
   const bool validTilt = r22_abs >= cosf(altitudeEkf.maxTiltDeg * DEG_TO_RAD);
-  if (!(validStrength && validRange && validTilt)) {
+  if (!(validRawMeasurement && validTilt)) {
     if (altitudeEkf.s.lidarBlocked) {
       resetLidarRecoveryWindow();
     }

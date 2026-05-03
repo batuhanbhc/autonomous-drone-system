@@ -92,8 +92,9 @@ void lidarUpdate() {
 }
 
 bool lidarIsRawMeasurementValid(uint16_t distanceCm, uint16_t strength) {
-    return distanceCm >= LIDAR_MIN_RANGE_CM &&
-           distanceCm <= LIDAR_MAX_RANGE_CM &&
+    const float raw_m = 0.01f * static_cast<float>(distanceCm);
+    return raw_m >= LIDAR_MIN_RAW_RANGE_M &&
+           raw_m <= LIDAR_MAX_RAW_RANGE_M &&
            strength >= LIDAR_MIN_STRENGTH;
 }
 
