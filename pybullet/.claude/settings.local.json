@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk -F',' 'NR>1 {print $1, $7, $10}' /home/batuhan/pybullet/checkpoints/run_20260504_195947/train_metrics.csv)",
+      "Bash(awk 'NR<=10 || NR>=165')"
+    ]
+  }
+}

@@ -38,3 +38,6 @@ __pycache__/
 arduino_ws/.venv
 arduino_ws/arduino-ide_2.3.8_Linux_64bit.AppImage
 arduino_ws/.vscode
+
+# pybullet logs and checkpoints
+pybullet/checkpoints/
