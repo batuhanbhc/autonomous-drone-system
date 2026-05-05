@@ -119,15 +119,14 @@ void AutonomousController::onControlTimer()
   drone_msgs::msg::SceneState scene;
   {
     std::lock_guard<std::mutex> lk(scene_mtx_);
-    if (!has_scene_) return;
-    scene = last_scene_;
+    if (has_scene_) scene = last_scene_;
   }
 
   // TODO: autonomous control logic — compute vx, vy, yaw_rate from scene
 
   drone_msgs::msg::AutonomousAction cmd;
-  cmd.stamp    = scene.stamp;
-  cmd.vx       = 0.0f;
+  cmd.stamp    = has_scene_ ? scene.stamp : static_cast<builtin_interfaces::msg::Time>(this->now());
+  cmd.vx       = 1.0f;
   cmd.vy       = 0.0f;
   cmd.yaw_rate = 0.0f;
   output_pub_->publish(cmd);

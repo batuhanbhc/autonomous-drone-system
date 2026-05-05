@@ -24,12 +24,7 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
   }
 
   if (!isCommandAlwaysEnabled(msg->command_id)) {
-    if (current_state.control_mode == ControlMode::Auto) {
-      publishInfo(DroneInfo::LEVEL_WARN,
-        stringf("Rejected (id=%d, %s): Command not permitted in AUTO mode.",
-                msg->command_id, command_name));
-      return;
-    } else if (!current_state.keyboard_on) {
+    if (!current_state.keyboard_on) {
       publishInfo(DroneInfo::LEVEL_WARN,
         stringf("Rejected (id=%d, %s): Keyboard off.", msg->command_id, command_name));
       return;
@@ -66,26 +61,30 @@ void ControlGateNode::onTeleopCommand(const drone_msgs::msg::TeleopCommand::Shar
 void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
+  // Auto→Manual override must happen before the blocked check, because
+  // isSetpointBlocked returns true in AUTO mode (control_mode != Manual).
+  {
+    const InternalState st = snapshotState();
+    if (st.control_mode == ControlMode::Auto) {
+      InternalStateUpdate upt;
+      upt.control_mode = ControlMode::Manual;
+      updateInternalStateAtomic(upt);
+
+      Toggle disable_msg;
+      disable_msg.state = false;
+      pub_autonomous_enable_->publish(disable_msg);
+
+      publishInfo(DroneInfo::LEVEL_INFO, "Teleop override: AUTO → MANUAL.");
+      RCLCPP_INFO(get_logger(), "Teleop action received in AUTO mode — switching to MANUAL.");
+    }
+  }
+
   const InternalState current_state = snapshotState();
   const bool blocked = isSetpointBlocked(current_state);
   updateSetpointBlockStateAndMaybePublish(blocked, false);
   if (blocked) return;
 
   updateLastAct(std::chrono::steady_clock::now());
-
-  // Teleop input in Auto mode immediately overrides autonomous control.
-  if (current_state.control_mode == ControlMode::Auto) {
-    InternalStateUpdate upt;
-    upt.control_mode = ControlMode::Manual;
-    updateInternalStateAtomic(upt);
-
-    Toggle disable_msg;
-    disable_msg.state = false;
-    pub_autonomous_enable_->publish(disable_msg);
-
-    publishInfo(DroneInfo::LEVEL_INFO, "Teleop override: AUTO → MANUAL.");
-    RCLCPP_INFO(get_logger(), "Teleop action received in AUTO mode — switching to MANUAL.");
-  }
 
   const float eff_vx       = static_cast<float>(msg->vx);
   const float eff_vy       = static_cast<float>(msg->vy);
@@ -144,7 +143,11 @@ void ControlGateNode::onAutonomousOutput(const AutonomousAction::SharedPtr msg) 
   const InternalState st = snapshotState();
   if (st.control_mode != ControlMode::Auto) return;
 
-  const bool blocked = isSetpointBlocked(st);
+  // Use a separate blocked check for AUTO — isSetpointBlocked requires Manual mode.
+  const bool blocked =
+    !st.connected || st.system_killed || !st.armed || !st.guided ||
+    critical_state_.load(std::memory_order_relaxed) ||
+    gcs_failsafe_.load(std::memory_order_relaxed);
   updateSetpointBlockStateAndMaybePublish(blocked, false);
   if (blocked) return;
 

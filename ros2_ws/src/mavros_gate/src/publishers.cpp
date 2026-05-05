@@ -145,7 +145,12 @@ void ControlGateNode::onGuidedSetpointTimer() {
   if (alt_ctrl_mode_ != AltCtrlMode::AltHold) return;
 
   const InternalState st = snapshotState();
-  if (isSetpointBlocked(st)) return;
+  const bool blocked = (st.control_mode == ControlMode::Manual)
+    ? isSetpointBlocked(st)
+    : (!st.connected || st.system_killed || !st.armed || !st.guided ||
+       critical_state_.load(std::memory_order_relaxed) ||
+       gcs_failsafe_.load(std::memory_order_relaxed));
+  if (blocked) return;
 
   const auto   now     = std::chrono::steady_clock::now();
   const double stale_s = cmd_stale_timeout_s_;

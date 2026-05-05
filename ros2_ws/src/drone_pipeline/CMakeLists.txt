@@ -30,35 +30,41 @@ if(NOT TURBOJPEG_INCLUDE_DIR OR NOT TURBOJPEG_LIBRARY)
   message(FATAL_ERROR "libturbojpeg not found — install libturbojpeg0-dev")
 endif()
 
-# ── HailoRT ───────────────────────────────────────────────────────────────────
+# ── HailoRT (optional — vision_pipeline only) ─────────────────────────────────
 find_library(HAILORT_LIBRARY hailort
   HINTS /usr/lib /usr/local/lib
 )
 find_path(HAILORT_INCLUDE_DIR hailo/hailort.hpp
   HINTS /usr/include /usr/local/include
 )
-if(NOT HAILORT_LIBRARY OR NOT HAILORT_INCLUDE_DIR)
-  message(FATAL_ERROR "HailoRT not found — install hailort dev package")
+if(HAILORT_LIBRARY AND HAILORT_INCLUDE_DIR)
+  set(HAILORT_FOUND TRUE)
+  message(STATUS "HailoRT: ${HAILORT_LIBRARY}  includes: ${HAILORT_INCLUDE_DIR}")
+else()
+  set(HAILORT_FOUND FALSE)
+  message(STATUS "HailoRT not found — VisionPipeline will not be built")
 endif()
-message(STATUS "HailoRT: ${HAILORT_LIBRARY}  includes: ${HAILORT_INCLUDE_DIR}")
 
 # ── Shared library (pipeline components) ──────────────────────────────────────
-add_library(drone_pipeline_components SHARED
+set(PIPELINE_SOURCES
   src/camera_capture_node.cpp
   src/mjpeg_writer.cpp
   src/video_streamer.cpp
   src/h264_encoder.cpp
   src/tracker.cpp
-  src/vision_pipeline.cpp
   src/autonomous_controller.cpp
 )
+if(HAILORT_FOUND)
+  list(APPEND PIPELINE_SOURCES src/vision_pipeline.cpp)
+endif()
+
+add_library(drone_pipeline_components SHARED ${PIPELINE_SOURCES})
 
 target_include_directories(drone_pipeline_components PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${OpenCV_INCLUDE_DIRS}
   ${TURBOJPEG_INCLUDE_DIR}
-  ${HAILORT_INCLUDE_DIR}
 )
 
 target_link_libraries(drone_pipeline_components
@@ -66,8 +72,12 @@ target_link_libraries(drone_pipeline_components
   ${OpenCV_LIBS}
   PkgConfig::LIBAV
   ${TURBOJPEG_LIBRARY}
-  ${HAILORT_LIBRARY}
 )
+
+if(HAILORT_FOUND)
+  target_include_directories(drone_pipeline_components PUBLIC ${HAILORT_INCLUDE_DIR})
+  target_link_libraries(drone_pipeline_components ${HAILORT_LIBRARY})
+endif()
 
 ament_target_dependencies(drone_pipeline_components
   rclcpp
@@ -86,10 +96,12 @@ rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::CameraCapture"
   EXECUTABLE camera_capture_node
 )
-rclcpp_components_register_node(drone_pipeline_components
-  PLUGIN "drone_pipeline::VisionPipeline"
-  EXECUTABLE vision_pipeline_node
-)
+if(HAILORT_FOUND)
+  rclcpp_components_register_node(drone_pipeline_components
+    PLUGIN "drone_pipeline::VisionPipeline"
+    EXECUTABLE vision_pipeline_node
+  )
+endif()
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::VideoStreamer"
   EXECUTABLE video_streamer_node
