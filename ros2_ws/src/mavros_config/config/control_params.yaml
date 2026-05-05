@@ -86,9 +86,14 @@ custom_topics:
   images: "camera/image/compressed"
   autonomous_action: "/autonomous/action"
   manual_action:  "/teleop/action"
-  manual_command: "/teleop/command" 
+  manual_command: "/teleop/command"
   alt_ctrl_input:    /altitude_controller/input    # control_gate → PID node
   alt_ctrl_output:   /altitude_controller/output   # PID node → control_gate
+  scene:             /vision_pipeline/scene        # vision_pipeline → autonomous_controller
+  autonomous_enable: /autonomous/enable            # control_gate → autonomous_controller (toggle)
+
+autonomous_controller:
+  hz: 4.0
 
 mavros_topics:
     state: "/mavros/state"

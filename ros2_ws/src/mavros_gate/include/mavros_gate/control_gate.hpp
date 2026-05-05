@@ -28,6 +28,8 @@
 #include <drone_msgs/msg/drone_info.hpp>
 #include <drone_msgs/msg/gcs_heartbeat.hpp>
 #include <drone_msgs/msg/altitude_controller_input.hpp>
+#include <drone_msgs/msg/toggle.hpp>
+#include <drone_msgs/msg/autonomous_action.hpp>
 #include <drone_msgs/srv/set_target_height.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
 #include <std_msgs/msg/float32.hpp>
@@ -64,6 +66,8 @@ private:
   using VerticalEstimate    = drone_msgs::msg::McuVerticalEstimate;
   using AltCtrlInput        = drone_msgs::msg::AltitudeControllerInput;
   using AltCtrlOutput       = std_msgs::msg::Float32;   // vz m/s from PID
+  using Toggle              = drone_msgs::msg::Toggle;
+  using AutonomousAction    = drone_msgs::msg::AutonomousAction;
   using SetTargetHeight     = drone_msgs::srv::SetTargetHeight;
 
   using MonotonicTime = std::chrono::steady_clock::time_point;
@@ -94,7 +98,8 @@ private:
   };
 
   struct TopicPaths {
-    std::string autonomous_action;
+    std::string autonomous_action;   // autonomous_controller → control_gate (output)
+    std::string autonomous_enable;   // control_gate → autonomous_controller (toggle)
     std::string manual_action;
     std::string manual_command;
     std::string mcu_bridge;
@@ -251,6 +256,18 @@ private:
   std::chrono::steady_clock::time_point last_vz_update_{};   // set by PID output
   std::chrono::steady_clock::time_point last_yaw_update_{};
 
+  // ── Autonomous setpoint state ─────────────────────────────────────────────
+  // World-frame velocity commands received from the autonomous controller.
+  // Mirrors guided_cmd_ but carries ENU world-frame values (vx=east, vy=north).
+  // Used by onGuidedSetpointTimer (Auto mode) and onAutonomousOutput (no AltHold).
+  struct AutonomousCmd {
+    float vx{0.0f}, vy{0.0f}, yaw_rate{0.0f};
+  };
+  AutonomousCmd autonomous_cmd_;
+  std::chrono::steady_clock::time_point last_auto_vx_update_{};
+  std::chrono::steady_clock::time_point last_auto_vy_update_{};
+  std::chrono::steady_clock::time_point last_auto_yaw_update_{};
+
   // Timestamp of the last nonzero-Vz operator input (for override timeout).
   std::chrono::steady_clock::time_point last_vz_override_t_{};
 
@@ -293,6 +310,8 @@ private:
 
   // publishSetpoint is now PRIVATE to onGuidedSetpointTimer — use update* above.
   void publishSetpoint(float vx, float vy, float vz, float yaw_rate);
+  // World-frame (ENU) setpoint: vx=east, vy=north, vz=up, yaw_rate=CCW. Converts to FRAME_LOCAL_NED.
+  void publishSetpointWorldFrame(float vx_east, float vy_north, float vz_up, float yaw_rate_ccw);
 
   // ── Subscriber callbacks ──────────────────────────────────────────────────
   void onTeleopCommand(const TeleopCmd::SharedPtr);
@@ -303,6 +322,7 @@ private:
   void onFailsafeWatchdog();
   void onVerticalEstimate(const VerticalEstimate::SharedPtr);
   void onAltCtrlOutput(const AltCtrlOutput::SharedPtr);
+  void onAutonomousOutput(const AutonomousAction::SharedPtr);
 
   // ── Service callbacks ─────────────────────────────────────────────────────
   void onSetTargetHeight(
@@ -332,12 +352,14 @@ private:
   rclcpp::Subscription<GcsHeartbeat>::SharedPtr     sub_gcs_heartbeat_;
   rclcpp::Subscription<VerticalEstimate>::SharedPtr sub_vertical_estimate_;
   rclcpp::Subscription<AltCtrlOutput>::SharedPtr    sub_alt_ctrl_output_;
+  rclcpp::Subscription<AutonomousAction>::SharedPtr sub_autonomous_output_;
 
   // ── Publishers ────────────────────────────────────────────────────────────
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr pub_setpoint_raw_local_;
   rclcpp::Publisher<DroneState>::SharedPtr    pub_control_state_;
   rclcpp::Publisher<DroneInfo>::SharedPtr     pub_drone_info_;
   rclcpp::Publisher<AltCtrlInput>::SharedPtr  pub_alt_ctrl_input_;
+  rclcpp::Publisher<Toggle>::SharedPtr        pub_autonomous_enable_;
 
   // ── Service servers ────────────────────────────────────────────────────────
   rclcpp::Service<SetTargetHeight>::SharedPtr srv_set_target_height_;

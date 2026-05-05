@@ -68,6 +68,12 @@ def generate_launch_description():
                 parameters=[{"stream_codec": stream_codec}, {"gcs_host": gcs_host}],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
+            ComposableNode(
+                package="drone_pipeline",
+                plugin="drone_pipeline::AutonomousController",
+                name="autonomous_controller",
+                extra_arguments=[{"use_intra_process_comms": True}],
+            ),
         ],
         output="screen",
         emulate_tty=True,

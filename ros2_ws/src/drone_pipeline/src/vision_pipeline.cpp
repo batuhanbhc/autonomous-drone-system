@@ -17,6 +17,8 @@
 #include <tf2/utils.h>
 #include <tf2/LinearMath/Quaternion.h>
 
+#include "drone_msgs/msg/tracked_object.hpp"
+
 #include <opencv2/imgproc.hpp>
 
 extern "C" {
@@ -177,7 +179,9 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.p2 = dist["p2"].as<double>();
   cfg.k3 = dist["k3"].as<double>();
 
-  cfg.logs_path = root["flight_params"]["logs_path"].as<std::string>();
+  cfg.logs_path   = root["flight_params"]["logs_path"].as<std::string>();
+  cfg.scene_topic = "/drone_" + std::to_string(cfg.drone_id) +
+                    root["custom_topics"]["scene"].as<std::string>();
   cfg.stream_codec = resolveStreamCodec(
     *this, root, get_parameter("stream_codec").as_string());
 
@@ -484,6 +488,9 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
 
   record_state_pub_ = create_publisher<drone_msgs::msg::Toggle>(
     dp + "/camera/record/active", reliable_qos);
+
+  pub_scene_ = create_publisher<drone_msgs::msg::SceneState>(
+    config_.scene_topic, sensor_qos);
 
   publishRecordState();
 
@@ -1188,13 +1195,85 @@ void VisionPipeline::closeTrackCsv()
   track_csv_active_ = false;
 }
 
-void VisionPipeline::depositResult(PendingResult && /*r*/)
+void VisionPipeline::depositResult(PendingResult && r)
 {
+  std::vector<std::string> ready_lines;
+  {
+    std::lock_guard<std::mutex> lk(results_mtx_);
+    results_pq_.push(std::move(r));
+    drainResultsLocked(ready_lines);
+  }
 }
 
 void VisionPipeline::drainResultsLocked(std::vector<std::string> & ready_lines)
 {
-  ready_lines.clear();
+  while (!results_pq_.empty() && results_pq_.top().seq == next_result_seq_) {
+    PendingResult result = results_pq_.top();
+    results_pq_.pop();
+    ++next_result_seq_;
+
+    const double ts = result.stamp_sec + result.stamp_nanosec * 1e-9;
+    double dt = 0.033;
+    if (has_prev_track_timestamp_) {
+      dt = std::max(0.001, std::min(ts - prev_track_timestamp_s_, 0.5));
+    }
+    prev_track_timestamp_s_ = ts;
+    has_prev_track_timestamp_ = true;
+
+    const double omega_deg_s = computeAngularVelocityDegPerSecLocked(result);
+    const double t_norm = (omega_deg_s - config_.tracker.angular_vel_low_deg_s) /
+      std::max(1e-6, config_.tracker.angular_vel_high_deg_s - config_.tracker.angular_vel_low_deg_s);
+    const double noise_scale = 1.0 + std::clamp(t_norm, 0.0, 1.0) *
+      (config_.tracker.angular_vel_max_scale - 1.0);
+
+    const auto measurements = buildTrackMeasurementsLocked(result, noise_scale);
+    const auto all_tracks   = tracker_->step(measurements, dt, noise_scale);
+
+    std::vector<TrackEstimate> confirmed;
+    for (const auto & tr : all_tracks) {
+      if (tr.confirmed) confirmed.push_back(tr);
+    }
+
+    writeTrackRowsLocked(result, confirmed, noise_scale, omega_deg_s, ready_lines);
+    publishSceneLocked(result, confirmed);
+  }
+}
+
+void VisionPipeline::publishSceneLocked(
+  const PendingResult & result,
+  const std::vector<TrackEstimate> & confirmed_tracks)
+{
+  if (!pub_scene_) return;
+
+  drone_msgs::msg::SceneState msg;
+  msg.stamp.sec     = static_cast<int32_t>(result.stamp_sec);
+  msg.stamp.nanosec = result.stamp_nanosec;
+  msg.odom_valid    = result.odom_valid;
+  msg.drone_x       = result.pos_x;
+  msg.drone_y       = result.pos_y;
+  msg.drone_z       = result.pos_z;
+
+  double yaw = 0.0;
+  if (result.odom_valid) {
+    tf2::Quaternion q(result.quat_x, result.quat_y, result.quat_z, result.quat_w);
+    double roll = 0.0, pitch = 0.0;
+    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+    yaw += yaw_offset_;
+  }
+  msg.drone_yaw = yaw;
+
+  msg.tracks.reserve(confirmed_tracks.size());
+  for (const auto & tr : confirmed_tracks) {
+    drone_msgs::msg::TrackedObject obj;
+    obj.track_id = tr.track_id;
+    obj.x  = tr.state[0];
+    obj.y  = tr.state[1];
+    obj.vx = tr.state[2];
+    obj.vy = tr.state[3];
+    msg.tracks.push_back(obj);
+  }
+
+  pub_scene_->publish(msg);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

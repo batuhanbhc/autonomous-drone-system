@@ -20,5 +20,10 @@
            base_class_type="rclcpp::Node">
       <description>Best-effort network video streamer node</description>
     </class>
+    <class name="drone_pipeline::AutonomousController"
+           type="drone_pipeline::AutonomousController"
+           base_class_type="rclcpp::Node">
+      <description>Autonomous flight control node</description>
+    </class>
   </library>
 </class_libraries>

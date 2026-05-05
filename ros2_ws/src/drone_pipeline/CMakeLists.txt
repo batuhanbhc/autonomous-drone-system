@@ -50,6 +50,7 @@ add_library(drone_pipeline_components SHARED
   src/h264_encoder.cpp
   src/tracker.cpp
   src/vision_pipeline.cpp
+  src/autonomous_controller.cpp
 )
 
 target_include_directories(drone_pipeline_components PUBLIC
@@ -92,6 +93,10 @@ rclcpp_components_register_node(drone_pipeline_components
 rclcpp_components_register_node(drone_pipeline_components
   PLUGIN "drone_pipeline::VideoStreamer"
   EXECUTABLE video_streamer_node
+)
+rclcpp_components_register_node(drone_pipeline_components
+  PLUGIN "drone_pipeline::AutonomousController"
+  EXECUTABLE autonomous_controller_node
 )
 
 # ── flight_logger — built but not launched (disabled per current config) ──────

@@ -23,6 +23,7 @@ extern "C" {
 
 #include "rclcpp/rclcpp.hpp"
 #include "drone_msgs/msg/frame_data.hpp"
+#include "drone_msgs/msg/scene_state.hpp"
 #include "drone_msgs/msg/toggle.hpp"
 #include "ffmpeg_image_transport_msgs/msg/ffmpeg_packet.hpp"
 #include "drone_pipeline/h264_encoder.hpp"
@@ -66,6 +67,8 @@ struct VisionConfig
 
   // Root directory where session folders live
   std::string logs_path;
+
+  std::string scene_topic;
 
   // When true, use agl_m from the MCU vertical estimate (if mcu_valid) for
   // ground projection instead of the odometry pos_z.
@@ -215,6 +218,9 @@ private:
   rclcpp::Publisher<drone_msgs::msg::Toggle>::SharedPtr        record_state_pub_;
   bool                                                         h264_streaming_enabled_{false};
 
+  // Scene state (drone pose + confirmed tracks) published after each tracker step
+  rclcpp::Publisher<drone_msgs::msg::SceneState>::SharedPtr    pub_scene_;
+
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg);
   void streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
@@ -340,6 +346,9 @@ private:
 
   void depositResult(PendingResult && r);   // called from Hailo callback
   void drainResultsLocked(std::vector<std::string> & ready_lines);
+  void publishSceneLocked(
+    const PendingResult & result,
+    const std::vector<TrackEstimate> & confirmed_tracks);
   void openTrackCsv(const std::string & path);
   void closeTrackCsv();
   void resetTrackingStateLocked();

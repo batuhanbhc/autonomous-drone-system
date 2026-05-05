@@ -16,6 +16,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FrameData.msg"
   "msg/AltitudeControllerInput.msg"
   "msg/McuVerticalEstimate.msg"
+  "msg/TrackedObject.msg"
+  "msg/SceneState.msg"
+  "msg/AutonomousAction.msg"
   "srv/SetPidGains.srv"
   "srv/SetTargetHeight.srv"
   DEPENDENCIES

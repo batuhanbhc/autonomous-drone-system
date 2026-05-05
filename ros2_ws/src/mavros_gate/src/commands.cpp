@@ -374,12 +374,18 @@ ControlGateNode::executeControlToggle(const TeleopCmd&, const InternalState& int
     tmp_flag = 1;
   }
 
+  const bool enabling_auto = tmp_flag;  // true = switching to Auto
+
   InternalStateUpdate upt;
-  upt.control_mode = tmp_flag ? ControlMode::Auto : ControlMode::Manual;
+  upt.control_mode = enabling_auto ? ControlMode::Auto : ControlMode::Manual;
   updateInternalStateAtomic(upt);
 
-  const char* mode_old = tmp_flag ? "MANUAL" : "AUTO";
-  const char* mode_new = tmp_flag ? "AUTO" : "MANUAL";
+  Toggle enable_msg;
+  enable_msg.state = enabling_auto;
+  pub_autonomous_enable_->publish(enable_msg);
+
+  const char* mode_old = enabling_auto ? "MANUAL" : "AUTO";
+  const char* mode_new = enabling_auto ? "AUTO" : "MANUAL";
   std::string tmp = std::string("Control mode changed: ") + mode_old + " -> " + mode_new + ".";
   publishInfo(DroneInfo::LEVEL_INFO, tmp);
   return {true, tmp};

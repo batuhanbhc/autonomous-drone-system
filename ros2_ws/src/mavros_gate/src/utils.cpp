@@ -141,6 +141,7 @@ bool ControlGateNode::loadConfig() {
 
   bool ok = true;
   ok &= get_str("autonomous_action", topics_.autonomous_action);
+  ok &= get_str("autonomous_enable", topics_.autonomous_enable);
   ok &= get_str("manual_action",     topics_.manual_action);
   ok &= get_str("manual_command",    topics_.manual_command);
   ok &= get_str("mcu_bridge",        topics_.mcu_bridge);

@@ -71,9 +71,21 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
   updateSetpointBlockStateAndMaybePublish(blocked, false);
   if (blocked) return;
 
-  // Every teleop action still resets the general "last action" clock
-  // (used by other watchdogs / state reporting).
   updateLastAct(std::chrono::steady_clock::now());
+
+  // Teleop input in Auto mode immediately overrides autonomous control.
+  if (current_state.control_mode == ControlMode::Auto) {
+    InternalStateUpdate upt;
+    upt.control_mode = ControlMode::Manual;
+    updateInternalStateAtomic(upt);
+
+    Toggle disable_msg;
+    disable_msg.state = false;
+    pub_autonomous_enable_->publish(disable_msg);
+
+    publishInfo(DroneInfo::LEVEL_INFO, "Teleop override: AUTO → MANUAL.");
+    RCLCPP_INFO(get_logger(), "Teleop action received in AUTO mode — switching to MANUAL.");
+  }
 
   const float eff_vx       = static_cast<float>(msg->vx);
   const float eff_vy       = static_cast<float>(msg->vy);
@@ -115,6 +127,42 @@ void ControlGateNode::onTeleopAction(const drone_msgs::msg::TeleopAction::Shared
     // so that non-althold teleop still works.
     publishSetpoint(eff_vx, eff_vy, eff_vz, eff_yaw_rate);
   }
+}
+
+
+// ============================================================================
+// onAutonomousOutput
+//
+// Receives world-frame velocity commands (ENU) from the autonomous controller.
+// AltHold ON  → store into autonomous_cmd_; setpoint timer will publish them.
+// AltHold OFF → publish directly to Pixhawk (mirrors onTeleopAction non-AltHold path).
+// ============================================================================
+
+void ControlGateNode::onAutonomousOutput(const AutonomousAction::SharedPtr msg) {
+  if (inInitializationPhase()) return;
+
+  const InternalState st = snapshotState();
+  if (st.control_mode != ControlMode::Auto) return;
+
+  const bool blocked = isSetpointBlocked(st);
+  updateSetpointBlockStateAndMaybePublish(blocked, false);
+  if (blocked) return;
+
+  updateLastAct(std::chrono::steady_clock::now());
+
+  const auto now = std::chrono::steady_clock::now();
+  autonomous_cmd_.vx       = msg->vx;
+  autonomous_cmd_.vy       = msg->vy;
+  autonomous_cmd_.yaw_rate = msg->yaw_rate;
+  last_auto_vx_update_     = now;
+  last_auto_vy_update_     = now;
+  last_auto_yaw_update_    = now;
+
+  if (alt_ctrl_mode_ != AltCtrlMode::AltHold) {
+    // No altitude hold — forward directly as world-frame setpoint with vz=0.
+    publishSetpointWorldFrame(msg->vx, msg->vy, 0.0f, msg->yaw_rate);
+  }
+  // AltHold path: setpoint timer picks up autonomous_cmd_ at alt_ctrl_setpoint_hz_.
 }
 
 

@@ -27,12 +27,13 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
   base_ns_ = base_ns;
 
   // prepend namespace to all topic paths
-  topics_.manual_command    = base_ns + topics_.manual_command;
-  topics_.manual_action     = base_ns + topics_.manual_action;
-  topics_.autonomous_action = base_ns + topics_.autonomous_action;
-  topics_.mcu_bridge        = base_ns + topics_.mcu_bridge;
-  topics_.alt_ctrl_input    = base_ns + topics_.alt_ctrl_input;
-  topics_.alt_ctrl_output   = base_ns + topics_.alt_ctrl_output;
+  topics_.manual_command     = base_ns + topics_.manual_command;
+  topics_.manual_action      = base_ns + topics_.manual_action;
+  topics_.autonomous_action  = base_ns + topics_.autonomous_action;
+  topics_.autonomous_enable  = base_ns + topics_.autonomous_enable;
+  topics_.mcu_bridge         = base_ns + topics_.mcu_bridge;
+  topics_.alt_ctrl_input     = base_ns + topics_.alt_ctrl_input;
+  topics_.alt_ctrl_output    = base_ns + topics_.alt_ctrl_output;
 
   const std::string topic_mavros_state   = base_ns + "/mavros/state";
   const std::string topic_setpoint_local = base_ns + "/mavros/setpoint_raw/local";
@@ -70,6 +71,10 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
     topics_.alt_ctrl_output, qos_be,
     std::bind(&ControlGateNode::onAltCtrlOutput, this, std::placeholders::_1));
 
+  sub_autonomous_output_ = this->create_subscription<AutonomousAction>(
+    topics_.autonomous_action, qos_rel,
+    std::bind(&ControlGateNode::onAutonomousOutput, this, std::placeholders::_1));
+
   // Publishers
   pub_setpoint_raw_local_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
     topic_setpoint_local, qos_be);
@@ -82,6 +87,9 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
 
   pub_alt_ctrl_input_ = this->create_publisher<AltCtrlInput>(
     topics_.alt_ctrl_input, qos_rel);
+
+  pub_autonomous_enable_ = this->create_publisher<Toggle>(
+    topics_.autonomous_enable, qos_rel);
 
   // -----------------------------------
   if (!initializationRoutine()) {

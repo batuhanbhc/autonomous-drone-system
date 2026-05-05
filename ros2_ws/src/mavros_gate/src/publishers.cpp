@@ -93,6 +93,39 @@ void ControlGateNode::publishSetpoint(float vx, float vy, float vz, float yaw_ra
 
 
 // ============================================================================
+// publishSetpointWorldFrame  — world (ENU) velocity setpoint
+//
+// Converts from autonomous controller convention (ENU: +x=east, +y=north,
+// yaw_rate CCW positive) to MAVLink FRAME_LOCAL_NED (NED: +x=north, +y=east,
+// +z=down, yaw_rate CW positive).
+// ============================================================================
+
+void ControlGateNode::publishSetpointWorldFrame(
+  float vx_east, float vy_north, float vz_up, float yaw_rate_ccw)
+{
+  mavros_msgs::msg::PositionTarget sp;
+  sp.header.stamp     = this->now();
+  sp.header.frame_id  = "map";
+  sp.coordinate_frame = mavros_msgs::msg::PositionTarget::FRAME_LOCAL_NED;
+  sp.type_mask =
+    mavros_msgs::msg::PositionTarget::IGNORE_PX  |
+    mavros_msgs::msg::PositionTarget::IGNORE_PY  |
+    mavros_msgs::msg::PositionTarget::IGNORE_PZ  |
+    mavros_msgs::msg::PositionTarget::IGNORE_AFX |
+    mavros_msgs::msg::PositionTarget::IGNORE_AFY |
+    mavros_msgs::msg::PositionTarget::IGNORE_AFZ |
+    mavros_msgs::msg::PositionTarget::IGNORE_YAW;
+  // ENU → NED: x_ned=north=ENU_y, y_ned=east=ENU_x, z_ned=down=-ENU_z_up
+  sp.velocity.x =  vy_north;
+  sp.velocity.y =  vx_east;
+  sp.velocity.z = -vz_up;
+  // ENU CCW positive → NED CW positive: negate
+  sp.yaw_rate   = -yaw_rate_ccw;
+  pub_setpoint_raw_local_->publish(sp);
+}
+
+
+// ============================================================================
 // onGuidedSetpointTimer  — single point of entry for guided setpoints
 //
 // Runs at alt_ctrl_setpoint_hz_ while AltHold is active.
@@ -114,24 +147,34 @@ void ControlGateNode::onGuidedSetpointTimer() {
   const InternalState st = snapshotState();
   if (isSetpointBlocked(st)) return;
 
-  const auto   now           = std::chrono::steady_clock::now();
-  const double stale_s       = cmd_stale_timeout_s_;
+  const auto   now     = std::chrono::steady_clock::now();
+  const double stale_s = cmd_stale_timeout_s_;
 
-  // Zero stale horizontal / yaw components.
   auto age = [&](const std::chrono::steady_clock::time_point& t) -> double {
     if (t.time_since_epoch().count() == 0) return 1e9;
     return std::chrono::duration<double>(now - t).count();
   };
 
-  const float vx       = (age(last_vx_update_)  < stale_s) ? guided_cmd_.vx       : 0.0f;
-  const float vy       = (age(last_vy_update_)  < stale_s) ? guided_cmd_.vy       : 0.0f;
-  const float yaw_rate = (age(last_yaw_update_) < stale_s) ? guided_cmd_.yaw_rate : 0.0f;
+  if (st.control_mode == ControlMode::Auto) {
+    // Auto mode: one world-frame (ENU) setpoint combining horizontal from autonomous
+    // controller and vertical from the altitude-hold PID (which runs regardless of mode).
+    const float vx       = (age(last_auto_vx_update_)  < stale_s) ? autonomous_cmd_.vx       : 0.0f;
+    const float vy       = (age(last_auto_vy_update_)  < stale_s) ? autonomous_cmd_.vy       : 0.0f;
+    const float yaw_rate = (age(last_auto_yaw_update_) < stale_s) ? autonomous_cmd_.yaw_rate : 0.0f;
+    // Vz from altitude-hold PID (up-positive, same as body-frame vz in hover).
+    const float vz = (age(last_vz_update_) < stale_s) ? guided_cmd_.vz : 0.0f;
 
-  // Vz: use guided_cmd_.vz if fresh — it holds either operator Vz (when override
-  // is active) or PID output (when override is inactive). Either way, stale = 0.
-  const float vz = (age(last_vz_update_) < stale_s) ? guided_cmd_.vz : 0.0f;
+    publishSetpointWorldFrame(vx, vy, vz, yaw_rate);
 
-  publishSetpoint(vx, vy, vz, yaw_rate);
+  } else {
+    // Manual mode: body-frame setpoint from operator.
+    const float vx       = (age(last_vx_update_)  < stale_s) ? guided_cmd_.vx       : 0.0f;
+    const float vy       = (age(last_vy_update_)  < stale_s) ? guided_cmd_.vy       : 0.0f;
+    const float yaw_rate = (age(last_yaw_update_) < stale_s) ? guided_cmd_.yaw_rate : 0.0f;
+    const float vz       = (age(last_vz_update_)  < stale_s) ? guided_cmd_.vz       : 0.0f;
+
+    publishSetpoint(vx, vy, vz, yaw_rate);
+  }
 }
 
 
