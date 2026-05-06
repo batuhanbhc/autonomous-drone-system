@@ -30,6 +30,8 @@ x-ros-common: &ros-common
     - /home/batuhan/drone-project/ros2_docker/yolov11s.hef:/yolov11s.hef
     - /usr/share/hailo-models:/usr/share/hailo-models
     - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
+    - /home/batuhan/drone-project/pybullet/onnx:/home/batuhan/onnx
+    - /opt/onnxruntime:/opt/onnxruntime:ro
   group_add:
     - "20"
   environment:
