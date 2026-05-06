@@ -106,6 +106,33 @@ double clampPitchFromDown(double angle_rad)
     0.5 * M_PI - kHorizonEps);
 }
 
+std::pair<double, double> geometricMedian(
+  const std::vector<std::pair<double, double>> & points,
+  int max_iter = 50,
+  double tol = 1e-6)
+{
+  if (points.size() == 1) return points[0];
+  double px = 0.0, py = 0.0;
+  for (const auto & [x, y] : points) { px += x; py += y; }
+  px /= static_cast<double>(points.size());
+  py /= static_cast<double>(points.size());
+  for (int iter = 0; iter < max_iter; ++iter) {
+    double num_x = 0.0, num_y = 0.0, denom = 0.0;
+    for (const auto & [x, y] : points) {
+      const double dist = std::hypot(px - x, py - y);
+      if (dist < 1e-10) continue;
+      const double w = 1.0 / dist;
+      num_x += w * x; num_y += w * y; denom += w;
+    }
+    if (denom < 1e-10) break;
+    const double new_px = num_x / denom;
+    const double new_py = num_y / denom;
+    if (std::hypot(new_px - px, new_py - py) < tol) { px = new_px; py = new_py; break; }
+    px = new_px; py = new_py;
+  }
+  return {px, py};
+}
+
 std::pair<double, double> footprintForwardExtents(
   double z,
   double camera_tilt_deg,
@@ -606,9 +633,10 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   double centroid_x = 0.0;
   double centroid_y = 0.0;
   if (!scene.tracks.empty()) {
+    std::vector<std::pair<double, double>> track_positions;
+    track_positions.reserve(scene.tracks.size());
     for (const auto & track : scene.tracks) {
-      centroid_x += track.x;
-      centroid_y += track.y;
+      track_positions.emplace_back(track.x, track.y);
       const auto [det_v, det_u] = worldToGrid(
         track.x,
         track.y,
@@ -636,8 +664,7 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
         det_u,
         config_.blob_sigma);
     }
-    centroid_x /= static_cast<double>(scene.tracks.size());
-    centroid_y /= static_cast<double>(scene.tracks.size());
+    std::tie(centroid_x, centroid_y) = geometricMedian(track_positions);
   }
 
   if (config_.recent_miss_penalty > 0.0) {

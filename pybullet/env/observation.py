@@ -15,6 +15,31 @@ from sim.camera_geometry import (
 )
 
 
+def geometric_median(points, max_iter=50, tol=1e-6):
+    if len(points) == 1:
+        return points[0][0], points[0][1]
+    px = sum(p[0] for p in points) / len(points)
+    py = sum(p[1] for p in points) / len(points)
+    for _ in range(max_iter):
+        num_x = num_y = denom = 0.0
+        for x, y in points:
+            dist = math.hypot(px - x, py - y)
+            if dist < 1e-10:
+                continue
+            w = 1.0 / dist
+            num_x += w * x
+            num_y += w * y
+            denom += w
+        if denom < 1e-10:
+            break
+        new_px, new_py = num_x / denom, num_y / denom
+        if math.hypot(new_px - px, new_py - py) < tol:
+            px, py = new_px, new_py
+            break
+        px, py = new_px, new_py
+    return px, py
+
+
 class ObservationBuilder:
     """
     Builds an (8, H, W) actor grid observation each step:
@@ -476,8 +501,7 @@ class ObservationBuilder:
         centroid_lateral_offset = 0.0
         if detections:
             centroid_present = 1.0
-            centroid_x = sum(det[0] for det in detections) / len(detections)
-            centroid_y = sum(det[1] for det in detections) / len(detections)
+            centroid_x, centroid_y = geometric_median([(det[0], det[1]) for det in detections])
             principal_x, principal_y = principal_point_world(
                 x=x,
                 y=y,
