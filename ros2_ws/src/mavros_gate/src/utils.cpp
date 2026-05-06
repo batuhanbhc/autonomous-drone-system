@@ -165,6 +165,7 @@ bool ControlGateNode::loadConfig() {
   load_f("alt_timeout_watchdog_hz",     alt_timeout_watchdog_hz_);
   load_f("takeoff_reach_threshold_m",   takeoff_reach_threshold_m_);
   load_f("takeoff_timeout_s",           takeoff_timeout_s_);
+  load_f("althold_require_takeoff",     althold_require_takeoff_);
   load_f("alt_ctrl_setpoint_hz",        alt_ctrl_setpoint_hz_);
   load_f("cmd_stale_timeout_s",         cmd_stale_timeout_s_);
   load_f("alt_ctrl_min_agl_m",          alt_ctrl_min_agl_m_);

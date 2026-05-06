@@ -195,6 +195,7 @@ private:
   float  alt_timeout_watchdog_hz_{10.0f};  // watchdog rate for the above
   float  takeoff_reach_threshold_m_{0.2f};
   float  takeoff_timeout_s_{15.0f};
+  bool   althold_require_takeoff_{true};
   float  alt_ctrl_setpoint_hz_{20.0f};     // rate of the guided-setpoint publish timer
   float  cmd_stale_timeout_s_{0.5f};       // seconds without update → component zeroed
   float  alt_ctrl_min_agl_m_{2.0f};        // below this AGL, negative Vz from PID is suppressed

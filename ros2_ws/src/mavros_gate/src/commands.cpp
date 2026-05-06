@@ -522,7 +522,7 @@ ControlGateNode::executeAltSupportToggle(const TeleopCmd&, const InternalState& 
     return {false, "AltHold toggle rejected: must be armed and guided."};
   }
 
-  if (!has_taken_off_) {
+  if (althold_require_takeoff_ && !has_taken_off_) {
     return {false, "AltHold toggle rejected: takeoff not complete."};
   }
 
