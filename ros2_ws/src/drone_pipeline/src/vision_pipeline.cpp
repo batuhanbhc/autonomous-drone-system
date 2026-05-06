@@ -1267,7 +1267,7 @@ void VisionPipeline::publishSceneLocked(
     (config_.use_mcu_height_estimate && result.mcu_valid) ?
     static_cast<double>(result.agl_m) : result.pos_z;
   const double principal_forward =
-    principal_height * std::tan(config_.camera_mount_angle * M_PI / 180.0);
+    principal_height * std::tan(0.5 * M_PI - config_.camera_mount_angle * M_PI / 180.0);
   msg.principal_x = result.pos_x + principal_forward * std::cos(yaw);
   msg.principal_y = result.pos_y + principal_forward * std::sin(yaw);
 

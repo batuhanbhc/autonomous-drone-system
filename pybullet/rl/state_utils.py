@@ -14,11 +14,12 @@ The critic grid has shape (6 + 3 * max_agents, H, W):
 
 With 2 drones the critic grid is (12, H, W).
 
-The poses vector is (max_agents * (1 + local_dim) + 5,):
+The poses vector is (max_agents * (1 + local_dim) + 6,):
   per-agent slice: [mask, *full_local_vector]
   context:         [
                       num_people / 30.0,
                       ever_seen / num_people,
+                      visible_count / num_people,
                       active_agents / max_agents,
                       current_step / episode_steps,
                       remaining_steps / episode_steps,
@@ -34,6 +35,7 @@ def build_global_state(
     obs_builder,
     num_people: int = 0,
     ever_seen: int = 0,
+    visible_count: int = 0,
     current_step: int = 0,
     episode_steps: int = 1,
 ):
@@ -67,6 +69,7 @@ def build_global_state(
         [
             num_people / 30.0,
             ever_seen / max(num_people, 1),
+            visible_count / max(num_people, 1),
             active_agents / max(max_agents, 1),
             step_progress,
             remaining_progress,

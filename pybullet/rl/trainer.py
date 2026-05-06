@@ -113,6 +113,7 @@ class MAPPOTrainer:
         live_debug: bool = False,
         live_debug_every: int = 100,
         sticky_action_prob: float = 0.0,
+        gui: bool = False,
     ):
         self.env        = env
         self.num_agents = env.max_drones
@@ -127,6 +128,10 @@ class MAPPOTrainer:
         self.value_coef    = value_coef
         self.entropy_coef  = entropy_coef
         self.max_grad_norm = max_grad_norm
+        self.gui = gui
+        self._pause_btn = None
+        self._pause_btn_last = None
+        self._paused = False
         self.sticky_action_prob = float(sticky_action_prob)
         if not 0.0 <= self.sticky_action_prob <= 1.0:
             raise ValueError(
@@ -148,7 +153,7 @@ class MAPPOTrainer:
         # poses: [mask + full_local_vector] per agent
         #      + [num_people/30, ever_seen_ratio, active_agent_ratio,
         #         step_progress, remaining_progress]
-        self.poses_dim = self.num_agents * (1 + local_dim) + 5
+        self.poses_dim = self.num_agents * (1 + local_dim) + 6
 
         self.actor = ActorNetwork(
             local_dim=local_dim,
@@ -482,6 +487,7 @@ class MAPPOTrainer:
             obs_builder=self.env.obs_builder,
             num_people=len(self.env.people),
             ever_seen=len(self.env.ever_seen),
+            visible_count=self.env.last_visible_count,
             current_step=self.env.current_step,
             episode_steps=self.env.episode_steps,
         )
@@ -501,6 +507,26 @@ class MAPPOTrainer:
             local_vec=obs[0]["local"],
         )
 
+    def _check_pause(self):
+        if self._pause_btn is None:
+            return
+        try:
+            import pybullet as p
+            val = p.readUserDebugParameter(self._pause_btn)
+            if val != self._pause_btn_last:
+                self._pause_btn_last = val
+                self._paused = not self._paused
+                print("[train] " + ("Paused." if self._paused else "Resumed."))
+            while self._paused:
+                time.sleep(0.05)
+                val = p.readUserDebugParameter(self._pause_btn)
+                if val != self._pause_btn_last:
+                    self._pause_btn_last = val
+                    self._paused = False
+                    print("[train] Resumed.")
+        except Exception:
+            self._pause_btn = None
+
     @torch.no_grad()
     def _collect_rollout(self, obs: List[Dict], update: int) -> List[Dict]:
         self.actor.eval()
@@ -509,6 +535,7 @@ class MAPPOTrainer:
         sticky_candidates = 0
 
         for step_i in range(self.rollout_len):
+            self._check_pause()
             move_masks = self._compute_move_masks()
             obs_with_masks = self._augment_obs_with_move_masks(obs, move_masks)
             self._maybe_update_live_debug(obs_with_masks, update)
@@ -653,6 +680,14 @@ class MAPPOTrainer:
         start      = time.time()
         steps_at_start = self.total_steps
         target_update = self.current_update + total_updates
+
+        if self.gui:
+            try:
+                import pybullet as p
+                self._pause_btn = p.addUserDebugParameter("Pause / Resume", 1, 0, 1)
+                self._pause_btn_last = p.readUserDebugParameter(self._pause_btn)
+            except Exception:
+                self._pause_btn = None
 
         for _ in range(total_updates):
             update = self.current_update + 1

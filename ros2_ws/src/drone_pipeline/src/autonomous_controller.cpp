@@ -138,7 +138,7 @@ std::pair<double, double> footprintForwardExtents(
   double camera_tilt_deg,
   double vertical_fov_deg)
 {
-  const double tilt = clampPitchFromDown(camera_tilt_deg * M_PI / 180.0);
+  const double tilt = clampPitchFromDown(0.5 * M_PI - camera_tilt_deg * M_PI / 180.0);
   const double half_v = 0.5 * vertical_fov_deg * M_PI / 180.0;
   const double lower_angle = clampPitchFromDown(tilt - half_v);
   const double upper_angle = clampPitchFromDown(tilt + half_v);
@@ -184,7 +184,7 @@ bool pointInFootprintLocal(
   if (forward < min_forward || forward > max_forward) {
     return false;
   }
-  const double tilt = clampPitchFromDown(camera_tilt_deg * M_PI / 180.0);
+  const double tilt = clampPitchFromDown(0.5 * M_PI - camera_tilt_deg * M_PI / 180.0);
   const double half_v = 0.5 * vertical_fov_deg * M_PI / 180.0;
   const double pitch_from_down = std::atan2(forward, z);
   if (std::abs(pitch_from_down - tilt) > half_v + 1e-9) {
@@ -733,7 +733,7 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   double principal_x = scene.principal_x;
   double principal_y = scene.principal_y;
   if (!std::isfinite(principal_x) || !std::isfinite(principal_y)) {
-    const double principal_forward = scene.drone_z * std::tan(config_.camera_tilt_deg * M_PI / 180.0);
+    const double principal_forward = scene.drone_z * std::tan(0.5 * M_PI - config_.camera_tilt_deg * M_PI / 180.0);
     principal_x = scene.drone_x + principal_forward * std::cos(scene.drone_yaw);
     principal_y = scene.drone_y + principal_forward * std::sin(scene.drone_yaw);
   }

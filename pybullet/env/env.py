@@ -626,6 +626,7 @@ class MultiUAVEnv:
             obs_builder=self.obs_builder,
             num_people=len(people_positions),
             ever_seen=len(self.ever_seen),
+            visible_count=self.last_visible_count,
             current_step=self.current_step,
             episode_steps=self.episode_steps,
         )
@@ -707,6 +708,7 @@ class MultiUAVEnv:
         self.obs_builder.reset()
         self.current_step = 0
         self.ever_seen    = set()
+        self.last_visible_count = 0
 
         self._spawn_entities()
 
@@ -788,6 +790,10 @@ class MultiUAVEnv:
                 footprint_maps=self.obs_builder.footprint_maps_snapshot,
             )
             self.ever_seen.update(new_discoveries)
+            visible_union = set()
+            for ids in visible_ids_per_drone:
+                visible_union.update(ids)
+            self.last_visible_count = len(visible_union)
 
             done = (self.current_step >= self.episode_steps) or (not p.isConnected())
 

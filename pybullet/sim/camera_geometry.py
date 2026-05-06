@@ -18,13 +18,13 @@ def footprint_forward_extents(
     Return signed forward distances on the ground in the drone-local frame.
 
     Convention:
-      - camera_tilt_deg = 0   -> camera optical axis points straight down
-      - camera_tilt_deg = 90  -> camera optical axis points toward the horizon
+      - camera_tilt_deg = 0   -> camera optical axis points toward the horizon
+      - camera_tilt_deg = 90  -> camera optical axis points straight down
 
     The returned distances can be negative when the visible footprint extends
     behind the drone in the local forward axis.
     """
-    tilt = _clamp_pitch_from_down(math.radians(camera_tilt_deg))
+    tilt = _clamp_pitch_from_down(0.5 * math.pi - math.radians(camera_tilt_deg))
     half_v = 0.5 * math.radians(vertical_fov_deg)
     lower_angle = _clamp_pitch_from_down(tilt - half_v)
     upper_angle = _clamp_pitch_from_down(tilt + half_v)
@@ -70,10 +70,10 @@ def principal_point_world(
     Ground intersection of the camera principal ray.
 
     Convention:
-      - camera_tilt_deg = 0   -> camera optical axis points straight down
-      - camera_tilt_deg = 90  -> camera optical axis points toward the horizon
+      - camera_tilt_deg = 0   -> camera optical axis points toward the horizon
+      - camera_tilt_deg = 90  -> camera optical axis points straight down
     """
-    tilt = _clamp_pitch_from_down(math.radians(camera_tilt_deg))
+    tilt = _clamp_pitch_from_down(0.5 * math.pi - math.radians(camera_tilt_deg))
     forward = z * math.tan(tilt)
     px = x + forward * math.cos(yaw)
     py = y + forward * math.sin(yaw)
@@ -105,7 +105,7 @@ def point_in_footprint_local(
     min_forward, max_forward = footprint_forward_extents(z, camera_tilt_deg, vertical_fov_deg)
     if forward < min_forward or forward > max_forward:
         return False
-    tilt = _clamp_pitch_from_down(math.radians(camera_tilt_deg))
+    tilt = _clamp_pitch_from_down(0.5 * math.pi - math.radians(camera_tilt_deg))
     half_v = 0.5 * math.radians(vertical_fov_deg)
     pitch_from_down = math.atan2(forward, z)
     if abs(pitch_from_down - tilt) > half_v + 1e-9:

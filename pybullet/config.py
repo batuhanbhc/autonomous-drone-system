@@ -59,7 +59,7 @@ class SharedConfig:
     max_yaw_rate: float = 0.5
     yaw_bin_interval: float = 0.5
     reward_wc: float = 1.0
-    reward_wqual: float = 3.0
+    reward_wqual: float = 1.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
     reward_wx: float = 0.0
@@ -582,6 +582,7 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
             "live_debug": args.live_debug,
             "live_debug_every": args.live_debug_every,
             "sticky_action_prob": args.sticky_action_prob,
+            "gui": args.gui,
         }
     )
     return kwargs
