@@ -377,7 +377,7 @@ void AutonomousController::initOnnx()
   vy_bins_ = vx_bins_;
   yaw_rate_bins_ = buildSymmetricBins(config_.max_yaw_rate, config_.yaw_bin_interval);
 
-  const std::size_t expected_local_dim = static_cast<std::size_t>(9 + 6 * (config_.max_agents - 1));
+  const std::size_t expected_local_dim = static_cast<std::size_t>(8 + 6 * (config_.max_agents - 1));
   const std::size_t expected_move_mask_dim = vx_bins_.size() * vy_bins_.size();
   if (static_cast<std::size_t>(local_shape_[1]) != expected_local_dim) {
     throw std::runtime_error("ONNX local_base dimension does not match max_agents=2 controller");
@@ -742,14 +742,12 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     2.0 * (scene.drone_x - config_.x_min) / (config_.x_max - config_.x_min) - 1.0);
   inputs.local_base[1] = static_cast<float>(
     2.0 * (scene.drone_y - config_.y_min) / (config_.y_max - config_.y_min) - 1.0);
-  inputs.local_base[2] = static_cast<float>(
-    2.0 * (scene.drone_z - config_.z_min) / (config_.z_max - config_.z_min) - 1.0);
-  inputs.local_base[3] = static_cast<float>(std::sin(scene.drone_yaw));
-  inputs.local_base[4] = static_cast<float>(std::cos(scene.drone_yaw));
-  inputs.local_base[5] = static_cast<float>(scene.tracks.size()) / 30.0f;
-  inputs.local_base[6] = inputs.centroid_present;
-  inputs.local_base[7] = inputs.centroid_forward_offset;
-  inputs.local_base[8] = inputs.centroid_lateral_offset;
+  inputs.local_base[2] = static_cast<float>(std::sin(scene.drone_yaw));
+  inputs.local_base[3] = static_cast<float>(std::cos(scene.drone_yaw));
+  inputs.local_base[4] = static_cast<float>(scene.tracks.size()) / 30.0f;
+  inputs.local_base[5] = inputs.centroid_present;
+  inputs.local_base[6] = inputs.centroid_forward_offset;
+  inputs.local_base[7] = inputs.centroid_lateral_offset;
 
   std::size_t mask_idx = 0;
   for (float vx : vx_bins_) {

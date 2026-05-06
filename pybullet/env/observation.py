@@ -453,16 +453,15 @@ class ObservationBuilder:
         Components:
           [0] x           — normalised to [-1, 1]
           [1] y           — normalised to [-1, 1]
-          [2] z           — normalised to [-1, 1]
-          [3] sin(yaw)
-          [4] cos(yaw)
-          [5] num_visible — normalised (count / 30)
-          [6] detection_centroid_present
-          [7] centroid_forward_offset_from_principal — normalised to [-1, 1]
-          [8] centroid_lateral_offset_from_principal — normalised to [-1, 1]
-          [9+] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
+          [2] sin(yaw)
+          [3] cos(yaw)
+          [4] num_visible — normalised (count / 30)
+          [5] detection_centroid_present
+          [6] centroid_forward_offset_from_principal — normalised to [-1, 1]
+          [7] centroid_lateral_offset_from_principal — normalised to [-1, 1]
+          [8+] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
 
-        Total: 9 + 6*(num_drones-1) values.
+        Total: 8 + 6*(num_drones-1) values.
         """
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
@@ -540,7 +539,6 @@ class ObservationBuilder:
         vec = [
             2.0 * (x - x_min) / (x_max - x_min) - 1.0,
             2.0 * (y - y_min) / (y_max - y_min) - 1.0,
-            2.0 * (z - z_min) / (z_max - z_min) - 1.0,
             math.sin(yaw),
             math.cos(yaw),
             float(num_visible) / 30.0,

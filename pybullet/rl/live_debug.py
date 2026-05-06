@@ -109,7 +109,6 @@ class LiveDebugWindow:
         labels = [
             "own_x",
             "own_y",
-            "own_z",
             "own_sin_yaw",
             "own_cos_yaw",
             "own_num_visible",

@@ -496,10 +496,10 @@ def build_env(
 
 def local_dim(num_drones: int, action_space: DiscreteActionSpace | None = None) -> int:
     # Base local features:
-    #   6 ego pose/visibility scalars
+    #   5 ego pose/visibility scalars (x, y, sin_yaw, cos_yaw, num_visible)
     #   3 explicit detection-centroid vs principal-point alignment scalars
     #   6 scalars per teammate slot
-    base_dim = 9 + 6 * (num_drones - 1)
+    base_dim = 8 + 6 * (num_drones - 1)
     if action_space is None:
         return base_dim
     return base_dim + num_move_actions(action_space.vx_bins, action_space.vy_bins)
