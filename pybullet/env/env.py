@@ -36,6 +36,10 @@ class MultiUAVEnv:
         person_spawn_margin: float = 0.5,
         group_spawn_margin: float = 0.3,
         min_person_spawn_dist: float = 0.35,
+        group_center_speed_min: float = 0.04,
+        group_center_speed_max: float = 0.12,
+        group_center_turn_prob: float = 0.2,
+        group_center_turn_std: float = 0.35,
         max_range: float = 6.0,
         horizontal_fov_deg: float = 60.0,
         vertical_fov_deg: float = 45.0,
@@ -45,6 +49,8 @@ class MultiUAVEnv:
         recent_half_life_seconds: float = 3.0,
         historic_half_life_seconds: float = 15.0,
         coverage_half_life_seconds: float = 5.0,
+        recent_hit_gain: float = 0.6,
+        recent_miss_penalty: float = 0.25,
         grid_h: int = 32,
         grid_w: int = 32,
         blob_sigma: float = 1.5,
@@ -55,12 +61,16 @@ class MultiUAVEnv:
         reward_wo: float = 0.0,
         reward_wx: float = 0.0,
         reward_ws: float = 0.0,
+        reward_wclose: float = 0.0,
+        reward_wfov_overlap: float = 0.0,
         reward_wcoll: float = 0.0,
         reward_we: float = 0.0,
         reward_wi: float = 0.0,
         reward_wfov: float = 0.0,
         reward_coverage_edge_quality: float = 0.2,
+        reward_quality_mode: str = "principal_linear",
         reward_boundary_margin: float = 0.2,
+        reward_drone_closeness_margin: float = 1.0,
         reward_fov_margin: float = 1.0,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
@@ -161,6 +171,8 @@ class MultiUAVEnv:
             recent_half_life_seconds=recent_half_life_seconds,
             historic_half_life_seconds=historic_half_life_seconds,
             coverage_half_life_seconds=coverage_half_life_seconds,
+            recent_hit_gain=recent_hit_gain,
+            recent_miss_penalty=recent_miss_penalty,
         )
 
         self.reward_calc = RewardCalculator(
@@ -174,12 +186,16 @@ class MultiUAVEnv:
             wo=reward_wo,
             wx=reward_wx,
             ws=reward_ws,
+            wclose=reward_wclose,
+            wfov_overlap=reward_wfov_overlap,
             wcoll=reward_wcoll,
             we=reward_we,
             wi=reward_wi,
             wfov=reward_wfov,
             coverage_edge_quality=reward_coverage_edge_quality,
+            reward_quality_mode=reward_quality_mode,
             boundary_margin=reward_boundary_margin,
+            drone_closeness_margin=reward_drone_closeness_margin,
             tilt_deg=camera_tilt_deg,
             horizontal_fov_deg=horizontal_fov_deg,
             vertical_fov_deg=vertical_fov_deg,
@@ -210,6 +226,27 @@ class MultiUAVEnv:
         self.person_spawn_margin   = person_spawn_margin
         self.group_spawn_margin    = group_spawn_margin
         self.min_person_spawn_dist = min_person_spawn_dist
+        self.group_center_speed_min = float(group_center_speed_min)
+        self.group_center_speed_max = float(group_center_speed_max)
+        self.group_center_turn_prob = float(group_center_turn_prob)
+        self.group_center_turn_std = float(group_center_turn_std)
+        if self.group_center_speed_min < 0.0 or self.group_center_speed_max < 0.0:
+            raise ValueError("group_center speeds must be >= 0")
+        if self.group_center_speed_min > self.group_center_speed_max:
+            raise ValueError(
+                "group_center_speed_min must be <= group_center_speed_max, got "
+                f"{self.group_center_speed_min} > {self.group_center_speed_max}"
+            )
+        if self.group_center_turn_prob < 0.0:
+            raise ValueError(
+                f"group_center_turn_prob must be >= 0, got {self.group_center_turn_prob}"
+            )
+        if self.group_center_turn_std < 0.0:
+            raise ValueError(
+                f"group_center_turn_std must be >= 0, got {self.group_center_turn_std}"
+            )
+        self.group_center_motion_margin = max(self.group_spawn_margin + 1.0, 1.2)
+        self.group_motion_state: dict[int, dict[str, float]] = {}
 
         if self.drone_wall_margin < 0.0:
             raise ValueError(
@@ -378,6 +415,7 @@ class MultiUAVEnv:
         self.episode_group_info = self._sample_group_structure(current_num_people)
         assignments           = self.episode_group_info["group_assignments"]
         group_centers         = self.episode_group_info["group_centers"]
+        self._initialize_group_motion(group_centers)
         spawned_positions     = []
 
         for person_idx in range(current_num_people):
@@ -406,7 +444,89 @@ class MultiUAVEnv:
             spawned_positions.append(pos)
             self.people.append(person)
 
+        self._sync_people_group_centers()
+
     # ------------------------------------------------------------------ #
+
+    def _initialize_group_motion(self, group_centers):
+        self.group_motion_state = {}
+        for group_id, center in enumerate(group_centers):
+            cx, cy = center
+            self.group_motion_state[group_id] = {
+                "center_x": float(cx),
+                "center_y": float(cy),
+                "heading": random.uniform(-math.pi, math.pi),
+                "speed": random.uniform(
+                    self.group_center_speed_min,
+                    self.group_center_speed_max,
+                ),
+            }
+        self._update_group_centers_snapshot()
+
+    def _update_group_centers_snapshot(self):
+        num_groups = int(self.episode_group_info.get("num_groups", 0))
+        self.episode_group_info["group_centers"] = [
+            (
+                self.group_motion_state[group_id]["center_x"],
+                self.group_motion_state[group_id]["center_y"],
+            )
+            for group_id in range(num_groups)
+            if group_id in self.group_motion_state
+        ]
+
+    def _sync_people_group_centers(self):
+        if not self.group_motion_state:
+            return
+        for person in self.people:
+            if not person.is_grouped or person.group_id is None:
+                continue
+            motion = self.group_motion_state.get(person.group_id)
+            if motion is None:
+                continue
+            person.group_center = (motion["center_x"], motion["center_y"])
+
+    def _step_group_centers(self):
+        if not self.group_motion_state:
+            return
+
+        x_min = self.x_min + self.group_center_motion_margin
+        x_max = self.x_max - self.group_center_motion_margin
+        y_min = self.y_min + self.group_center_motion_margin
+        y_max = self.y_max - self.group_center_motion_margin
+        if x_min > x_max:
+            x_min = x_max = self.center_x
+        if y_min > y_max:
+            y_min = y_max = self.center_y
+
+        turn_prob_this_step = self.group_center_turn_prob * self.dt
+        for motion in self.group_motion_state.values():
+            if self.group_center_turn_std > 0.0 and random.random() < turn_prob_this_step:
+                motion["heading"] += random.gauss(0.0, self.group_center_turn_std)
+            if self.group_center_speed_max > 0.0:
+                motion["speed"] = min(
+                    self.group_center_speed_max,
+                    max(
+                        self.group_center_speed_min,
+                        motion["speed"] + random.gauss(0.0, 0.01),
+                    ),
+                )
+
+            trial_x = motion["center_x"] + motion["speed"] * self.dt * math.cos(motion["heading"])
+            trial_y = motion["center_y"] + motion["speed"] * self.dt * math.sin(motion["heading"])
+
+            if trial_x < x_min or trial_x > x_max:
+                motion["heading"] = math.pi - motion["heading"]
+                trial_x = motion["center_x"] + motion["speed"] * self.dt * math.cos(motion["heading"])
+            if trial_y < y_min or trial_y > y_max:
+                motion["heading"] = -motion["heading"]
+                trial_y = motion["center_y"] + motion["speed"] * self.dt * math.sin(motion["heading"])
+
+            motion["heading"] = (motion["heading"] + math.pi) % (2.0 * math.pi) - math.pi
+            motion["center_x"] = max(x_min, min(x_max, trial_x))
+            motion["center_y"] = max(y_min, min(y_max, trial_y))
+
+        self._update_group_centers_snapshot()
+        self._sync_people_group_centers()
 
     def _get_drone_states(self):
         return [drone.get_state_dict() for drone in self.drones]
@@ -522,9 +642,10 @@ class MultiUAVEnv:
             "Actor Ch 1\nShared recent presence",
             "Actor Ch 2\nShared historic presence",
             "Actor Ch 3\nShared count density",
-            "Actor Ch 4\nShared FOV coverage",
-            "Actor Ch 5\nShared drone map",
-            "Actor Ch 6\nOwn ego map",
+            "Actor Ch 4\nOwn FOV coverage",
+            "Actor Ch 5\nTeammate FOV coverage",
+            "Actor Ch 6\nShared drone map",
+            "Actor Ch 7\nOwn ego map",
         ]
         critic_channel_names = [
             "Critic Ch 0\nShared instant union",
@@ -539,7 +660,11 @@ class MultiUAVEnv:
             for i in range(self.max_drones)
         ]
         critic_channel_names += [
-            f"Critic Ch {6 + self.max_drones + i}\nEgo map - Drone {i}"
+            f"Critic Ch {6 + self.max_drones + i}\nOwn coverage - Drone {i}"
+            for i in range(self.max_drones)
+        ]
+        critic_channel_names += [
+            f"Critic Ch {6 + (2 * self.max_drones) + i}\nEgo map - Drone {i}"
             for i in range(self.max_drones)
         ]
 
@@ -617,6 +742,7 @@ class MultiUAVEnv:
                 )
 
             # Step people and physics
+            self._step_group_centers()
             all_people_positions = [
                 person.get_position()
                 for person in self.people if person is not None
@@ -659,6 +785,7 @@ class MultiUAVEnv:
                 episode_steps=self.episode_steps,
                 actions=actions,
                 coverage_map=self.obs_builder.coverage_map,
+                footprint_maps=self.obs_builder.footprint_maps_snapshot,
             )
             self.ever_seen.update(new_discoveries)
 
@@ -688,8 +815,8 @@ class MultiUAVEnv:
                 "reward_info": {
                     "r_cov": 0.0, "r_fovq": 0.0, "r_disc": 0.0, "new_discovered": 0,
                     "coverage_count": 0, "r_ov": 0.0, "r_idle": 0.0,
-                    "r_fov": 0.0, "r_exp": 0.0, "r_bound": 0.0,
-                    "r_coll": 0.0, "r_safe": 0.0, "r_energy": 0.0,
+                    "r_fov": 0.0, "r_exp": 0.0, "r_bound": 0.0, "r_close": 0.0,
+                    "r_fov_overlap": 0.0, "r_coll": 0.0, "r_safe": 0.0, "r_energy": 0.0,
                     "total_reward": -1.0,
                 },
                 "active_num_drones": self.active_num_drones,

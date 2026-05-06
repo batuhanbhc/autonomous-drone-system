@@ -1,8 +1,8 @@
 """
 MAPPO Trainer for a masked joint-move actor over ((vx, vy), yaw_rate).
 
-Actor grid: (grid_channels, H, W)               — 7 channels
-Critic grid: (6 + 2 * num_agents, H, W)         — shared actor-style + per-drone maps
+Actor grid: (grid_channels, H, W)               — 8 channels
+Critic grid: (6 + 3 * num_agents, H, W)         — shared + per-drone instant/coverage/ego maps
 """
 
 import csv
@@ -84,7 +84,7 @@ class MAPPOTrainer:
         self,
         env,
         local_dim: int = 11,
-        grid_channels: int = 7,      # actor: local instant + 5 shared + own ego
+        grid_channels: int = 8,      # actor: local instant + shared maps + own/teammate coverage + own ego
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
@@ -141,7 +141,7 @@ class MAPPOTrainer:
         self.move_mask_dim = int(self.vx_bins.shape[0] * self.vy_bins.shape[0])
 
         self.grid_channels        = grid_channels
-        self.critic_grid_channels = 6 + (2 * self.num_agents)
+        self.critic_grid_channels = 6 + (3 * self.num_agents)
         self.grid_h               = grid_h
         self.grid_w               = grid_w
 
@@ -745,6 +745,7 @@ class MAPPOTrainer:
                 "actor_opt":   self.actor_opt.state_dict(),
                 "critic_opt":  self.critic_opt.state_dict(),
                 "num_agents":  self.num_agents,
+                "local_dim": self.buffer.local_dim,
                 "move_mask_dim": self.move_mask_dim,
                 "total_steps": self.total_steps,
                 "update": self.current_update,
@@ -757,6 +758,19 @@ class MAPPOTrainer:
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
+        ckpt_local_dim = int(
+            ckpt.get(
+                "local_dim",
+                ckpt["actor"]["local_mlp.0.weight"].shape[1],
+            )
+        )
+        current_local_dim = int(self.actor.local_mlp[0].in_features)
+        if ckpt_local_dim != current_local_dim:
+            raise ValueError(
+                "Checkpoint local_dim does not match the current observation layout: "
+                f"checkpoint={ckpt_local_dim}, current={current_local_dim}. "
+                "This checkpoint was trained with a different local feature vector."
+            )
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
         self.actor_opt.load_state_dict(ckpt["actor_opt"])

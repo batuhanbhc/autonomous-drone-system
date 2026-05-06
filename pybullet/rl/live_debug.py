@@ -42,14 +42,25 @@ class LiveDebugWindow:
         self._fig = fig
 
         channel_titles = [
+            "Instant Detections",
             "Recent Presence",
             "Historic Presence",
-            "Recent Density",
-            "Historic Density",
-            "Coverage",
+            "Count Density",
+            "Own Coverage",
+            "Teammate Coverage",
             "Shared Drone Map",
+            "Own Ego Map",
         ]
-        image_axes = [axes[0, 0], axes[0, 1], axes[0, 2], axes[0, 3], axes[1, 0], axes[1, 1]]
+        image_axes = [
+            axes[0, 0],
+            axes[0, 1],
+            axes[0, 2],
+            axes[0, 3],
+            axes[1, 0],
+            axes[1, 1],
+            axes[1, 2],
+            axes[1, 3],
+        ]
         for ax, title in zip(image_axes, channel_titles):
             im = ax.imshow(
                 np.zeros((1, 1), dtype=np.float32),
@@ -65,8 +76,8 @@ class LiveDebugWindow:
             self._images.append(im)
         self._image_axes = image_axes
 
-        self._local_text_ax = axes[1, 2]
-        self._meta_text_ax = axes[1, 3]
+        self._local_text_ax = fig.add_axes([0.72, 0.54, 0.24, 0.38])
+        self._meta_text_ax = fig.add_axes([0.72, 0.08, 0.24, 0.36])
         self._local_text_ax.axis("off")
         self._meta_text_ax.axis("off")
         self._local_text = self._local_text_ax.text(
@@ -89,7 +100,6 @@ class LiveDebugWindow:
         )
 
         fig.suptitle("Live Debug: Drone 0 Actor Inputs")
-        fig.tight_layout()
         fig.canvas.draw_idle()
         fig.canvas.flush_events()
         self._available = True

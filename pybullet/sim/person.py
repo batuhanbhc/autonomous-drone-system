@@ -292,9 +292,13 @@ class Person:
             heading_mix = random.uniform(0.6, 0.9)
             self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
         else:
-            if dist_to_center > 1e-6 and random.random() < 0.1:
+            if dist_to_center > 0.55 * self.group_radius:
                 desired_heading = math.atan2(dy, dx)
-                heading_mix = random.uniform(0.1, 0.25)
+                heading_mix = random.uniform(0.2, 0.4)
+                self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
+            elif dist_to_center > 1e-6 and random.random() < 0.18:
+                desired_heading = math.atan2(dy, dx)
+                heading_mix = random.uniform(0.08, 0.18)
                 self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
 
         move_speed = min(self.speed, 0.18)

@@ -25,7 +25,7 @@ class SharedConfig:
     drone_height: float = 5.0
     num_drones: int = 2
     random_spawn: bool = False
-    drone_spawn_radius: float = 2.0
+    drone_spawn_radius: float = 3.0
     num_people: int = 20
     min_people: int = 10
     max_people: int = 25
@@ -36,6 +36,10 @@ class SharedConfig:
     person_spawn_margin: float = 0.5
     group_spawn_margin: float = 0.3
     min_person_spawn_dist: float = 0.35
+    group_center_speed_min: float = 0.04
+    group_center_speed_max: float = 0.12
+    group_center_turn_prob: float = 0.2
+    group_center_turn_std: float = 0.35
     rl_hz: float = 4.0
     max_range: float = 15.0
     horizontal_fov_deg: float = 55.8
@@ -43,27 +47,33 @@ class SharedConfig:
     detection_prob: float = 1.0
     position_noise_std: float = 0.1
     camera_tilt_deg: float = 45.0
-    recent_half_life_seconds: float = 5.0
-    historic_half_life_seconds: float = 30.0
-    coverage_half_life_seconds: float = 30.0
+    recent_half_life_seconds: float = 10.0
+    historic_half_life_seconds: float = 60.0
+    coverage_half_life_seconds: float = 60.0
+    recent_hit_gain: float = 0.6
+    recent_miss_penalty: float = 0.25
     blob_sigma: float = 1.0
     ego_sigma: float = 2.5
     max_horizontal_velocity: float = 1.0
     horizontal_bin_interval: float = 1.0
     max_yaw_rate: float = 0.5
     yaw_bin_interval: float = 0.5
-    reward_wc: float = 0.5
+    reward_wc: float = 1.0
     reward_wqual: float = 3.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
     reward_wx: float = 0.0
     reward_ws: float = 1.0
+    reward_wclose: float = 1.0
+    reward_wfov_overlap: float = 1.0
     reward_wcoll: float = 0.0
     reward_we: float = 0.0
     reward_wi: float = 0.0
     reward_wfov: float = 0.0
-    reward_coverage_edge_quality: float = 0.5
+    reward_coverage_edge_quality: float = 0.0
+    reward_quality_mode: str = "principal_linear"
     reward_boundary_margin: float = 4.0
+    reward_drone_closeness_margin: float = 4.0
     reward_fov_margin: float = 1.0
     debug_observation_plots: bool = False
     debug_observation_plot_every: int = 25
@@ -77,19 +87,19 @@ class TrainConfig:
     rollout_len: int = 480*4
     num_epochs: int = 2
     batch_size: int = 128
-    clip_eps: float = 0.02
+    clip_eps: float = 0.05
     gamma: float = 0.99
     gae_lambda: float = 0.95
     lr_actor: float = 3e-4
     lr_critic: float = 3e-4
-    entropy_coef: float = 0.0
+    entropy_coef: float = 0.005
     value_coef: float = 0.5
     save_dir: str = "checkpoints"
     log_interval: int = 1
     tensorboard: bool = False
     live_debug: bool = False
     live_debug_every: int = 100
-    sticky_action_prob: float = 0.0
+    sticky_action_prob: float = 0.2
     fixed_active_num_drones: int | None = None
     load: str | None = None
 
@@ -105,11 +115,11 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    grid_channels: int = 7
-    grid_h: int = 60
-    grid_w: int = 60
-    cnn_out_dim: int = 128
-    hidden_dim: int = 256
+    grid_channels: int = 8
+    grid_h: int = 80
+    grid_w: int = 80
+    cnn_out_dim: int = 64
+    hidden_dim: int = 128
 
 
 @dataclass(frozen=True)
@@ -186,6 +196,30 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--group_spawn_margin", type=float, default=SHARED_DEFAULTS.group_spawn_margin)
     parser.add_argument("--min_person_spawn_dist", type=float, default=SHARED_DEFAULTS.min_person_spawn_dist)
     parser.add_argument(
+        "--group_center_speed_min",
+        type=float,
+        default=SHARED_DEFAULTS.group_center_speed_min,
+        help="Minimum drift speed for moving group centers.",
+    )
+    parser.add_argument(
+        "--group_center_speed_max",
+        type=float,
+        default=SHARED_DEFAULTS.group_center_speed_max,
+        help="Maximum drift speed for moving group centers.",
+    )
+    parser.add_argument(
+        "--group_center_turn_prob",
+        type=float,
+        default=SHARED_DEFAULTS.group_center_turn_prob,
+        help="Per-second probability that a moving group center changes heading.",
+    )
+    parser.add_argument(
+        "--group_center_turn_std",
+        type=float,
+        default=SHARED_DEFAULTS.group_center_turn_std,
+        help="Standard deviation of heading changes for moving group centers, in radians.",
+    )
+    parser.add_argument(
         "--rl_hz",
         type=float,
         default=SHARED_DEFAULTS.rl_hz,
@@ -228,6 +262,18 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=SHARED_DEFAULTS.coverage_half_life_seconds,
     )
+    parser.add_argument(
+        "--recent_hit_gain",
+        type=float,
+        default=SHARED_DEFAULTS.recent_hit_gain,
+        help="Additive gain applied to the shared recent-presence map for each detection blob before clipping to [0, 1].",
+    )
+    parser.add_argument(
+        "--recent_miss_penalty",
+        type=float,
+        default=SHARED_DEFAULTS.recent_miss_penalty,
+        help="Multiplicative penalty applied to the shared recent-presence map in currently visible cells with no team detection support.",
+    )
     parser.add_argument("--blob_sigma", type=float, default=SHARED_DEFAULTS.blob_sigma)
     parser.add_argument("--ego_sigma", type=float, default=SHARED_DEFAULTS.ego_sigma)
     parser.add_argument(
@@ -256,6 +302,13 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reward_wo", type=float, default=SHARED_DEFAULTS.reward_wo)
     parser.add_argument("--reward_wx", type=float, default=SHARED_DEFAULTS.reward_wx)
     parser.add_argument("--reward_ws", type=float, default=SHARED_DEFAULTS.reward_ws)
+    parser.add_argument("--reward_wclose", type=float, default=SHARED_DEFAULTS.reward_wclose)
+    parser.add_argument(
+        "--reward_wfov_overlap",
+        type=float,
+        default=SHARED_DEFAULTS.reward_wfov_overlap,
+        help="Weight for the current-step pairwise FOV IoU overlap penalty.",
+    )
     parser.add_argument("--reward_wcoll", type=float, default=SHARED_DEFAULTS.reward_wcoll)
     parser.add_argument("--reward_we", type=float, default=SHARED_DEFAULTS.reward_we)
     parser.add_argument("--reward_wi", type=float, default=SHARED_DEFAULTS.reward_wi)
@@ -268,9 +321,22 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
              "Higher values flatten the framing-quality reward.",
     )
     parser.add_argument(
+        "--reward_quality_mode",
+        type=str,
+        choices=("legacy", "principal_linear", "principal_squared"),
+        default=SHARED_DEFAULTS.reward_quality_mode,
+        help="Framing-quality field used by the FOV quality reward.",
+    )
+    parser.add_argument(
         "--reward_boundary_margin",
         type=float,
         default=SHARED_DEFAULTS.reward_boundary_margin,
+    )
+    parser.add_argument(
+        "--reward_drone_closeness_margin",
+        type=float,
+        default=SHARED_DEFAULTS.reward_drone_closeness_margin,
+        help="Distance margin under which drones incur a linear proximity penalty, analogous to the wall-margin penalty.",
     )
     parser.add_argument(
         "--reward_fov_margin",
@@ -375,6 +441,10 @@ def build_env_kwargs(
         "person_spawn_margin": args.person_spawn_margin,
         "group_spawn_margin": args.group_spawn_margin,
         "min_person_spawn_dist": args.min_person_spawn_dist,
+        "group_center_speed_min": args.group_center_speed_min,
+        "group_center_speed_max": args.group_center_speed_max,
+        "group_center_turn_prob": args.group_center_turn_prob,
+        "group_center_turn_std": args.group_center_turn_std,
         "sim_hz": args.rl_hz,
         "max_range": args.max_range,
         "horizontal_fov_deg": args.horizontal_fov_deg,
@@ -385,6 +455,8 @@ def build_env_kwargs(
         "recent_half_life_seconds": args.recent_half_life_seconds,
         "historic_half_life_seconds": args.historic_half_life_seconds,
         "coverage_half_life_seconds": args.coverage_half_life_seconds,
+        "recent_hit_gain": args.recent_hit_gain,
+        "recent_miss_penalty": args.recent_miss_penalty,
         "grid_h": MODEL_DEFAULTS.grid_h,
         "grid_w": MODEL_DEFAULTS.grid_w,
         "blob_sigma": args.blob_sigma,
@@ -395,12 +467,16 @@ def build_env_kwargs(
         "reward_wo": args.reward_wo,
         "reward_wx": args.reward_wx,
         "reward_ws": args.reward_ws,
+        "reward_wclose": args.reward_wclose,
+        "reward_wfov_overlap": args.reward_wfov_overlap,
         "reward_wcoll": args.reward_wcoll,
         "reward_we": args.reward_we,
         "reward_wi": args.reward_wi,
         "reward_wfov": args.reward_wfov,
         "reward_coverage_edge_quality": args.reward_coverage_edge_quality,
+        "reward_quality_mode": args.reward_quality_mode,
         "reward_boundary_margin": args.reward_boundary_margin,
+        "reward_drone_closeness_margin": args.reward_drone_closeness_margin,
         "reward_fov_margin": args.reward_fov_margin,
         "debug_observation_plots": args.debug_observation_plots,
         "debug_observation_plot_every": args.debug_observation_plot_every,
@@ -419,7 +495,11 @@ def build_env(
 
 
 def local_dim(num_drones: int, action_space: DiscreteActionSpace | None = None) -> int:
-    base_dim = 6 + 6 * (num_drones - 1)
+    # Base local features:
+    #   6 ego pose/visibility scalars
+    #   3 explicit detection-centroid vs principal-point alignment scalars
+    #   6 scalars per teammate slot
+    base_dim = 9 + 6 * (num_drones - 1)
     if action_space is None:
         return base_dim
     return base_dim + num_move_actions(action_space.vx_bins, action_space.vy_bins)

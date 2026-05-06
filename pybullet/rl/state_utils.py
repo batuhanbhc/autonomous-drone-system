@@ -1,17 +1,18 @@
 """
 Utilities for building the centralised global state used by the critic.
 
-The critic grid has shape (6 + 2 * max_agents, H, W):
+The critic grid has shape (6 + 3 * max_agents, H, W):
   channel  0              — shared instantaneous detections union
   channel  1              — shared recent presence
   channel  2              — shared historic presence
   channel  3              — shared current-step count density
-  channel  4              — shared FOV coverage
+  channel  4              — shared FOV coverage union
   channel  5              — shared drone map
   channels 6..6+N-1       — per-drone instantaneous maps, padded to max_agents
-  channels 6+N..6+2N-1    — per-drone ego maps, padded to max_agents
+  channels 6+N..6+2N-1    — per-drone own coverage maps, padded to max_agents
+  channels 6+2N..6+3N-1   — per-drone ego maps, padded to max_agents
 
-With 2 drones the critic grid is (10, H, W).
+With 2 drones the critic grid is (12, H, W).
 
 The poses vector is (max_agents * (1 + local_dim) + 5,):
   per-agent slice: [mask, *full_local_vector]
@@ -77,13 +78,12 @@ def build_global_state(
     # instant_maps_snapshot is padded to max_agents slots by ObservationBuilder.
     shared_instant = obs_builder.instant_maps_snapshot.max(axis=0)
 
-    # Shared actor channels 1-5 (recent/historic presence, count density,
-    # coverage, drone map) are identical across all active drones.
+    # Shared actor channels 1-3 are identical across all active drones.
     shared_recent = obs[0]["grid"][1]     # (H, W)
     shared_historic = obs[0]["grid"][2]   # (H, W)
     shared_count_density = obs[0]["grid"][3]   # (H, W)
-    shared_coverage = obs[0]["grid"][4]   # (H, W)
-    shared_drone_map = obs[0]["grid"][5]  # (H, W)
+    shared_coverage = obs_builder.coverage_map.astype(np.float32)
+    shared_drone_map = obs[0]["grid"][6]  # (H, W)
 
     shared = np.stack(
         [
@@ -101,16 +101,25 @@ def build_global_state(
     # ObservationBuilder stores one slot per max agent, so inactive slots stay zero.
     instant_maps = obs_builder.instant_maps_snapshot[:max_agents].astype(np.float32)
 
-    # Critic keeps one ego map per active drone, separate from the actor's
-    # shared drone-position channel.
+    own_coverage_maps = [o["grid"][4] for o in obs]
+    while len(own_coverage_maps) < max_agents:
+        own_coverage_maps.append(np.zeros_like(obs[0]["grid"][4]))
+    own_coverage_maps = np.stack(own_coverage_maps[:max_agents], axis=0)
+
+    # Critic keeps one ego map per active drone, separate from the actor's shared
+    # drone-position channel.
     active_ego_maps = [o.get("own_ego_map", o["grid"][-1]) for o in obs]
     while len(active_ego_maps) < max_agents:
         active_ego_maps.append(np.zeros_like(obs[0]["grid"][-1]))
     ego_maps = np.stack(active_ego_maps[:max_agents], axis=0)
 
-    # Critic grid: shared actor-style channels + per-drone instantaneous + per-drone ego.
+    # Critic grid: shared channels + per-drone instantaneous + per-drone own
+    # coverage + per-drone ego.
     # Inactive drone slots remain zero-filled.
-    grid = np.concatenate([shared, instant_maps, ego_maps], axis=0).astype(np.float32)
+    grid = np.concatenate(
+        [shared, instant_maps, own_coverage_maps, ego_maps],
+        axis=0,
+    ).astype(np.float32)
 
     return {
         "grid":  grid,

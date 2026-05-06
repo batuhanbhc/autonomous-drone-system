@@ -34,7 +34,7 @@ def parse_args():
 
 def infer_trained_num_drones(ckpt: dict) -> int:
     def infer_from_base_dim(total_local_dim: int) -> int | None:
-        for base_dim in (8, 6):
+        for base_dim in (9, 8, 6):
             if total_local_dim >= base_dim and (total_local_dim - base_dim) % 6 == 0:
                 return ((total_local_dim - base_dim) // 6) + 1
         return None
@@ -89,6 +89,14 @@ def resolve_eval_active_num_drones(
         f"trained with num_drones={trained_num_drones}. "
         "For eval, pass a value within [1, trained_num_drones]."
     )
+
+
+def infer_checkpoint_local_dim(ckpt: dict) -> int:
+    if "local_dim" in ckpt:
+        return int(ckpt["local_dim"])
+    actor_state = ckpt["actor"]
+    local_weight = actor_state["local_mlp.0.weight"]
+    return int(local_weight.shape[1])
 
 
 def run_episode(env, actor, action_space, device, args):
@@ -175,7 +183,9 @@ def main():
         },
     )
     action_space = build_action_space(args)
-    actor = ActorNetwork(**actor_kwargs(trained_num_drones, action_space)).to(device)
+    actor_config = actor_kwargs(trained_num_drones, action_space)
+    actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
+    actor = ActorNetwork(**actor_config).to(device)
 
     actor.load_state_dict(ckpt["actor"])
     actor.eval()

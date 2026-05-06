@@ -1,5 +1,13 @@
 // Example ONNX Runtime inference driver for the exported deterministic actor.
 //
+// The current exported model takes:
+//   - grid       [B, C, H, W]
+//   - local_base [B, base_local_dim]
+//   - move_mask  [B, num_move_bins]
+//
+// and returns:
+//   - action     [B, 3] = (vx, vy, yaw_rate)
+//
 // Example build command (adjust include/lib paths for your machine):
 //   g++ -std=c++17 -O2 onnx/run_random_inference.cpp \
 //       -I/path/to/onnxruntime/include \
@@ -7,7 +15,7 @@
 //       -o onnx/run_random_inference
 //
 // Example usage:
-//   ./onnx/run_random_inference checkpoints/my_actor_deterministic.onnx
+//   ./onnx/run_random_inference onnx/ckpt_update_280_deterministic.onnx
 
 #include <onnxruntime_cxx_api.h>
 
@@ -101,6 +109,14 @@ int main(int argc, char** argv) {
         auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> resolved_shape = ResolveShape(tensor_info.GetShape());
         input_shapes.push_back(resolved_shape);
+        std::cout << "input[" << i << "] " << input_name_storage.back() << " shape=[";
+        for (std::size_t j = 0; j < resolved_shape.size(); ++j) {
+            std::cout << resolved_shape[j];
+            if (j + 1 < resolved_shape.size()) {
+                std::cout << ", ";
+            }
+        }
+        std::cout << "]\n";
 
         input_data_storage.push_back(RandomInputData(input_name_storage.back(), resolved_shape));
         input_tensors.emplace_back(
@@ -157,6 +173,16 @@ int main(int argc, char** argv) {
             }
         }
         std::cout << '\n';
+    }
+
+    if (outputs.size() == 1) {
+        auto tensor_info = outputs[0].GetTensorTypeAndShapeInfo();
+        if (tensor_info.GetElementCount() >= 3) {
+            const float* values = outputs[0].GetTensorData<float>();
+            std::cout << "first action -> vx=" << values[0]
+                      << " vy=" << values[1]
+                      << " yaw_rate=" << values[2] << '\n';
+        }
     }
 
     return EXIT_SUCCESS;

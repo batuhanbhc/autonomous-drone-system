@@ -1,12 +1,15 @@
+import math
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 
 from sim.camera_geometry import (
+    principal_point_world,
     footprint_center,
     footprint_corners_world,
     footprint_forward_extents,
     lateral_half_width_at_forward_distance,
     point_in_footprint_world,
+    ray_polygon_intersection_distance,
     world_to_drone_local,
 )
 
@@ -24,12 +27,16 @@ class RewardCalculator:
         wo: float = 2.0,      # overlap penalty
         wx: float = 0.3,      # exploration bonus
         ws: float = 1.0,      # boundary penalty
+        wclose: float = 0.0,  # proximity penalty before collision
+        wfov_overlap: float = 0.0,  # current-step FOV IoU overlap penalty
         wcoll: float = 1.0,   # collision penalty
         we: float = 0.0,      # energy penalty (disabled)
         wi: float = 0.5,      # idle penalty — strong to force both drones near people
         wfov: float = 0.5,    # FOV boundary penalty — penalise looking outside area
         coverage_edge_quality: float = 0.2,  # quality floor for worst visible framing
+        reward_quality_mode: str = "principal_linear",
         boundary_margin: float = 0.2,
+        drone_closeness_margin: float = 1.0,
         tilt_deg: float = 45.0,
         horizontal_fov_deg: float = 60.0,
         vertical_fov_deg: float = 45.0,
@@ -46,22 +53,41 @@ class RewardCalculator:
         self.wo    = wo
         self.wx    = wx
         self.ws    = ws
+        self.wclose = wclose
+        self.wfov_overlap = wfov_overlap
         self.wcoll = wcoll
         self.we    = we
         self.wi    = wi
         self.wfov  = wfov
         self.coverage_edge_quality = coverage_edge_quality
         self.coverage_lateral_exponent = 2.0
+        self.reward_quality_mode = str(reward_quality_mode)
 
         self.boundary_margin = boundary_margin
+        self.drone_closeness_margin = drone_closeness_margin
         self.tilt_deg        = tilt_deg
         self.horizontal_fov_deg = horizontal_fov_deg
         self.vertical_fov_deg = vertical_fov_deg
         self.fov_margin      = fov_margin
+        if self.drone_closeness_margin < 0.0:
+            raise ValueError(
+                "drone_closeness_margin must be >= 0, got "
+                f"{self.drone_closeness_margin}"
+            )
         if not (0.0 <= self.coverage_edge_quality <= 1.0):
             raise ValueError(
                 "coverage_edge_quality must be within [0, 1], got "
                 f"{self.coverage_edge_quality}"
+            )
+        if self.reward_quality_mode not in {
+            "legacy",
+            "principal_linear",
+            "principal_squared",
+        }:
+            raise ValueError(
+                "reward_quality_mode must be one of "
+                "{'legacy', 'principal_linear', 'principal_squared'}, got "
+                f"{self.reward_quality_mode}"
             )
 
     def coverage_quality_from_components(
@@ -84,6 +110,20 @@ class RewardCalculator:
         point: Tuple[float, float],
         eps: float = 1e-6,
     ) -> float:
+        if self.reward_quality_mode != "legacy":
+            radial_norm = self._principal_radial_norm_for_point(
+                drone_state=drone_state,
+                point=point,
+                eps=eps,
+            )
+            if self.reward_quality_mode == "principal_squared":
+                base_quality = 1.0 - radial_norm ** 2
+            else:
+                base_quality = 1.0 - radial_norm
+            return self.coverage_edge_quality + (
+                1.0 - self.coverage_edge_quality
+            ) * base_quality
+
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
         px, py = point
@@ -105,6 +145,46 @@ class RewardCalculator:
         else:
             lateral_norm = min(abs(lateral) / half_width, 1.0)
         return self.coverage_quality_from_components(forward_norm, lateral_norm)
+
+    def _principal_radial_norm_for_point(
+        self,
+        drone_state: Dict,
+        point: Tuple[float, float],
+        eps: float = 1e-6,
+    ) -> float:
+        x, y, z = drone_state["position"]
+        yaw = drone_state["yaw"]
+        px, py = point
+        principal_x, principal_y = principal_point_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=self.tilt_deg,
+        )
+        direction = (px - principal_x, py - principal_y)
+        radial_distance = math.hypot(direction[0], direction[1])
+        if radial_distance <= eps:
+            return 0.0
+
+        footprint = footprint_corners_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=self.tilt_deg,
+            horizontal_fov_deg=self.horizontal_fov_deg,
+            vertical_fov_deg=self.vertical_fov_deg,
+        )
+        boundary_distance = ray_polygon_intersection_distance(
+            origin=(principal_x, principal_y),
+            direction=direction,
+            polygon=footprint,
+            eps=eps,
+        )
+        if boundary_distance is None or boundary_distance <= eps:
+            return 1.0
+        return min(max(radial_distance / boundary_distance, 0.0), 1.0)
 
     def point_in_footprint_world_for_reward(
         self,
@@ -330,6 +410,24 @@ class RewardCalculator:
                     penalty += 1.0
         return penalty
 
+    def compute_drone_closeness_penalty(
+        self,
+        drone_states: List[Dict],
+    ) -> float:
+        if self.drone_closeness_margin <= 0.0:
+            return 0.0
+        penalty = 0.0
+        for i in range(len(drone_states)):
+            xi, yi, zi = drone_states[i]["position"]
+            for j in range(i + 1, len(drone_states)):
+                xj, yj, zj = drone_states[j]["position"]
+                dist = np.linalg.norm(
+                    np.array([xi - xj, yi - yj, zi - zj], dtype=np.float32)
+                )
+                if dist < self.drone_closeness_margin:
+                    penalty += 1.0 - (dist / self.drone_closeness_margin)
+        return penalty
+
     def compute_energy_penalty(
         self,
         actions: Optional[List[Tuple[float, float, float, float]]] = None,
@@ -376,6 +474,42 @@ class RewardCalculator:
                         num_cells   += 1
         return total_score / num_cells if num_cells > 0 else 0.0
 
+    def compute_fov_overlap_penalty(
+        self,
+        footprint_maps: Optional[np.ndarray],
+        eps: float = 1e-6,
+    ) -> float:
+        if self.wfov_overlap == 0.0:
+            return 0.0
+        if footprint_maps is None or footprint_maps.size == 0:
+            return 0.0
+
+        active_maps = np.asarray(footprint_maps, dtype=np.float32)
+        if active_maps.ndim != 3 or active_maps.shape[0] < 2:
+            return 0.0
+
+        penalty = 0.0
+        pair_count = 0
+        for i in range(active_maps.shape[0]):
+            map_i = active_maps[i]
+            if not np.any(map_i > 0.0):
+                continue
+            for j in range(i + 1, active_maps.shape[0]):
+                map_j = active_maps[j]
+                if not np.any(map_j > 0.0):
+                    continue
+                intersection = np.minimum(map_i, map_j)
+                union = np.maximum(map_i, map_j)
+                union_sum = float(union.sum())
+                if union_sum <= eps:
+                    continue
+                penalty += float(intersection.sum()) / union_sum
+                pair_count += 1
+
+        if pair_count == 0:
+            return 0.0
+        return penalty / pair_count
+
     # ------------------------------------------------------------------ #
     #  Total reward
     # ------------------------------------------------------------------ #
@@ -391,6 +525,7 @@ class RewardCalculator:
         episode_steps: int,
         actions: Optional[List[Tuple[float, float, float, float]]] = None,
         coverage_map: Optional[np.ndarray] = None,
+        footprint_maps: Optional[np.ndarray] = None,
     ) -> Tuple[float, dict, set]:
 
         r_cov, c_t, visible_union = self.compute_coverage_reward(
@@ -415,9 +550,11 @@ class RewardCalculator:
         r_idle   = self.compute_idle_penalty(visible_ids_per_drone)
         r_fov    = self.compute_fov_boundary_penalty(drone_states)
         r_exp    = self.compute_exploration_reward(drone_states, coverage_map)
+        r_fov_overlap = self.compute_fov_overlap_penalty(footprint_maps)
         r_bound  = self.compute_boundary_penalty(drone_states)
+        r_close  = self.compute_drone_closeness_penalty(drone_states)
         r_coll   = self.compute_collision_penalty(drone_states)
-        r_safe   = r_bound + r_coll
+        r_safe   = r_bound + r_close + r_coll
         r_energy = self.compute_energy_penalty(actions)
 
         total_reward = (
@@ -428,7 +565,9 @@ class RewardCalculator:
             - self.wo  * r_ov
             - self.wi  * r_idle
             - self.wfov * r_fov
+            - self.wfov_overlap * r_fov_overlap
             - self.ws  * r_bound
+            - self.wclose * r_close
             - self.wcoll * r_coll
             - self.we  * r_energy
         )
@@ -444,7 +583,9 @@ class RewardCalculator:
             "r_idle":         r_idle,
             "r_fov":          r_fov,
             "r_exp":          r_exp,
+            "r_fov_overlap":  r_fov_overlap,
             "r_bound":        r_bound,
+            "r_close":        r_close,
             "r_coll":         r_coll,
             "r_safe":         r_safe,
             "r_energy":       r_energy,

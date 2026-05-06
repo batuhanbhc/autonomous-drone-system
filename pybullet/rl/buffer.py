@@ -2,9 +2,9 @@
 Rollout buffer for MAPPO.
 
 Actor and critic grids have different channel counts:
-  - Actor grid  : (actor_grid_channels, H, W)  — 7 channels
-  - Critic grid : (critic_grid_channels, H, W) — 6 + 2 * num_agents channels
-                  (shared actor-style + per-drone instant/ego maps)
+  - Actor grid  : (actor_grid_channels, H, W)  — 8 channels
+  - Critic grid : (critic_grid_channels, H, W) — 6 + 3 * num_agents channels
+                  (shared channels + per-drone instant/coverage/ego maps)
 
 Stored separately so neither shape pollutes the other.
 

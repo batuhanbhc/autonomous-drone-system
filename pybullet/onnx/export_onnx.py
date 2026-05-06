@@ -18,6 +18,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import torch
 import torch.nn as nn
@@ -70,7 +75,13 @@ class DeterministicActorONNX(nn.Module):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True, help="Path to .pt checkpoint")
+    parser.add_argument("checkpoint", nargs="?", help="Path to .pt checkpoint")
+    parser.add_argument(
+        "--checkpoint",
+        dest="checkpoint_flag",
+        default=None,
+        help="Path to .pt checkpoint",
+    )
     parser.add_argument(
         "--output",
         default=None,
@@ -98,7 +109,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=SHARED_DEFAULTS.yaw_bin_interval,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    checkpoint = args.checkpoint_flag or args.checkpoint
+    if not checkpoint:
+        parser.error("a checkpoint path is required")
+    args.checkpoint = checkpoint
+    return args
 
 
 def infer_trained_num_drones(ckpt: dict) -> int:
@@ -110,7 +126,7 @@ def infer_trained_num_drones(ckpt: dict) -> int:
     move_mask_dim = int(actor_state["move_head.weight"].shape[0])
     base_local_dim = local_dim - move_mask_dim
 
-    for base_dim in (8, 6):
+    for base_dim in (9, 8, 6):
         if base_local_dim >= base_dim and (base_local_dim - base_dim) % 6 == 0:
             return ((base_local_dim - base_dim) // 6) + 1
 
@@ -120,13 +136,21 @@ def infer_trained_num_drones(ckpt: dict) -> int:
     )
 
 
-def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, int]:
+def infer_checkpoint_local_dim(ckpt: dict) -> int:
+    if "local_dim" in ckpt:
+        return int(ckpt["local_dim"])
+    return int(ckpt["actor"]["local_mlp.0.weight"].shape[1])
+
+
+def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, int, int, int]:
     device = torch.device(args.device)
     ckpt = torch.load(args.checkpoint, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
 
     action_space = build_action_space(args)
-    actor = ActorNetwork(**actor_kwargs(trained_num_drones, action_space)).to(device)
+    actor_config = actor_kwargs(trained_num_drones, action_space)
+    actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
+    actor = ActorNetwork(**actor_config).to(device)
 
     expected_move_bins = int(action_space.vx_bins.shape[0] * action_space.vy_bins.shape[0])
     expected_yaw_bins = int(action_space.yaw_rate_bins.shape[0])
@@ -158,24 +182,25 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
     ).to(device)
     wrapper.eval()
 
-    grid_channels = int(ckpt["actor"]["cnn.net.0.weight"].shape[1])
-    return wrapper, grid_channels, base_local_dim, expected_move_bins
+    grid_channels = int(actor_config["grid_channels"])
+    grid_h = int(actor_config["grid_h"])
+    grid_w = int(actor_config["grid_w"])
+    return wrapper, grid_channels, grid_h, grid_w, base_local_dim, expected_move_bins
 
 
 def resolve_output_path(args: argparse.Namespace) -> Path:
     if args.output:
         return Path(args.output)
-    ckpt_path = Path(args.checkpoint)
-    return ckpt_path.with_name(f"{ckpt_path.stem}_deterministic.onnx")
+    return Path(__file__).resolve().parent / "marl_agent.onnx"
 
 
 def main() -> None:
     args = parse_args()
     output_path = resolve_output_path(args)
-    model, grid_channels, base_local_dim, move_mask_dim = build_export_model(args)
+    model, grid_channels, grid_h, grid_w, base_local_dim, move_mask_dim = build_export_model(args)
 
     device = torch.device(args.device)
-    dummy_grid = torch.zeros((1, grid_channels, 50, 50), dtype=torch.float32, device=device)
+    dummy_grid = torch.zeros((1, grid_channels, grid_h, grid_w), dtype=torch.float32, device=device)
     dummy_local_base = torch.zeros((1, base_local_dim), dtype=torch.float32, device=device)
     dummy_move_mask = torch.ones((1, move_mask_dim), dtype=torch.float32, device=device)
 

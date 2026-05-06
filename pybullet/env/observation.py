@@ -6,15 +6,18 @@ import numpy as np
 
 from sim.camera_geometry import (
     footprint_corners_world,
+    footprint_forward_extents,
+    lateral_half_width_at_forward_distance,
     point_in_footprint_local,
     point_in_footprint_world,
+    principal_point_world,
     world_to_drone_local,
 )
 
 
 class ObservationBuilder:
     """
-    Builds a (7, H, W) actor grid observation each step:
+    Builds an (8, H, W) actor grid observation each step:
 
       Channel 0 — people detections INSTANTANEOUS, LOCAL TO THIS DRONE
                   Only detections made by THIS drone on the current step.
@@ -35,32 +38,36 @@ class ObservationBuilder:
                   Summed Gaussian blobs from all detections on the current step,
                   then tanh-compressed. Bright and wide means more people now.
 
-      Channel 4 — FOV coverage (shared across all drones)
+      Channel 4 — OWN FOV coverage
                   (simulation-time half-life: coverage_half_life_seconds)
-                  Bright = camera was aimed here recently.
-                  Compare with historic:
-                    historic high + coverage high  -> watching people
-                    historic high + coverage low   -> people here, not checked recently
-                    historic low  + coverage high  -> looked here, nobody found
-                    both low                       -> unexplored
+                  Bright = this drone's camera was aimed here recently.
 
-      Channel 5 — Shared drone map
+      Channel 5 — TEAMMATE-ONLY FOV coverage
+                  Bright = at least one other drone's camera was aimed here recently.
+
+      Channel 6 — Shared drone map
                   Gaussian blobs at all active drone positions.
                   Gives the CNN a shared spatial view of teammate placement.
 
-      Channel 6 — Ego map for this drone
+      Channel 7 — Ego map for this drone
                   Gaussian blob at this drone's own position.
                   Lets the actor distinguish "me" from the shared drone layer.
 
-    The centralised critic receives a (6 + 2 * num_agents, H, W) grid
+    The shared recent-presence map uses both positive and negative evidence:
+      - detections add `recent_hit_gain * gaussian`, clipped to [0, 1]
+      - currently visible team cells with no nearby team detection support
+        are multiplied by (1 - recent_miss_penalty)
+
+    The centralised critic receives a (6 + 3 * num_agents, H, W) grid
     built by build_global_state() in state_utils.py:
       Channel 0   — shared instantaneous detections union
       Channel 1   — shared recent presence
       Channel 2   — shared historic presence
       Channel 3   — shared current-step count density
-      Channel 4   — shared FOV coverage
+      Channel 4   — shared FOV coverage union
       Channel 5   — shared drone map
       Channel 6..  — per-drone instantaneous maps (one per agent, critic-only)
+      Channel ...  — per-drone own coverage maps (one per agent, critic-only)
       Channel ...  — ego map per drone (one per agent, critic-only)
 
     All decay constants are derived from simulation-time half-lives.
@@ -88,6 +95,8 @@ class ObservationBuilder:
         recent_half_life_seconds: float = 3.0,    # Ch1: team short-memory people belief
         historic_half_life_seconds: float = 15.0,  # Ch2: episodic people memory
         coverage_half_life_seconds: float = 5.0,  # Ch4: FOV visited-recently window
+        recent_hit_gain: float = 0.6,
+        recent_miss_penalty: float = 0.25,
     ):
         self.x_min = x_min
         self.x_max = x_max
@@ -108,7 +117,19 @@ class ObservationBuilder:
 
         self.blob_sigma = blob_sigma
         self.ego_sigma  = ego_sigma
-        self.count_density_gain = 0.35
+        self.count_density_gain = 0.1
+        self.recent_hit_gain = float(recent_hit_gain)
+        self.recent_miss_penalty = float(recent_miss_penalty)
+        self.recent_detection_support_threshold = 0.1
+        if self.recent_hit_gain < 0.0:
+            raise ValueError(
+                f"recent_hit_gain must be >= 0, got {self.recent_hit_gain}"
+            )
+        if not (0.0 <= self.recent_miss_penalty <= 1.0):
+            raise ValueError(
+                "recent_miss_penalty must be within [0, 1], got "
+                f"{self.recent_miss_penalty}"
+            )
 
         dt = 1.0 / sim_hz
 
@@ -134,6 +155,8 @@ class ObservationBuilder:
             f"= {coverage_half_life_seconds * sim_hz:.1f} steps  "
             f"| decay/step={self.decay_coverage:.4f} "
             f"| value after episode: {self.decay_coverage**steps_per_episode:.4f}\n"
+            f"  Ch1 recent hit_gain={self.recent_hit_gain:.3f}  "
+            f"miss_penalty={self.recent_miss_penalty:.3f}\n"
             f"  Critic shared channels: instant union, recent presence, historic presence, "
             f"count density, coverage, drone map"
         )
@@ -148,6 +171,8 @@ class ObservationBuilder:
         self.people_count_density = np.zeros((grid_h, grid_w), dtype=np.float32)
         # Ch4: FOV coverage — "camera was aimed here recently" — shared across all drones.
         self.coverage_map = np.zeros((grid_h, grid_w), dtype=np.float32)
+        self.coverage_maps_per_drone = np.zeros((num_drones, grid_h, grid_w), dtype=np.float32)
+        self.footprint_maps_snapshot = np.zeros((num_drones, grid_h, grid_w), dtype=np.float32)
         self.instant_maps_snapshot = self.people_detect_instant.copy()
 
         # Precompute meshgrid for fast Gaussian splatting
@@ -163,6 +188,8 @@ class ObservationBuilder:
         self.people_belief_historic.fill(0.0)
         self.people_count_density.fill(0.0)
         self.coverage_map.fill(0.0)
+        self.coverage_maps_per_drone.fill(0.0)
+        self.footprint_maps_snapshot.fill(0.0)
         self.instant_maps_snapshot = self.people_detect_instant.copy()
         self.prev_drone_positions = {}
 
@@ -275,19 +302,42 @@ class ObservationBuilder:
 
         return cells
 
-    def update_coverage_map(self, drone_states: List[Dict]):
-        """
-        Decay coverage map at coverage_half_life_seconds simulation-time rate,
-        then mark all cells inside each drone's camera FOV footprint.
-        """
-        self.coverage_map *= self.decay_coverage
-        for drone_state in drone_states:
+    def _build_current_footprint_maps(self, drone_states: List[Dict]) -> np.ndarray:
+        current_footprint_maps = np.zeros(
+            (len(drone_states), self.grid_h, self.grid_w),
+            dtype=np.float32,
+        )
+        for drone_idx, drone_state in enumerate(drone_states):
             for (v, u) in self._get_footprint_cells(drone_state):
-                self.coverage_map[v, u] = 1.0
+                current_footprint_maps[drone_idx, v, u] = 1.0
+        return current_footprint_maps
+
+    def update_coverage_map(self, current_footprint_maps: np.ndarray):
+        """
+        Decay per-drone and shared coverage maps at the configured half-life,
+        then mark all cells currently inside each active drone's camera FOV
+        footprint.
+        """
+        active_drones = int(current_footprint_maps.shape[0])
+        self.coverage_map *= self.decay_coverage
+        self.coverage_maps_per_drone *= self.decay_coverage
+        if active_drones < self.num_drones:
+            self.coverage_maps_per_drone[active_drones:].fill(0.0)
+        if active_drones == 0:
+            self.coverage_map.fill(0.0)
+            return
+
+        np.maximum(
+            self.coverage_maps_per_drone[:active_drones],
+            current_footprint_maps,
+            out=self.coverage_maps_per_drone[:active_drones],
+        )
+        self.coverage_map[...] = self.coverage_maps_per_drone[:active_drones].max(axis=0)
 
     def build_people_maps(
         self,
         detections_per_drone,
+        current_footprint_maps: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Update and return belief maps.
@@ -295,20 +345,23 @@ class ObservationBuilder:
         Ch0 (instantaneous): per-drone — each drone's detections from only the
         current step. Shape: (num_drones, H, W).
 
-        Ch1 (recent): shared recent presence.
+        Ch1 (recent): shared recent presence, updated with:
+          - decay
+          - negative evidence from visible team cells with no team detections
+          - additive hit_gain * gaussian per detection, clipped to [0, 1]
 
-        Ch2 (historic): shared historic presence.
+        Ch2 (historic): shared historic presence with slower decay and max-based
+        positive evidence only.
 
         Ch3: current-step count density, built from this step only.
-
-        np.maximum is used so that multiple detections in the same area
-        reinforce rather than interfere with each other.
         """
         self.people_detect_instant.fill(0.0)
         self.people_belief_recent *= self.decay_recent
         self.people_belief_historic *= self.decay_historic
 
         step_density = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+        recent_hits = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+        team_detection_support = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
 
         for drone_idx, detections in enumerate(detections_per_drone):
             for det in detections:
@@ -317,11 +370,22 @@ class ObservationBuilder:
                 blob = self._gaussian_blob(v, u, self.blob_sigma)
                 # Ch0: only THIS drone's current-step detections
                 np.maximum(self.people_detect_instant[drone_idx], blob, out=self.people_detect_instant[drone_idx])
-                # Ch1: all drones contribute to the short shared recent map
-                np.maximum(self.people_belief_recent, blob, out=self.people_belief_recent)
+                recent_hits += blob
+                np.maximum(team_detection_support, blob, out=team_detection_support)
                 # Ch2: all drones contribute to the long shared historic map
                 np.maximum(self.people_belief_historic, blob, out=self.people_belief_historic)
                 step_density += blob
+
+        if current_footprint_maps.size > 0 and self.recent_miss_penalty > 0.0:
+            team_visible_mask = current_footprint_maps.max(axis=0) > 0.0
+            miss_mask = team_visible_mask & (
+                team_detection_support < self.recent_detection_support_threshold
+            )
+            self.people_belief_recent[miss_mask] *= (1.0 - self.recent_miss_penalty)
+
+        if self.recent_hit_gain > 0.0:
+            self.people_belief_recent += self.recent_hit_gain * recent_hits
+        np.clip(self.people_belief_recent, 0.0, 1.0, out=self.people_belief_recent)
 
         self.people_count_density[...] = step_density
         count_density_obs = np.tanh(
@@ -335,29 +399,52 @@ class ObservationBuilder:
             count_density_obs,
         )
 
-    def build_shared_grid(self, drone_states, detections_per_drone) -> Tuple[np.ndarray, np.ndarray]:
+    def build_shared_grid(
+        self,
+        drone_states,
+        detections_per_drone,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Returns:
-          shared_4ch  : (4, H, W) — channels shared across all drones:
+          shared_3ch  : (3, H, W) — channels shared across all drones:
                           [0] recent presence  (ch1 in actor grid)
                           [1] historic presence(ch2 in actor grid)
                           [2] count density    (ch3 in actor grid)
-                          [3] FOV coverage     (ch4 in actor grid)
           instant_maps: (num_drones, H, W) — per-drone instantaneous detections
+          own_coverage_maps: (num_drones, H, W) — per-drone recent FOV coverage
+          teammate_coverage_maps: (num_drones, H, W) — union of all other
+                                 drones' recent FOV coverage
         """
-        self.update_coverage_map(drone_states)
-        instant_maps, recent, historic, count_density = self.build_people_maps(detections_per_drone)
-        shared_4ch = np.stack(
-            [recent, historic, count_density, self.coverage_map],
+        current_footprint_maps = self._build_current_footprint_maps(drone_states)
+        self.footprint_maps_snapshot.fill(0.0)
+        active_drones = len(drone_states)
+        if active_drones > 0:
+            self.footprint_maps_snapshot[:active_drones] = current_footprint_maps
+        self.update_coverage_map(current_footprint_maps)
+        instant_maps, recent, historic, count_density = self.build_people_maps(
+            detections_per_drone,
+            current_footprint_maps,
+        )
+        shared_3ch = np.stack(
+            [recent, historic, count_density],
             axis=0,
         ).astype(np.float32)
-        return shared_4ch, instant_maps
+        own_coverage_maps = self.coverage_maps_per_drone[:active_drones].copy()
+        teammate_coverage_maps = np.zeros_like(own_coverage_maps)
+        for drone_idx in range(active_drones):
+            teammate_indices = [idx for idx in range(active_drones) if idx != drone_idx]
+            if teammate_indices:
+                teammate_coverage_maps[drone_idx] = self.coverage_maps_per_drone[
+                    teammate_indices
+                ].max(axis=0)
+        return shared_3ch, instant_maps, own_coverage_maps, teammate_coverage_maps
 
     def build_local_vector(
         self,
         drone_state: Dict,
         drone_id: int,
         num_visible: int = 0,
+        detections: Optional[List[Tuple[float, float, float]]] = None,
         other_drone_states: Optional[List[Dict]] = None,
     ) -> np.ndarray:
         """
@@ -370,9 +457,12 @@ class ObservationBuilder:
           [3] sin(yaw)
           [4] cos(yaw)
           [5] num_visible — normalised (count / 30)
-          [6+] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
+          [6] detection_centroid_present
+          [7] centroid_forward_offset_from_principal — normalised to [-1, 1]
+          [8] centroid_lateral_offset_from_principal — normalised to [-1, 1]
+          [9+] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
 
-        Total: 6 + 6*(num_drones-1) values.
+        Total: 9 + 6*(num_drones-1) values.
         """
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
@@ -382,6 +472,71 @@ class ObservationBuilder:
         z_min, z_max = 0.3, 8.0
         area_diag = math.hypot(x_max - x_min, y_max - y_min)
 
+        centroid_present = 0.0
+        centroid_forward_offset = 0.0
+        centroid_lateral_offset = 0.0
+        if detections:
+            centroid_present = 1.0
+            centroid_x = sum(det[0] for det in detections) / len(detections)
+            centroid_y = sum(det[1] for det in detections) / len(detections)
+            principal_x, principal_y = principal_point_world(
+                x=x,
+                y=y,
+                z=z,
+                yaw=yaw,
+                camera_tilt_deg=self.camera_tilt_deg,
+            )
+            min_forward, max_forward = footprint_forward_extents(
+                z=z,
+                camera_tilt_deg=self.camera_tilt_deg,
+                vertical_fov_deg=self.vertical_fov_deg,
+            )
+            principal_forward, _ = world_to_drone_local(
+                principal_x,
+                principal_y,
+                x,
+                y,
+                yaw,
+            )
+            centroid_forward, centroid_lateral = world_to_drone_local(
+                centroid_x,
+                centroid_y,
+                x,
+                y,
+                yaw,
+            )
+            forward_norm_scale = max(
+                abs(min_forward - principal_forward),
+                abs(max_forward - principal_forward),
+                1e-6,
+            )
+            max_lateral_scale = max(
+                lateral_half_width_at_forward_distance(
+                    forward=min_forward,
+                    z=z,
+                    horizontal_fov_deg=self.horizontal_fov_deg,
+                ),
+                lateral_half_width_at_forward_distance(
+                    forward=principal_forward,
+                    z=z,
+                    horizontal_fov_deg=self.horizontal_fov_deg,
+                ),
+                lateral_half_width_at_forward_distance(
+                    forward=max_forward,
+                    z=z,
+                    horizontal_fov_deg=self.horizontal_fov_deg,
+                ),
+                1e-6,
+            )
+            centroid_forward_offset = max(
+                -1.0,
+                min(1.0, (centroid_forward - principal_forward) / forward_norm_scale),
+            )
+            centroid_lateral_offset = max(
+                -1.0,
+                min(1.0, centroid_lateral / max_lateral_scale),
+            )
+
         vec = [
             2.0 * (x - x_min) / (x_max - x_min) - 1.0,
             2.0 * (y - y_min) / (y_max - y_min) - 1.0,
@@ -389,6 +544,9 @@ class ObservationBuilder:
             math.sin(yaw),
             math.cos(yaw),
             float(num_visible) / 30.0,
+            centroid_present,
+            centroid_forward_offset,
+            centroid_lateral_offset,
         ]
 
         other_states = other_drone_states or []
@@ -419,11 +577,13 @@ class ObservationBuilder:
             visible_ids_per_drone.append(visible_ids)
             detections_per_drone.append(detections)
 
-        # shared_4ch : (4, H, W) — [recent presence, historic presence,
-        #                           count density, coverage]
-        #                           — same for all drones
+        # shared_3ch : (3, H, W) — [recent presence, historic presence,
+        #                           count density] — same for all drones
         # instant_maps: (num_drones, H, W) — per-drone current-step detections
-        shared_4ch, instant_maps = self.build_shared_grid(drone_states, detections_per_drone)
+        shared_3ch, instant_maps, own_coverage_maps, teammate_coverage_maps = self.build_shared_grid(
+            drone_states,
+            detections_per_drone,
+        )
 
         self.instant_maps_snapshot = instant_maps
         shared_drone_map = self._make_shared_drone_map(drone_states)
@@ -435,6 +595,7 @@ class ObservationBuilder:
                 drone_state,
                 drone_id=i,
                 num_visible=len(visible_ids_per_drone[i]),
+                detections=detections_per_drone[i],
                 other_drone_states=other_states,
             )
 
@@ -442,19 +603,22 @@ class ObservationBuilder:
             # drone-position map containing all active drones.
             own_ego_map = self._make_ego_map(drone_state)
 
-            # Actor grid (7, H, W):
+            # Actor grid (8, H, W):
             #   ch0 — instantaneous detections LOCAL to this drone  (per-drone)
             #   ch1 — recent presence                               (shared)
             #   ch2 — historic presence                             (shared)
             #   ch3 — current-step count density                    (shared)
-            #   ch4 — FOV coverage                                  (shared)
-            #   ch5 — shared drone map                              (shared)
-            #   ch6 — own ego map                                   (per-drone)
+            #   ch4 — own FOV coverage                              (per-drone)
+            #   ch5 — teammate-only FOV coverage                    (per-drone)
+            #   ch6 — shared drone map                              (shared)
+            #   ch7 — own ego map                                   (per-drone)
             local_instant = instant_maps[i][np.newaxis, :, :]   # (1, H, W)
             grid = np.concatenate(
                 [
                     local_instant,
-                    shared_4ch,
+                    shared_3ch,
+                    own_coverage_maps[i][np.newaxis, :, :],
+                    teammate_coverage_maps[i][np.newaxis, :, :],
                     shared_drone_map[np.newaxis, :, :],
                     own_ego_map[np.newaxis, :, :],
                 ],
@@ -462,7 +626,7 @@ class ObservationBuilder:
             ).astype(np.float32)
 
             observations.append({
-                "grid": grid,            # (7, H, W)
+                "grid": grid,            # (8, H, W)
                 "local": local_vec,      # (6 + 6*(N-1),) — unique per drone
                 "own_ego_map": own_ego_map,
             })
