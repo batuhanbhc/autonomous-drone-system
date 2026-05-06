@@ -1251,7 +1251,9 @@ void VisionPipeline::publishSceneLocked(
   msg.odom_valid    = result.odom_valid;
   msg.drone_x       = result.pos_x;
   msg.drone_y       = result.pos_y;
-  msg.drone_z       = result.pos_z;
+  msg.drone_z       = (config_.use_mcu_height_estimate && result.mcu_valid)
+    ? static_cast<double>(result.agl_m)
+    : result.pos_z;
 
   double yaw = 0.0;
   if (result.odom_valid) {

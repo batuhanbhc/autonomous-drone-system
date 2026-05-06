@@ -95,9 +95,12 @@ void ControlGateNode::publishSetpoint(float vx, float vy, float vz, float yaw_ra
 // ============================================================================
 // publishSetpointWorldFrame  — world (ENU) velocity setpoint
 //
-// Converts from autonomous controller convention (ENU: +x=east, +y=north,
-// yaw_rate CCW positive) to MAVLink FRAME_LOCAL_NED (NED: +x=north, +y=east,
-// +z=down, yaw_rate CW positive).
+// Accepts the autonomous controller convention directly on the ROS side:
+// +x=east, +y=north, +z=up, yaw_rate CCW positive.
+//
+// This mirrors the working manual path, where ROS publishes FLU/ENU-style
+// velocities and MAVROS handles the FCU-side frame conversion. Applying an
+// extra ENU->NED swap/negation here corrupts the commanded axes.
 // ============================================================================
 
 void ControlGateNode::publishSetpointWorldFrame(
@@ -115,12 +118,10 @@ void ControlGateNode::publishSetpointWorldFrame(
     mavros_msgs::msg::PositionTarget::IGNORE_AFY |
     mavros_msgs::msg::PositionTarget::IGNORE_AFZ |
     mavros_msgs::msg::PositionTarget::IGNORE_YAW;
-  // ENU → NED: x_ned=north=ENU_y, y_ned=east=ENU_x, z_ned=down=-ENU_z_up
-  sp.velocity.x =  vy_north;
-  sp.velocity.y =  vx_east;
-  sp.velocity.z = -vz_up;
-  // ENU CCW positive → NED CW positive: negate
-  sp.yaw_rate   = -yaw_rate_ccw;
+  sp.velocity.x = vx_east;
+  sp.velocity.y = vy_north;
+  sp.velocity.z = vz_up;
+  sp.yaw_rate   = yaw_rate_ccw;
   pub_setpoint_raw_local_->publish(sp);
 }
 

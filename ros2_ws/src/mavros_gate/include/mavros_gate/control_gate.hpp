@@ -311,7 +311,9 @@ private:
 
   // publishSetpoint is now PRIVATE to onGuidedSetpointTimer — use update* above.
   void publishSetpoint(float vx, float vy, float vz, float yaw_rate);
-  // World-frame (ENU) setpoint: vx=east, vy=north, vz=up, yaw_rate=CCW. Converts to FRAME_LOCAL_NED.
+  // World-frame ROS setpoint: vx=east, vy=north, vz=up, yaw_rate=CCW.
+  // The manual and autonomous paths intentionally use the same ROS-side
+  // convention and rely on MAVROS for FCU frame conversion.
   void publishSetpointWorldFrame(float vx_east, float vy_north, float vz_up, float yaw_rate_ccw);
 
   // ── Subscriber callbacks ──────────────────────────────────────────────────
