@@ -28,6 +28,8 @@ x-ros-common: &ros-common
     - /home/batuhan/drone-project/ros2_docker/entrypoint.sh:/entrypoint.sh
     - /home/batuhan/drone-project/ros2_docker/person_detector.hef:/person_detector.hef
     - /home/batuhan/drone-project/ros2_docker/yolov11s.hef:/yolov11s.hef
+    - /home/batuhan/drone-project/ros2_docker/marl_agent.onnx:/marl_agent.onnx
+    - /home/batuhan/drone-project/ros2_docker/marl_agent.onnx.data:/marl_agent.onnx.data
     - /usr/share/hailo-models:/usr/share/hailo-models
     - /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes:/usr/share/hailo-postprocess
     - /home/batuhan/drone-project/pybullet/onnx:/home/batuhan/onnx

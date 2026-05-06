@@ -1261,6 +1261,13 @@ void VisionPipeline::publishSceneLocked(
     yaw += yaw_offset_;
   }
   msg.drone_yaw = yaw;
+  const double principal_height =
+    (config_.use_mcu_height_estimate && result.mcu_valid) ?
+    static_cast<double>(result.agl_m) : result.pos_z;
+  const double principal_forward =
+    principal_height * std::tan(config_.camera_mount_angle * M_PI / 180.0);
+  msg.principal_x = result.pos_x + principal_forward * std::cos(yaw);
+  msg.principal_y = result.pos_y + principal_forward * std::sin(yaw);
 
   msg.tracks.reserve(confirmed_tracks.size());
   for (const auto & tr : confirmed_tracks) {

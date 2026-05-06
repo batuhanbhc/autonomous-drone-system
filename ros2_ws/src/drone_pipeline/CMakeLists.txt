@@ -45,6 +45,30 @@ else()
   message(STATUS "HailoRT not found — VisionPipeline will not be built")
 endif()
 
+# ── ONNX Runtime (required by autonomous_controller) ─────────────────────────
+set(ONNXRUNTIME_ROOT "/opt/onnxruntime" CACHE PATH
+  "Path to an ONNX Runtime SDK directory containing include/ and lib/")
+
+find_path(ONNXRUNTIME_INCLUDE_DIR
+  NAMES onnxruntime_cxx_api.h
+  HINTS
+    ${ONNXRUNTIME_ROOT}/include
+    /opt/onnxruntime/include
+)
+find_library(ONNXRUNTIME_LIBRARY
+  NAMES onnxruntime
+  HINTS
+    ${ONNXRUNTIME_ROOT}/lib
+    ${ONNXRUNTIME_ROOT}/lib64
+    /opt/onnxruntime/lib
+    /opt/onnxruntime/lib64
+)
+if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+  message(FATAL_ERROR
+    "ONNX Runtime not found. Set ONNXRUNTIME_ROOT to an SDK that provides "
+    "include/onnxruntime_cxx_api.h and lib/libonnxruntime.so.")
+endif()
+
 # ── Shared library (pipeline components) ──────────────────────────────────────
 set(PIPELINE_SOURCES
   src/camera_capture_node.cpp
@@ -65,6 +89,7 @@ target_include_directories(drone_pipeline_components PUBLIC
   $<INSTALL_INTERFACE:include>
   ${OpenCV_INCLUDE_DIRS}
   ${TURBOJPEG_INCLUDE_DIR}
+  ${ONNXRUNTIME_INCLUDE_DIR}
 )
 
 target_link_libraries(drone_pipeline_components
@@ -72,12 +97,19 @@ target_link_libraries(drone_pipeline_components
   ${OpenCV_LIBS}
   PkgConfig::LIBAV
   ${TURBOJPEG_LIBRARY}
+  ${ONNXRUNTIME_LIBRARY}
 )
 
 if(HAILORT_FOUND)
   target_include_directories(drone_pipeline_components PUBLIC ${HAILORT_INCLUDE_DIR})
   target_link_libraries(drone_pipeline_components ${HAILORT_LIBRARY})
 endif()
+
+get_filename_component(ONNXRUNTIME_LIBRARY_DIR "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
+set_target_properties(drone_pipeline_components PROPERTIES
+  BUILD_RPATH "${ONNXRUNTIME_LIBRARY_DIR}"
+  INSTALL_RPATH "${ONNXRUNTIME_LIBRARY_DIR}"
+)
 
 ament_target_dependencies(drone_pipeline_components
   rclcpp

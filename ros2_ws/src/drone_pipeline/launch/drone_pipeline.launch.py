@@ -72,6 +72,7 @@ def generate_launch_description():
                 package="drone_pipeline",
                 plugin="drone_pipeline::AutonomousController",
                 name="autonomous_controller",
+                parameters=[{"session_dir": session_dir}],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
         ],

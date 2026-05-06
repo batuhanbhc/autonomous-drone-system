@@ -95,6 +95,32 @@ custom_topics:
 
 autonomous_controller:
   hz: 4.0
+  model_path: /marl_agent.onnx
+  max_agents: 2
+
+  # PyBullet eval arena / observation defaults
+  x_min: -15.0
+  x_max: 15.0
+  y_min: -15.0
+  y_max: 15.0
+  max_range: 15.0
+  horizontal_fov_deg: 55.8
+  vertical_fov_deg: 43.3
+
+  # Observation-state decay and belief update parameters
+  recent_half_life_seconds: 10.0
+  historic_half_life_seconds: 60.0
+  coverage_half_life_seconds: 60.0
+  recent_hit_gain: 0.6
+  recent_miss_penalty: 0.25
+  blob_sigma: 1.0
+  ego_sigma: 2.5
+
+  # Discrete action bins used by the exported ONNX actor
+  max_horizontal_velocity: 1.0
+  horizontal_bin_interval: 1.0
+  max_yaw_rate: 0.5
+  yaw_bin_interval: 0.5
 
 mavros_topics:
     state: "/mavros/state"
