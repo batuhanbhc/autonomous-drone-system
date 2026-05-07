@@ -97,6 +97,7 @@ autonomous_controller:
   hz: 4.0
   model_path: /marl_agent.onnx
   max_agents: 2
+  cmd_history_len: 4
 
   # PyBullet eval arena / observation defaults
   x_min: -15.0

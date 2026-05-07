@@ -22,7 +22,7 @@ class SharedConfig:
     x_max: float = 15.0
     y_min: float = -15.0
     y_max: float = 15.0
-    drone_height: float = 5.0
+    drone_height: float = 6.0
     num_drones: int = 2
     random_spawn: bool = False
     drone_spawn_radius: float = 3.0
@@ -58,14 +58,17 @@ class SharedConfig:
     horizontal_bin_interval: float = 1.0
     max_yaw_rate: float = 0.5
     yaw_bin_interval: float = 0.5
+    vel_tau_s: float = 0.4
+    yaw_rate_tau_s: float = 0.4
+    cmd_history_len: int = 4
     reward_wc: float = 1.0
-    reward_wqual: float = 1.0
+    reward_wqual: float = 1.5
     reward_wd: float = 0.0
     reward_wo: float = 0.0
     reward_wx: float = 0.0
     reward_ws: float = 1.0
     reward_wclose: float = 1.0
-    reward_wfov_overlap: float = 1.0
+    reward_wfov_overlap: float = 2.0
     reward_wcoll: float = 0.0
     reward_we: float = 0.0
     reward_wi: float = 0.0
@@ -87,7 +90,7 @@ class TrainConfig:
     rollout_len: int = 480*4
     num_epochs: int = 2
     batch_size: int = 128
-    clip_eps: float = 0.05
+    clip_eps: float = 0.1
     gamma: float = 0.99
     gae_lambda: float = 0.95
     lr_actor: float = 3e-4
@@ -296,6 +299,24 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=SHARED_DEFAULTS.yaw_bin_interval,
     )
+    parser.add_argument(
+        "--vel_tau_s",
+        type=float,
+        default=SHARED_DEFAULTS.vel_tau_s,
+        help="First-order lag time constant for horizontal velocity (seconds). 0=instant.",
+    )
+    parser.add_argument(
+        "--yaw_rate_tau_s",
+        type=float,
+        default=SHARED_DEFAULTS.yaw_rate_tau_s,
+        help="First-order lag time constant for yaw rate (seconds). 0=instant.",
+    )
+    parser.add_argument(
+        "--cmd_history_len",
+        type=int,
+        default=SHARED_DEFAULTS.cmd_history_len,
+        help="Number of past (vx, vy, yaw_rate) commands appended to the actor local vector. 0=disabled.",
+    )
     parser.add_argument("--reward_wc", type=float, default=SHARED_DEFAULTS.reward_wc)
     parser.add_argument("--reward_wqual", type=float, default=SHARED_DEFAULTS.reward_wqual)
     parser.add_argument("--reward_wd", type=float, default=SHARED_DEFAULTS.reward_wd)
@@ -478,6 +499,11 @@ def build_env_kwargs(
         "reward_boundary_margin": args.reward_boundary_margin,
         "reward_drone_closeness_margin": args.reward_drone_closeness_margin,
         "reward_fov_margin": args.reward_fov_margin,
+        "vel_tau_s": args.vel_tau_s,
+        "yaw_rate_tau_s": args.yaw_rate_tau_s,
+        "cmd_history_len": args.cmd_history_len,
+        "max_horizontal_velocity": args.max_horizontal_velocity,
+        "max_yaw_rate": args.max_yaw_rate,
         "debug_observation_plots": args.debug_observation_plots,
         "debug_observation_plot_every": args.debug_observation_plot_every,
         "debug_reward_contours": args.debug_reward_contours,
@@ -494,12 +520,17 @@ def build_env(
     return MultiUAVEnv(**build_env_kwargs(args, overrides=overrides))
 
 
-def local_dim(num_drones: int, action_space: DiscreteActionSpace | None = None) -> int:
+def local_dim(
+    num_drones: int,
+    action_space: DiscreteActionSpace | None = None,
+    cmd_history_len: int = 0,
+) -> int:
     # Base local features:
     #   5 ego pose/visibility scalars (x, y, sin_yaw, cos_yaw, num_visible)
     #   3 explicit detection-centroid vs principal-point alignment scalars
     #   6 scalars per teammate slot
-    base_dim = 8 + 6 * (num_drones - 1)
+    #   3 scalars per command history entry (vx, vy, yaw_rate)
+    base_dim = 8 + 6 * (num_drones - 1) + 3 * cmd_history_len
     if action_space is None:
         return base_dim
     return base_dim + num_move_actions(action_space.vx_bins, action_space.vy_bins)
@@ -544,9 +575,13 @@ def build_action_space(args: argparse.Namespace) -> DiscreteActionSpace:
     )
 
 
-def actor_kwargs(num_drones: int, action_space: DiscreteActionSpace) -> Dict[str, Any]:
+def actor_kwargs(
+    num_drones: int,
+    action_space: DiscreteActionSpace,
+    cmd_history_len: int = 0,
+) -> Dict[str, Any]:
     return {
-        "local_dim": local_dim(num_drones, action_space),
+        "local_dim": local_dim(num_drones, action_space, cmd_history_len),
         "grid_channels": MODEL_DEFAULTS.grid_channels,
         "grid_h": MODEL_DEFAULTS.grid_h,
         "grid_w": MODEL_DEFAULTS.grid_w,
@@ -559,7 +594,7 @@ def actor_kwargs(num_drones: int, action_space: DiscreteActionSpace) -> Dict[str
 
 
 def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) -> Dict[str, Any]:
-    kwargs = actor_kwargs(args.num_drones, action_space)
+    kwargs = actor_kwargs(args.num_drones, action_space, getattr(args, "cmd_history_len", 0))
     kwargs.update(
         {
             "rollout_len": args.rollout_len,

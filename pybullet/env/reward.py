@@ -230,7 +230,7 @@ class RewardCalculator:
         c_t = len(visible_union)
         if num_people <= 0:
             return 0.0, c_t, visible_union
-        r_cov = c_t / (num_people + eps)
+        r_cov = (c_t / (num_people + eps))**2
         return r_cov, c_t, visible_union
 
     def compute_fov_quality_reward(
@@ -259,7 +259,7 @@ class RewardCalculator:
                 )
                 if quality > per_person_quality.get(person_id, 0.0):
                     per_person_quality[person_id] = quality
-        return sum(per_person_quality.values()) / (num_people + eps)
+        return (sum(per_person_quality.values())/ (num_people + eps))**2
 
     # ------------------------------------------------------------------ #
     #  Discovery — reward finding NEW people

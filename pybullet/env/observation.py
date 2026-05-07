@@ -1,5 +1,6 @@
 import math
 import random
+from collections import deque
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
@@ -122,6 +123,9 @@ class ObservationBuilder:
         coverage_half_life_seconds: float = 5.0,  # Ch4: FOV visited-recently window
         recent_hit_gain: float = 0.6,
         recent_miss_penalty: float = 0.25,
+        cmd_history_len: int = 0,
+        max_horizontal_velocity: float = 1.0,
+        max_yaw_rate: float = 0.5,
     ):
         self.x_min = x_min
         self.x_max = x_max
@@ -146,6 +150,13 @@ class ObservationBuilder:
         self.recent_hit_gain = float(recent_hit_gain)
         self.recent_miss_penalty = float(recent_miss_penalty)
         self.recent_detection_support_threshold = 0.1
+        self.cmd_history_len = int(cmd_history_len)
+        self._max_hvel = float(max_horizontal_velocity)
+        self._max_yaw_rate = float(max_yaw_rate)
+        self._cmd_histories: List[deque] = [
+            deque([(0.0, 0.0, 0.0)] * self.cmd_history_len, maxlen=self.cmd_history_len)
+            for _ in range(self.num_drones)
+        ]
         if self.recent_hit_gain < 0.0:
             raise ValueError(
                 f"recent_hit_gain must be >= 0, got {self.recent_hit_gain}"
@@ -217,6 +228,14 @@ class ObservationBuilder:
         self.footprint_maps_snapshot.fill(0.0)
         self.instant_maps_snapshot = self.people_detect_instant.copy()
         self.prev_drone_positions = {}
+        for h in self._cmd_histories:
+            h.clear()
+            h.extend([(0.0, 0.0, 0.0)] * self.cmd_history_len)
+
+    def update_cmd_history(self, drone_idx: int, vx: float, vy: float, yaw_rate: float) -> None:
+        if self.cmd_history_len == 0:
+            return
+        self._cmd_histories[drone_idx].append((vx, vy, yaw_rate))
 
     def world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
         x_clamped = min(max(x, self.x_min), self.x_max)
@@ -471,6 +490,7 @@ class ObservationBuilder:
         num_visible: int = 0,
         detections: Optional[List[Tuple[float, float, float]]] = None,
         other_drone_states: Optional[List[Dict]] = None,
+        cmd_history: Optional[deque] = None,
     ) -> np.ndarray:
         """
         Local feature vector for one drone.
@@ -485,8 +505,9 @@ class ObservationBuilder:
           [6] centroid_forward_offset_from_principal — normalised to [-1, 1]
           [7] centroid_lateral_offset_from_principal — normalised to [-1, 1]
           [8+] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
+          [...] command history (oldest→newest): [vx, vy, yaw_rate] * cmd_history_len
 
-        Total: 8 + 6*(num_drones-1) values.
+        Total: 8 + 6*(num_drones-1) + 3*cmd_history_len values.
         """
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
@@ -588,6 +609,14 @@ class ObservationBuilder:
         for _ in range(missing_teammates):
             vec += [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
+        if cmd_history is not None and self.cmd_history_len > 0:
+            for vx_c, vy_c, yr_c in cmd_history:
+                vec += [
+                    vx_c / self._max_hvel if self._max_hvel > 0 else 0.0,
+                    vy_c / self._max_hvel if self._max_hvel > 0 else 0.0,
+                    yr_c / self._max_yaw_rate if self._max_yaw_rate > 0 else 0.0,
+                ]
+
         return np.array(vec, dtype=np.float32)
 
     def build_observations(self, drone_states, people_positions):
@@ -619,6 +648,7 @@ class ObservationBuilder:
                 num_visible=len(visible_ids_per_drone[i]),
                 detections=detections_per_drone[i],
                 other_drone_states=other_states,
+                cmd_history=self._cmd_histories[i] if self.cmd_history_len > 0 else None,
             )
 
             # Critic keeps one ego map per drone, but the actor sees a shared

@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -58,6 +59,7 @@ private:
     int grid_h{80};
     int grid_w{80};
     int max_agents{2};
+    int cmd_history_len{4};
   };
 
   struct ObservationState
@@ -115,6 +117,7 @@ private:
 
   Config config_;
   ObservationState obs_state_;
+  std::deque<std::array<float, 3>> cmd_history_;
   std::uint64_t controller_step_{0};
 
   rclcpp::CallbackGroup::SharedPtr scene_cb_group_;

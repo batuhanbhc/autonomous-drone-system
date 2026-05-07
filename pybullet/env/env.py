@@ -72,12 +72,22 @@ class MultiUAVEnv:
         reward_boundary_margin: float = 0.2,
         reward_drone_closeness_margin: float = 1.0,
         reward_fov_margin: float = 1.0,
+        vel_tau_s: float = 0.0,
+        yaw_rate_tau_s: float = 0.0,
+        cmd_history_len: int = 0,
+        max_horizontal_velocity: float = 1.0,
+        max_yaw_rate: float = 0.5,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
         debug_reward_contours: bool = False,
     ):
         self.gui        = gui
         self.sim_hz     = sim_hz
+        self.vel_tau_s         = float(vel_tau_s)
+        self.yaw_rate_tau_s    = float(yaw_rate_tau_s)
+        self.cmd_history_len   = int(cmd_history_len)
+        self.max_horizontal_velocity = float(max_horizontal_velocity)
+        self.max_yaw_rate      = float(max_yaw_rate)
 
         # dt is the simulated time between two consecutive control decisions.
         # Example: sim_hz=10 → dt=0.1 s, so a 1.0 m/s velocity command moves
@@ -173,6 +183,9 @@ class MultiUAVEnv:
             coverage_half_life_seconds=coverage_half_life_seconds,
             recent_hit_gain=recent_hit_gain,
             recent_miss_penalty=recent_miss_penalty,
+            cmd_history_len=self.cmd_history_len,
+            max_horizontal_velocity=self.max_horizontal_velocity,
+            max_yaw_rate=self.max_yaw_rate,
         )
 
         self.reward_calc = RewardCalculator(
@@ -405,7 +418,12 @@ class MultiUAVEnv:
                 pos = self._random_drone_pos()
             else:
                 pos = self._center_circle_drone_pos()
-            drone = Drone(start_pos=pos, size=(0.08, 0.08, 0.03))
+            drone = Drone(
+                start_pos=pos,
+                size=(0.08, 0.08, 0.03),
+                vel_tau_s=self.vel_tau_s,
+                yaw_rate_tau_s=self.yaw_rate_tau_s,
+            )
             drone.spawn()
             yaw = random.uniform(-math.pi, math.pi)
             drone.reset(pos=pos, yaw=yaw)
@@ -733,7 +751,7 @@ class MultiUAVEnv:
 
         try:
             # Apply velocity commands
-            for drone, action in zip(self.drones, actions):
+            for drone_idx, (drone, action) in enumerate(zip(self.drones, actions)):
                 vx, vy, vz, yaw_rate = action
                 drone.apply_velocity(
                     vx=vx, vy=vy, vz=vz, yaw_rate=yaw_rate,
@@ -742,6 +760,8 @@ class MultiUAVEnv:
                     y_min=self.move_y_min, y_max=self.move_y_max,
                     z_min=self.z_min, z_max=self.z_max,
                 )
+                if self.cmd_history_len > 0:
+                    self.obs_builder.update_cmd_history(drone_idx, vx, vy, yaw_rate)
 
             # Step people and physics
             self._step_group_centers()

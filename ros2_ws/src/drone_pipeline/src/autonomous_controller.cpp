@@ -311,6 +311,7 @@ AutonomousController::Config AutonomousController::loadConfig()
   cfg.yaw_bin_interval =
     yamlOr<double>(controller, "yaw_bin_interval", cfg.yaw_bin_interval);
   cfg.max_agents = yamlOr<int>(controller, "max_agents", cfg.max_agents);
+  cfg.cmd_history_len = yamlOr<int>(controller, "cmd_history_len", cfg.cmd_history_len);
 
   return cfg;
 }
@@ -404,10 +405,14 @@ void AutonomousController::initOnnx()
   vy_bins_ = vx_bins_;
   yaw_rate_bins_ = buildSymmetricBins(config_.max_yaw_rate, config_.yaw_bin_interval);
 
-  const std::size_t expected_local_dim = static_cast<std::size_t>(8 + 6 * (config_.max_agents - 1));
+  const std::size_t expected_local_dim = static_cast<std::size_t>(
+    8 + 6 * (config_.max_agents - 1) + 3 * config_.cmd_history_len);
   const std::size_t expected_move_mask_dim = vx_bins_.size() * vy_bins_.size();
   if (static_cast<std::size_t>(local_shape_[1]) != expected_local_dim) {
-    throw std::runtime_error("ONNX local_base dimension does not match max_agents=2 controller");
+    throw std::runtime_error(
+      "ONNX local_base dimension (" + std::to_string(local_shape_[1]) +
+      ") does not match expected " + std::to_string(expected_local_dim) +
+      " = 8 + 6*(max_agents-1) + 3*cmd_history_len");
   }
   if (static_cast<std::size_t>(move_mask_shape_[1]) != expected_move_mask_dim) {
     throw std::runtime_error("ONNX move_mask dimension does not match configured action bins");
@@ -447,6 +452,11 @@ void AutonomousController::resetObservationState()
   obs_state_.own_ego_map.assign(cell_count, 0.0f);
   obs_state_.footprint_map.assign(cell_count, 0.0f);
   controller_step_ = 0;
+
+  cmd_history_.clear();
+  for (int i = 0; i < config_.cmd_history_len; ++i) {
+    cmd_history_.push_back({0.0f, 0.0f, 0.0f});
+  }
 }
 
 void AutonomousController::flushLogBuffer()
@@ -776,6 +786,19 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   inputs.local_base[6] = inputs.centroid_forward_offset;
   inputs.local_base[7] = inputs.centroid_lateral_offset;
 
+  // Append command history (oldest → newest), normalized to [-1, 1]
+  if (config_.cmd_history_len > 0) {
+    std::size_t hist_idx = static_cast<std::size_t>(8 + 6 * (config_.max_agents - 1));
+    for (const auto & cmd : cmd_history_) {
+      inputs.local_base[hist_idx++] = config_.max_horizontal_velocity > 0.0
+        ? cmd[0] / static_cast<float>(config_.max_horizontal_velocity) : 0.0f;
+      inputs.local_base[hist_idx++] = config_.max_horizontal_velocity > 0.0
+        ? cmd[1] / static_cast<float>(config_.max_horizontal_velocity) : 0.0f;
+      inputs.local_base[hist_idx++] = config_.max_yaw_rate > 0.0
+        ? cmd[2] / static_cast<float>(config_.max_yaw_rate) : 0.0f;
+    }
+  }
+
   std::size_t mask_idx = 0;
   for (float vx : vx_bins_) {
     for (float vy : vy_bins_) {
@@ -942,6 +965,10 @@ void AutonomousController::onControlTimer()
     const auto action = runInference(inputs, inference_ms);
     publishCommand(scene.stamp, action[0], action[1], action[2]);
     logEvent(scene.stamp, "inference", &scene, &inputs, &action, inference_ms);
+    if (config_.cmd_history_len > 0) {
+      cmd_history_.push_back({action[0], action[1], action[2]});
+      cmd_history_.pop_front();
+    }
   } catch (const std::exception & e) {
     RCLCPP_ERROR_THROTTLE(
       get_logger(),

@@ -9,11 +9,18 @@ class Drone:
         start_pos=(0.0, 0.0, 1.0),
         size=(0.08, 0.08, 0.03),
         color=(0.2, 0.2, 1.0, 1.0),
+        vel_tau_s: float = 0.0,
+        yaw_rate_tau_s: float = 0.0,
     ):
-        self.start_pos = start_pos
-        self.size      = size
-        self.color     = color
-        self.body_id   = None
+        self.start_pos     = start_pos
+        self.size          = size
+        self.color         = color
+        self.body_id       = None
+        self.vel_tau_s     = float(vel_tau_s)
+        self.yaw_rate_tau_s = float(yaw_rate_tau_s)
+        self._actual_vx       = 0.0
+        self._actual_vy       = 0.0
+        self._actual_yaw_rate = 0.0
 
     def spawn(self):
         collision_shape = p.createCollisionShape(
@@ -32,6 +39,9 @@ class Drone:
     def reset(self, pos=(0.0, 0.0, 1.0), yaw=0.0):
         quat = p.getQuaternionFromEuler((0.0, 0.0, yaw))
         p.resetBasePositionAndOrientation(self.body_id, pos, quat)
+        self._actual_vx       = 0.0
+        self._actual_vy       = 0.0
+        self._actual_yaw_rate = 0.0
 
     def apply_velocity(
         self,
@@ -67,10 +77,24 @@ class Drone:
         x, y, z   = pos
         _, _, yaw = p.getEulerFromQuaternion(quat)
 
-        new_x = x + vx * dt
-        new_y = y + vy * dt
+        if self.vel_tau_s > 0.0:
+            alpha = min(1.0, dt / self.vel_tau_s)
+            self._actual_vx += (vx - self._actual_vx) * alpha
+            self._actual_vy += (vy - self._actual_vy) * alpha
+        else:
+            self._actual_vx = vx
+            self._actual_vy = vy
+
+        if self.yaw_rate_tau_s > 0.0:
+            alpha = min(1.0, dt / self.yaw_rate_tau_s)
+            self._actual_yaw_rate += (yaw_rate - self._actual_yaw_rate) * alpha
+        else:
+            self._actual_yaw_rate = yaw_rate
+
+        new_x = x + self._actual_vx * dt
+        new_y = y + self._actual_vy * dt
         new_z = z + vz * dt
-        new_yaw = yaw + yaw_rate * dt
+        new_yaw = yaw + self._actual_yaw_rate * dt
         new_yaw = (new_yaw + math.pi) % (2.0 * math.pi) - math.pi
 
         new_x = max(x_min, min(x_max, new_x))
