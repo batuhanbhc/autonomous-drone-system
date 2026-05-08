@@ -1,8 +1,9 @@
 """
 MAPPO Trainer for a masked joint-move actor over ((vx, vy), yaw_rate).
 
-Actor grid: (grid_channels, H, W)               — 8 channels
-Critic grid: (6 + 3 * num_agents, H, W)         — shared + per-drone instant/coverage/ego maps
+Actor grid: (grid_channels, H, W)               — 8 or 10 channels
+Critic grid: (grid_channels - 2 + 3 * num_agents, H, W)
+            — shared + per-drone instant/coverage/ego maps
 """
 
 import csv
@@ -84,7 +85,7 @@ class MAPPOTrainer:
         self,
         env,
         local_dim: int = 11,
-        grid_channels: int = 8,      # actor: local instant + shared maps + own/teammate coverage + own ego
+        grid_channels: int = 10,      # actor: local instant + shared maps + own/teammate coverage + own ego
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
@@ -145,15 +146,18 @@ class MAPPOTrainer:
         self.yaw_rate_bins = np.asarray(yaw_rate_bins, dtype=np.float32)
         self.move_mask_dim = int(self.vx_bins.shape[0] * self.vy_bins.shape[0])
 
-        self.grid_channels        = grid_channels
-        self.critic_grid_channels = 6 + (3 * self.num_agents)
+        self.grid_channels = int(grid_channels)
+        if self.grid_channels < 8:
+            raise ValueError(f"grid_channels must be >= 8, got {self.grid_channels}")
+        self.critic_grid_channels = self.grid_channels - 2 + (3 * self.num_agents)
         self.grid_h               = grid_h
         self.grid_w               = grid_w
 
         # poses: [mask + full_local_vector] per agent
-        #      + [num_people/30, ever_seen_ratio, active_agent_ratio,
-        #         step_progress, remaining_progress]
-        self.poses_dim = self.num_agents * (1 + local_dim) + 6
+        #      + [num_people/30, ever_seen_ratio, visible_ratio, active_agent_ratio,
+        #         step_progress, remaining_progress, search_phase_progress,
+        #         is_search_phase, is_coverage_phase]
+        self.poses_dim = self.num_agents * (1 + local_dim) + 9
 
         self.actor = ActorNetwork(
             local_dim=local_dim,
@@ -481,6 +485,7 @@ class MAPPOTrainer:
 
     def _build_global_state(self, obs: List[Dict]) -> Dict:
         """Build critic global state using current env context."""
+        phase_context = self.env.get_observation_phase_context()
         return build_global_state(
             obs,
             self.num_agents,
@@ -490,6 +495,9 @@ class MAPPOTrainer:
             visible_count=self.env.last_visible_count,
             current_step=self.env.current_step,
             episode_steps=self.env.episode_steps,
+            search_phase_progress=phase_context["search_phase_progress"],
+            is_search_phase=phase_context["is_search_phase"],
+            is_coverage_phase=phase_context["is_coverage_phase"],
         )
 
     def _maybe_update_live_debug(self, obs: List[Dict], update: int):
@@ -780,6 +788,8 @@ class MAPPOTrainer:
                 "actor_opt":   self.actor_opt.state_dict(),
                 "critic_opt":  self.critic_opt.state_dict(),
                 "num_agents":  self.num_agents,
+                "grid_channels": self.grid_channels,
+                "critic_grid_channels": self.critic_grid_channels,
                 "local_dim": self.buffer.local_dim,
                 "move_mask_dim": self.move_mask_dim,
                 "total_steps": self.total_steps,
@@ -799,12 +809,25 @@ class MAPPOTrainer:
                 ckpt["actor"]["local_mlp.0.weight"].shape[1],
             )
         )
+        ckpt_grid_channels = int(
+            ckpt.get(
+                "grid_channels",
+                ckpt["actor"]["cnn.net.0.weight"].shape[1],
+            )
+        )
         current_local_dim = int(self.actor.local_mlp[0].in_features)
+        current_grid_channels = int(self.actor.cnn.net[0].in_channels)
         if ckpt_local_dim != current_local_dim:
             raise ValueError(
                 "Checkpoint local_dim does not match the current observation layout: "
                 f"checkpoint={ckpt_local_dim}, current={current_local_dim}. "
                 "This checkpoint was trained with a different local feature vector."
+            )
+        if ckpt_grid_channels != current_grid_channels:
+            raise ValueError(
+                "Checkpoint actor grid channel count does not match the current "
+                f"observation layout: checkpoint={ckpt_grid_channels}, "
+                f"current={current_grid_channels}."
             )
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])

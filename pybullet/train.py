@@ -9,8 +9,16 @@ Usage:
 import argparse
 import os
 from datetime import datetime
+import torch
 
-from config import add_shared_args, add_train_args, build_action_space, build_env, trainer_kwargs
+from config import (
+    add_shared_args,
+    add_train_args,
+    build_action_space,
+    build_env,
+    infer_checkpoint_actor_grid_channels,
+    trainer_kwargs,
+)
 from rl.trainer import MAPPOTrainer
 
 
@@ -36,6 +44,9 @@ def build_run_save_dir(base_save_dir: str, load_path: str | None) -> str:
     return candidate
 def main():
     args = parse_args()
+    if args.load:
+        ckpt = torch.load(args.load, map_location="cpu")
+        args.actor_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
     args.save_dir = build_run_save_dir(args.save_dir, args.load)
     env = build_env(args)
     action_space = build_action_space(args)

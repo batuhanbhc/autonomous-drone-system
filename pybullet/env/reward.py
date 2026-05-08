@@ -41,6 +41,7 @@ class RewardCalculator:
         horizontal_fov_deg: float = 60.0,
         vertical_fov_deg: float = 45.0,
         fov_margin: float = 1.0,  # soft margin for FOV boundary penalty
+        search_phase_steps: int = 0,
     ):
         self.x_min = x_min
         self.x_max = x_max
@@ -69,10 +70,15 @@ class RewardCalculator:
         self.horizontal_fov_deg = horizontal_fov_deg
         self.vertical_fov_deg = vertical_fov_deg
         self.fov_margin      = fov_margin
+        self.search_phase_steps = int(search_phase_steps)
         if self.drone_closeness_margin < 0.0:
             raise ValueError(
                 "drone_closeness_margin must be >= 0, got "
                 f"{self.drone_closeness_margin}"
+            )
+        if self.search_phase_steps < 0:
+            raise ValueError(
+                f"search_phase_steps must be >= 0, got {self.search_phase_steps}"
             )
         if not (0.0 <= self.coverage_edge_quality <= 1.0):
             raise ValueError(
@@ -213,6 +219,14 @@ class RewardCalculator:
         progress = min(max(current_step - 1, 0), episode_steps - 1) / (episode_steps - 1)
         return 1.0 - progress
 
+    def is_search_phase(self, current_step: int) -> bool:
+        return self.search_phase_steps > 0 and current_step <= self.search_phase_steps
+
+    def coverage_reward_scales(self, current_step: int) -> Tuple[float, float]:
+        if self.is_search_phase(current_step):
+            return 0.0, 0.0
+        return 1.0, 1.0
+
     # ------------------------------------------------------------------ #
     #  Coverage — quality-weighted unique coverage using camera-local
     #  near/far and lateral framing quality
@@ -230,7 +244,7 @@ class RewardCalculator:
         c_t = len(visible_union)
         if num_people <= 0:
             return 0.0, c_t, visible_union
-        r_cov = (c_t / (num_people + eps))**2
+        r_cov = (c_t / (num_people + eps))
         return r_cov, c_t, visible_union
 
     def compute_fov_quality_reward(
@@ -259,7 +273,7 @@ class RewardCalculator:
                 )
                 if quality > per_person_quality.get(person_id, 0.0):
                     per_person_quality[person_id] = quality
-        return (sum(per_person_quality.values())/ (num_people + eps))**2
+        return (sum(per_person_quality.values())/ (num_people + eps))
 
     # ------------------------------------------------------------------ #
     #  Discovery — reward finding NEW people
@@ -442,37 +456,26 @@ class RewardCalculator:
 
     def compute_exploration_reward(
         self,
-        drone_states: List[Dict],
         coverage_map: np.ndarray,
+        footprint_maps: Optional[np.ndarray],
     ) -> float:
-        if coverage_map is None or coverage_map.size == 0 or self.wx == 0.0:
+        if (
+            coverage_map is None
+            or coverage_map.size == 0
+            or footprint_maps is None
+            or footprint_maps.size == 0
+            or self.wx == 0.0
+        ):
             return 0.0
-        h, w = coverage_map.shape
-        total_score = 0.0
-        num_cells   = 0
-        xs = np.linspace(self.x_min, self.x_max, w)
-        ys = np.linspace(self.y_min, self.y_max, h)
-        for drone_state in drone_states:
-            x, y, z = drone_state["position"]
-            yaw = drone_state["yaw"]
-            for row in range(h):
-                py = ys[row]
-                for col in range(w):
-                    px = xs[col]
-                    if point_in_footprint_world(
-                        px=px,
-                        py=py,
-                        drone_x=x,
-                        drone_y=y,
-                        z=z,
-                        yaw=yaw,
-                        camera_tilt_deg=self.tilt_deg,
-                        horizontal_fov_deg=self.horizontal_fov_deg,
-                        vertical_fov_deg=self.vertical_fov_deg,
-                    ):
-                        total_score += (1.0 - float(coverage_map[row, col]))
-                        num_cells   += 1
-        return total_score / num_cells if num_cells > 0 else 0.0
+        active_maps = np.asarray(footprint_maps, dtype=np.float32)
+        if active_maps.ndim != 3:
+            return 0.0
+        weights = active_maps.sum(axis=0)
+        total_weight = float(weights.sum())
+        if total_weight <= 0.0:
+            return 0.0
+        novelty = 1.0 - np.asarray(coverage_map, dtype=np.float32)
+        return float((novelty * weights).sum() / total_weight)
 
     def compute_fov_overlap_penalty(
         self,
@@ -549,7 +552,7 @@ class RewardCalculator:
         r_ov     = self.compute_overlap_penalty(visible_ids_per_drone, num_people)
         r_idle   = self.compute_idle_penalty(visible_ids_per_drone)
         r_fov    = self.compute_fov_boundary_penalty(drone_states)
-        r_exp    = self.compute_exploration_reward(drone_states, coverage_map)
+        r_exp    = self.compute_exploration_reward(coverage_map, footprint_maps)
         r_fov_overlap = self.compute_fov_overlap_penalty(footprint_maps)
         r_bound  = self.compute_boundary_penalty(drone_states)
         r_close  = self.compute_drone_closeness_penalty(drone_states)
@@ -557,9 +560,13 @@ class RewardCalculator:
         r_safe   = r_bound + r_close + r_coll
         r_energy = self.compute_energy_penalty(actions)
 
+        cov_scale, fovq_scale = self.coverage_reward_scales(current_step)
+        is_search_phase = float(self.is_search_phase(current_step))
+        is_coverage_phase = 1.0 - is_search_phase
+
         total_reward = (
-            self.wc    * r_cov
-            + self.wqual * r_fovq
+            (self.wc * cov_scale) * r_cov
+            + (self.wqual * fovq_scale) * r_fovq
             + self.wd  * r_disc
             + self.wx  * r_exp
             - self.wo  * r_ov
@@ -589,6 +596,10 @@ class RewardCalculator:
             "r_coll":         r_coll,
             "r_safe":         r_safe,
             "r_energy":       r_energy,
+            "coverage_reward_scale": cov_scale,
+            "fov_quality_reward_scale": fovq_scale,
+            "is_search_phase": is_search_phase,
+            "is_coverage_phase": is_coverage_phase,
             "total_reward":   total_reward,
         }
 

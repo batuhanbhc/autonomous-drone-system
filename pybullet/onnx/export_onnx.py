@@ -27,7 +27,12 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 import torch.nn as nn
 
-from config import SHARED_DEFAULTS, actor_kwargs, build_action_space
+from config import (
+    SHARED_DEFAULTS,
+    actor_kwargs,
+    build_action_space,
+    infer_checkpoint_actor_grid_channels,
+)
 from rl.networks import ActorNetwork
 
 
@@ -146,9 +151,14 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
     device = torch.device(args.device)
     ckpt = torch.load(args.checkpoint, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
+    trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
 
     action_space = build_action_space(args)
-    actor_config = actor_kwargs(trained_num_drones, action_space)
+    actor_config = actor_kwargs(
+        trained_num_drones,
+        action_space,
+        grid_channels=trained_grid_channels,
+    )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)
 

@@ -1,20 +1,20 @@
 """
 Utilities for building the centralised global state used by the critic.
 
-The critic grid has shape (6 + 3 * max_agents, H, W):
-  channel  0              — shared instantaneous detections union
-  channel  1              — shared recent presence
-  channel  2              — shared historic presence
+The critic grid has shape ((shared_people_channels + 3) + 3 * max_agents, H, W):
+  channel  0              — shared instantaneous spatial support union
+  channel  1              — shared recent spatial support
+  channel  2              — shared historic spatial support
   channel  3              — shared current-step count density
-  channel  4              — shared FOV coverage union
-  channel  5              — shared drone map
-  channels 6..6+N-1       — per-drone instantaneous maps, padded to max_agents
-  channels 6+N..6+2N-1    — per-drone own coverage maps, padded to max_agents
-  channels 6+2N..6+3N-1   — per-drone ego maps, padded to max_agents
+  channel  4              — shared recent count memory (optional)
+  channel  5              — shared historic count memory (optional)
+  channel ...             — shared FOV coverage union
+  channel ...             — shared drone map
+  channels ...            — per-drone instantaneous maps, padded to max_agents
+  channels ...            — per-drone own coverage maps, padded to max_agents
+  channels ...            — per-drone ego maps, padded to max_agents
 
-With 2 drones the critic grid is (12, H, W).
-
-The poses vector is (max_agents * (1 + local_dim) + 6,):
+The poses vector is (max_agents * (1 + local_dim) + 9,):
   per-agent slice: [mask, *full_local_vector]
   context:         [
                       num_people / 30.0,
@@ -23,6 +23,9 @@ The poses vector is (max_agents * (1 + local_dim) + 6,):
                       active_agents / max_agents,
                       current_step / episode_steps,
                       remaining_steps / episode_steps,
+                      search_phase_progress,
+                      is_search_phase,
+                      is_coverage_phase,
                    ]
 """
 
@@ -38,6 +41,9 @@ def build_global_state(
     visible_count: int = 0,
     current_step: int = 0,
     episode_steps: int = 1,
+    search_phase_progress: float = 1.0,
+    is_search_phase: float = 0.0,
+    is_coverage_phase: float = 1.0,
 ):
     """
     Parameters
@@ -73,29 +79,32 @@ def build_global_state(
             active_agents / max(max_agents, 1),
             step_progress,
             remaining_progress,
+            min(max(float(search_phase_progress), 0.0), 1.0),
+            float(is_search_phase),
+            float(is_coverage_phase),
         ],
         dtype=np.float32,
     )
 
-    # Ch0 for critic: union (max) of all per-drone instantaneous detections.
+    # Ch0 for critic: union (max) of all per-drone instantaneous spatial-support maps.
     # instant_maps_snapshot is padded to max_agents slots by ObservationBuilder.
     shared_instant = obs_builder.instant_maps_snapshot.max(axis=0)
 
-    # Shared actor channels 1-3 are identical across all active drones.
-    shared_recent = obs[0]["grid"][1]     # (H, W)
-    shared_historic = obs[0]["grid"][2]   # (H, W)
-    shared_count_density = obs[0]["grid"][3]   # (H, W)
-    shared_coverage = obs_builder.coverage_map.astype(np.float32)
-    shared_drone_map = obs[0]["grid"][6]  # (H, W)
+    shared_people_end = 1 + obs_builder.shared_people_channels
+    own_coverage_channel = obs_builder.actor_own_coverage_channel
+    shared_drone_channel = obs_builder.actor_shared_drone_channel
 
-    shared = np.stack(
+    # Shared actor channels 1..shared_people_end-1 are identical across drones.
+    shared_people = obs[0]["grid"][1:shared_people_end]
+    shared_coverage = obs_builder.coverage_map.astype(np.float32)
+    shared_drone_map = obs[0]["grid"][shared_drone_channel]
+
+    shared = np.concatenate(
         [
-            shared_instant,
-            shared_recent,
-            shared_historic,
-            shared_count_density,
-            shared_coverage,
-            shared_drone_map,
+            shared_instant[np.newaxis, :, :],
+            shared_people,
+            shared_coverage[np.newaxis, :, :],
+            shared_drone_map[np.newaxis, :, :],
         ],
         axis=0,
     )
@@ -104,9 +113,9 @@ def build_global_state(
     # ObservationBuilder stores one slot per max agent, so inactive slots stay zero.
     instant_maps = obs_builder.instant_maps_snapshot[:max_agents].astype(np.float32)
 
-    own_coverage_maps = [o["grid"][4] for o in obs]
+    own_coverage_maps = [o["grid"][own_coverage_channel] for o in obs]
     while len(own_coverage_maps) < max_agents:
-        own_coverage_maps.append(np.zeros_like(obs[0]["grid"][4]))
+        own_coverage_maps.append(np.zeros_like(obs[0]["grid"][own_coverage_channel]))
     own_coverage_maps = np.stack(own_coverage_maps[:max_agents], axis=0)
 
     # Critic keeps one ego map per active drone, separate from the actor's shared

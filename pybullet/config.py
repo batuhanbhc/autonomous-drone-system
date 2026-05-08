@@ -30,6 +30,7 @@ class SharedConfig:
     min_people: int = 10
     max_people: int = 25
     episode_steps: int = 480
+    search_phase_seconds: float = 20.0
     max_groups: int = 3
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
@@ -47,28 +48,28 @@ class SharedConfig:
     detection_prob: float = 1.0
     position_noise_std: float = 0.1
     camera_tilt_deg: float = 45.0
-    recent_half_life_seconds: float = 10.0
+    recent_half_life_seconds: float = 15.0
     historic_half_life_seconds: float = 60.0
     coverage_half_life_seconds: float = 60.0
     recent_hit_gain: float = 0.6
     recent_miss_penalty: float = 0.25
-    blob_sigma: float = 1.0
+    blob_sigma: float = 1.5
     ego_sigma: float = 2.5
-    max_horizontal_velocity: float = 1.0
-    horizontal_bin_interval: float = 1.0
-    max_yaw_rate: float = 0.5
-    yaw_bin_interval: float = 0.5
+    max_horizontal_velocity: float = 1.5
+    horizontal_bin_interval: float = 1.5
+    max_yaw_rate: float = 1.0
+    yaw_bin_interval: float = 1.0
     vel_tau_s: float = 0.4
     yaw_rate_tau_s: float = 0.4
     cmd_history_len: int = 4
-    reward_wc: float = 1.0
-    reward_wqual: float = 1.5
+    reward_wc: float = 3.0
+    reward_wqual: float = 3.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
-    reward_wx: float = 0.0
+    reward_wx: float = 1.0
     reward_ws: float = 1.0
     reward_wclose: float = 1.0
-    reward_wfov_overlap: float = 2.0
+    reward_wfov_overlap: float = 1.0
     reward_wcoll: float = 0.0
     reward_we: float = 0.0
     reward_wi: float = 0.0
@@ -91,7 +92,7 @@ class TrainConfig:
     num_epochs: int = 2
     batch_size: int = 128
     clip_eps: float = 0.1
-    gamma: float = 0.99
+    gamma: float = 0.995
     gae_lambda: float = 0.95
     lr_actor: float = 3e-4
     lr_critic: float = 3e-4
@@ -118,11 +119,11 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    grid_channels: int = 8
-    grid_h: int = 80
-    grid_w: int = 80
-    cnn_out_dim: int = 64
-    hidden_dim: int = 128
+    grid_channels: int = 10
+    grid_h: int = 60
+    grid_w: int = 60
+    cnn_out_dim: int = 128
+    hidden_dim: int = 256
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,31 @@ EVAL_DEFAULTS = EvalConfig()
 MODEL_DEFAULTS = ModelConfig()
 
 
+def infer_checkpoint_actor_grid_channels(ckpt: dict) -> int:
+    if "grid_channels" in ckpt:
+        return int(ckpt["grid_channels"])
+    actor_state = ckpt["actor"]
+    return int(actor_state["cnn.net.0.weight"].shape[1])
+
+
+def infer_shared_people_channels(actor_grid_channels: int) -> int:
+    shared_people_channels = int(actor_grid_channels) - 5
+    if shared_people_channels not in {3, 5}:
+        raise ValueError(
+            "Unsupported actor grid layout: expected 8 or 10 actor channels, "
+            f"got {actor_grid_channels}"
+        )
+    return shared_people_channels
+
+
+def infer_critic_grid_channels(
+    num_drones: int,
+    actor_grid_channels: int,
+) -> int:
+    shared_people_channels = infer_shared_people_channels(actor_grid_channels)
+    return shared_people_channels + 3 + (3 * int(num_drones))
+
+
 def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--gui", action="store_true", default=SHARED_DEFAULTS.gui)
     parser.add_argument("--x_min", type=float, default=SHARED_DEFAULTS.x_min)
@@ -187,6 +213,12 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min_people", type=int, default=SHARED_DEFAULTS.min_people)
     parser.add_argument("--max_people", type=int, default=SHARED_DEFAULTS.max_people)
     parser.add_argument("--episode_steps", type=int, default=SHARED_DEFAULTS.episode_steps)
+    parser.add_argument(
+        "--search_phase_seconds",
+        type=float,
+        default=SHARED_DEFAULTS.search_phase_seconds,
+        help="Initial search-only phase duration in seconds. Coverage and FOV-quality rewards are disabled during this phase.",
+    )
     parser.add_argument("--max_groups", type=int, default=SHARED_DEFAULTS.max_groups)
     parser.add_argument("--num_group_regions", type=int, default=SHARED_DEFAULTS.num_group_regions)
     parser.add_argument(
@@ -269,13 +301,13 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         "--recent_hit_gain",
         type=float,
         default=SHARED_DEFAULTS.recent_hit_gain,
-        help="Additive gain applied to the shared recent-presence map for each detection blob before clipping to [0, 1].",
+        help="Legacy parameter for the old recent-presence map update; currently unused by the spatial-support maps.",
     )
     parser.add_argument(
         "--recent_miss_penalty",
         type=float,
         default=SHARED_DEFAULTS.recent_miss_penalty,
-        help="Multiplicative penalty applied to the shared recent-presence map in currently visible cells with no team detection support.",
+        help="Legacy parameter for the old recent-presence map update; currently unused by the spatial-support maps.",
     )
     parser.add_argument("--blob_sigma", type=float, default=SHARED_DEFAULTS.blob_sigma)
     parser.add_argument("--ego_sigma", type=float, default=SHARED_DEFAULTS.ego_sigma)
@@ -441,6 +473,9 @@ def build_env_kwargs(
     args: argparse.Namespace,
     overrides: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    actor_grid_channels = getattr(args, "actor_grid_channels", None)
+    if actor_grid_channels is None:
+        actor_grid_channels = MODEL_DEFAULTS.grid_channels
     kwargs = {
         "gui": args.gui,
         "x_min": args.x_min,
@@ -456,6 +491,7 @@ def build_env_kwargs(
         "min_people": args.min_people,
         "max_people": args.max_people,
         "episode_steps": args.episode_steps,
+        "search_phase_seconds": args.search_phase_seconds,
         "max_groups": args.max_groups,
         "num_group_regions": args.num_group_regions,
         "drone_wall_margin": args.drone_wall_margin,
@@ -507,6 +543,7 @@ def build_env_kwargs(
         "debug_observation_plots": args.debug_observation_plots,
         "debug_observation_plot_every": args.debug_observation_plot_every,
         "debug_reward_contours": args.debug_reward_contours,
+        "actor_grid_channels": actor_grid_channels,
     }
     if overrides:
         kwargs.update(overrides)
@@ -527,10 +564,11 @@ def local_dim(
 ) -> int:
     # Base local features:
     #   5 ego pose/visibility scalars (x, y, sin_yaw, cos_yaw, num_visible)
+    #   3 phase scalars (search progress, is_search_phase, is_coverage_phase)
     #   3 explicit detection-centroid vs principal-point alignment scalars
     #   6 scalars per teammate slot
     #   3 scalars per command history entry (vx, vy, yaw_rate)
-    base_dim = 8 + 6 * (num_drones - 1) + 3 * cmd_history_len
+    base_dim = 11 + 6 * (num_drones - 1) + 3 * cmd_history_len
     if action_space is None:
         return base_dim
     return base_dim + num_move_actions(action_space.vx_bins, action_space.vy_bins)
@@ -579,10 +617,11 @@ def actor_kwargs(
     num_drones: int,
     action_space: DiscreteActionSpace,
     cmd_history_len: int = 0,
+    grid_channels: int | None = None,
 ) -> Dict[str, Any]:
     return {
         "local_dim": local_dim(num_drones, action_space, cmd_history_len),
-        "grid_channels": MODEL_DEFAULTS.grid_channels,
+        "grid_channels": MODEL_DEFAULTS.grid_channels if grid_channels is None else int(grid_channels),
         "grid_h": MODEL_DEFAULTS.grid_h,
         "grid_w": MODEL_DEFAULTS.grid_w,
         "cnn_out_dim": MODEL_DEFAULTS.cnn_out_dim,
@@ -594,7 +633,15 @@ def actor_kwargs(
 
 
 def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) -> Dict[str, Any]:
-    kwargs = actor_kwargs(args.num_drones, action_space, getattr(args, "cmd_history_len", 0))
+    actor_grid_channels = getattr(args, "actor_grid_channels", None)
+    if actor_grid_channels is None:
+        actor_grid_channels = MODEL_DEFAULTS.grid_channels
+    kwargs = actor_kwargs(
+        args.num_drones,
+        action_space,
+        getattr(args, "cmd_history_len", 0),
+        grid_channels=actor_grid_channels,
+    )
     kwargs.update(
         {
             "rollout_len": args.rollout_len,

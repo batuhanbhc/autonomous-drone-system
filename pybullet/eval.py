@@ -20,6 +20,7 @@ from config import (
     actor_kwargs,
     build_action_space,
     build_env,
+    infer_checkpoint_actor_grid_channels,
 )
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
 from rl.networks import ActorNetwork
@@ -34,7 +35,7 @@ def parse_args():
 
 def infer_trained_num_drones(ckpt: dict) -> int:
     def infer_from_base_dim(total_local_dim: int) -> int | None:
-        for base_dim in (9, 8, 6):
+        for base_dim in (11, 9, 8, 6):
             if total_local_dim >= base_dim and (total_local_dim - base_dim) % 6 == 0:
                 return ((total_local_dim - base_dim) // 6) + 1
         return None
@@ -170,6 +171,7 @@ def main():
     device = torch.device(args.device)
     ckpt = torch.load(args.load, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
+    trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
     active_num_drones = resolve_eval_active_num_drones(
         requested_num_drones=args.num_drones,
         trained_num_drones=trained_num_drones,
@@ -180,10 +182,11 @@ def main():
         overrides={
             "num_drones": trained_num_drones,
             "fixed_active_num_drones": active_num_drones,
+            "actor_grid_channels": trained_grid_channels,
         },
     )
     action_space = build_action_space(args)
-    actor_config = actor_kwargs(trained_num_drones, action_space)
+    actor_config = actor_kwargs(trained_num_drones, action_space, grid_channels=trained_grid_channels)
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)
 

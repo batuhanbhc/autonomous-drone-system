@@ -30,6 +30,7 @@ class MultiUAVEnv:
         min_people: int = 20,
         max_people: int = 20,
         episode_steps: int = 500,
+        search_phase_seconds: float = 0.0,
         max_groups: int = 2,
         num_group_regions: int = 4,
         drone_wall_margin: float = 2.0,
@@ -77,6 +78,7 @@ class MultiUAVEnv:
         cmd_history_len: int = 0,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.5,
+        actor_grid_channels: int = 10,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
         debug_reward_contours: bool = False,
@@ -152,6 +154,15 @@ class MultiUAVEnv:
         self.min_people    = min_people
         self.max_people    = max_people
         self.episode_steps = episode_steps
+        self.search_phase_seconds = float(search_phase_seconds)
+        if self.search_phase_seconds < 0.0:
+            raise ValueError(
+                f"search_phase_seconds must be >= 0, got {self.search_phase_seconds}"
+            )
+        self.search_phase_steps = min(
+            self.episode_steps,
+            int(math.ceil(self.search_phase_seconds * self.sim_hz - 1e-9)),
+        ) if self.search_phase_seconds > 0.0 else 0
 
         self.max_groups        = max_groups
         self.num_group_regions = num_group_regions
@@ -186,6 +197,7 @@ class MultiUAVEnv:
             cmd_history_len=self.cmd_history_len,
             max_horizontal_velocity=self.max_horizontal_velocity,
             max_yaw_rate=self.max_yaw_rate,
+            actor_grid_channels=actor_grid_channels,
         )
 
         self.reward_calc = RewardCalculator(
@@ -213,6 +225,7 @@ class MultiUAVEnv:
             horizontal_fov_deg=horizontal_fov_deg,
             vertical_fov_deg=vertical_fov_deg,
             fov_margin=reward_fov_margin,
+            search_phase_steps=self.search_phase_steps,
         )
 
         self.debug_drawer = DebugDrawer(
@@ -552,6 +565,29 @@ class MultiUAVEnv:
     def _get_people_positions(self):
         return [person.get_position() for person in self.people if person is not None]
 
+    def _phase_context_for_decision_step(self, decision_step: int) -> dict[str, float]:
+        if self.search_phase_steps <= 0:
+            return {
+                "search_phase_progress": 1.0,
+                "is_search_phase": 0.0,
+                "is_coverage_phase": 1.0,
+            }
+
+        clamped_decision_step = max(1, int(decision_step))
+        completed_search_steps = min(
+            max(clamped_decision_step - 1, 0),
+            self.search_phase_steps,
+        )
+        return {
+            "search_phase_progress": completed_search_steps / self.search_phase_steps,
+            "is_search_phase": float(clamped_decision_step <= self.search_phase_steps),
+            "is_coverage_phase": float(clamped_decision_step > self.search_phase_steps),
+        }
+
+    def get_observation_phase_context(self) -> dict[str, float]:
+        next_decision_step = self.current_step + 1
+        return self._phase_context_for_decision_step(next_decision_step)
+
     def _update_debug_draw(self, drone_states, visible_ids_per_drone):
         if not self.gui or not p.isConnected():
             return
@@ -638,6 +674,7 @@ class MultiUAVEnv:
 
         from rl.state_utils import build_global_state
 
+        phase_context = self.get_observation_phase_context()
         global_state = build_global_state(
             observations,
             max_agents=self.max_drones,
@@ -647,6 +684,9 @@ class MultiUAVEnv:
             visible_count=self.last_visible_count,
             current_step=self.current_step,
             episode_steps=self.episode_steps,
+            search_phase_progress=phase_context["search_phase_progress"],
+            is_search_phase=phase_context["is_search_phase"],
+            is_coverage_phase=phase_context["is_coverage_phase"],
         )
         critic_grid = global_state["grid"]
         critic_poses = global_state["poses"]
@@ -657,33 +697,24 @@ class MultiUAVEnv:
         actor_visible = len(visible_ids_per_drone[0]) if visible_ids_per_drone else 0
 
         actor_channel_names = [
-            "Actor Ch 0\nInstant detections",
-            "Actor Ch 1\nShared recent presence",
-            "Actor Ch 2\nShared historic presence",
-            "Actor Ch 3\nShared count density",
-            "Actor Ch 4\nOwn FOV coverage",
-            "Actor Ch 5\nTeammate FOV coverage",
-            "Actor Ch 6\nShared drone map",
-            "Actor Ch 7\nOwn ego map",
+            f"Actor Ch {idx}\n{name}"
+            for idx, name in enumerate(self.obs_builder.actor_channel_names)
         ]
         critic_channel_names = [
-            "Critic Ch 0\nShared instant union",
-            "Critic Ch 1\nShared recent presence",
-            "Critic Ch 2\nShared historic presence",
-            "Critic Ch 3\nShared count density",
-            "Critic Ch 4\nShared FOV coverage",
-            "Critic Ch 5\nShared drone map",
+            f"Critic Ch {idx}\n{name}"
+            for idx, name in enumerate(self.obs_builder.critic_shared_channel_names)
         ]
+        critic_shared_channels = len(self.obs_builder.critic_shared_channel_names)
         critic_channel_names += [
-            f"Critic Ch {6 + i}\nInstant map - Drone {i}"
+            f"Critic Ch {critic_shared_channels + i}\nInstant map - Drone {i}"
             for i in range(self.max_drones)
         ]
         critic_channel_names += [
-            f"Critic Ch {6 + self.max_drones + i}\nOwn coverage - Drone {i}"
+            f"Critic Ch {critic_shared_channels + self.max_drones + i}\nOwn coverage - Drone {i}"
             for i in range(self.max_drones)
         ]
         critic_channel_names += [
-            f"Critic Ch {6 + (2 * self.max_drones) + i}\nEgo map - Drone {i}"
+            f"Critic Ch {critic_shared_channels + (2 * self.max_drones) + i}\nEgo map - Drone {i}"
             for i in range(self.max_drones)
         ]
 
@@ -734,7 +765,9 @@ class MultiUAVEnv:
         people_positions = self._get_people_positions()
 
         observations, visible_ids_per_drone, _ = self.obs_builder.build_observations(
-            drone_states, people_positions,
+            drone_states,
+            people_positions,
+            phase_context=self.get_observation_phase_context(),
         )
         self._update_debug_draw(drone_states=drone_states,
                                 visible_ids_per_drone=visible_ids_per_drone)
@@ -786,9 +819,14 @@ class MultiUAVEnv:
 
             drone_states     = self._get_drone_states()
             people_positions = self._get_people_positions()
+            coverage_map_before_step = self.obs_builder.coverage_map.copy()
 
             observations, visible_ids_per_drone, detections_per_drone = \
-                self.obs_builder.build_observations(drone_states, people_positions)
+                self.obs_builder.build_observations(
+                    drone_states,
+                    people_positions,
+                    phase_context=self.get_observation_phase_context(),
+                )
             self._maybe_plot_observation_debug(
                 observations=observations,
                 visible_ids_per_drone=visible_ids_per_drone,
@@ -806,7 +844,7 @@ class MultiUAVEnv:
                 current_step=self.current_step,
                 episode_steps=self.episode_steps,
                 actions=actions,
-                coverage_map=self.obs_builder.coverage_map,
+                coverage_map=coverage_map_before_step,
                 footprint_maps=self.obs_builder.footprint_maps_snapshot,
             )
             self.ever_seen.update(new_discoveries)
@@ -826,6 +864,7 @@ class MultiUAVEnv:
                 "group_centers":         self.episode_group_info["group_centers"],
                 "group_info":            self.episode_group_info,
                 "ever_seen_count":       len(self.ever_seen),
+                "phase_info":            self.get_observation_phase_context(),
             }
 
 
@@ -835,6 +874,7 @@ class MultiUAVEnv:
             fallback_obs, _, _ = self.obs_builder.build_observations(
                 self._get_drone_states(),
                 self._get_people_positions(),
+                phase_context=self.get_observation_phase_context(),
             )
             info = {
                 "simulation_error": str(e),
@@ -850,6 +890,7 @@ class MultiUAVEnv:
                 "group_centers":   self.episode_group_info.get("group_centers", []),
                 "group_info":      self.episode_group_info,
                 "ever_seen_count": len(self.ever_seen),
+                "phase_info":      self.get_observation_phase_context(),
             }
             return fallback_obs, -1.0, True, info
 
