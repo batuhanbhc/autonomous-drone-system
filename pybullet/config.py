@@ -22,25 +22,27 @@ class SharedConfig:
     x_max: float = 15.0
     y_min: float = -15.0
     y_max: float = 15.0
+    z_min: float = 0.3
+    z_max: float = 8.0
     drone_height: float = 6.0
     num_drones: int = 2
     random_spawn: bool = False
     drone_spawn_radius: float = 3.0
     num_people: int = 20
     min_people: int = 10
-    max_people: int = 25
+    max_people: int = 30
     episode_steps: int = 480
-    search_phase_seconds: float = 20.0
-    max_groups: int = 3
+    search_phase_seconds: float = 15.0
+    max_groups: int = 4
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
     person_spawn_margin: float = 0.5
     group_spawn_margin: float = 0.3
     min_person_spawn_dist: float = 0.35
-    group_center_speed_min: float = 0.04
-    group_center_speed_max: float = 0.12
-    group_center_turn_prob: float = 0.2
-    group_center_turn_std: float = 0.35
+    group_center_speed_min: float = 0.05
+    group_center_speed_max: float = 0.25
+    group_center_turn_prob: float = 0.25
+    group_center_turn_std: float = 0.4
     rl_hz: float = 4.0
     max_range: float = 15.0
     horizontal_fov_deg: float = 55.8
@@ -48,22 +50,30 @@ class SharedConfig:
     detection_prob: float = 1.0
     position_noise_std: float = 0.1
     camera_tilt_deg: float = 45.0
-    recent_half_life_seconds: float = 15.0
+    recent_half_life_seconds: float = 20.0
     historic_half_life_seconds: float = 60.0
-    coverage_half_life_seconds: float = 60.0
+    coverage_half_life_seconds: float = 20.0
     recent_hit_gain: float = 0.6
     recent_miss_penalty: float = 0.25
     blob_sigma: float = 1.5
     ego_sigma: float = 2.5
-    max_horizontal_velocity: float = 1.5
-    horizontal_bin_interval: float = 1.5
-    max_yaw_rate: float = 1.0
-    yaw_bin_interval: float = 1.0
+    people_count_normalizer: float = 30.0
+    count_density_gain: float = 0.35
+    count_memory_recent_alpha: float = 0.7
+    count_memory_historic_miss_penalty: float = 0.2
+    max_horizontal_velocity: float = 1.0
+    horizontal_bin_interval: float = 1.0
+    max_yaw_rate: float = 0.7
+    yaw_bin_interval: float = 0.7
     vel_tau_s: float = 0.4
     yaw_rate_tau_s: float = 0.4
     cmd_history_len: int = 4
-    reward_wc: float = 3.0
-    reward_wqual: float = 3.0
+    hotspot_top_k: int = 3
+    hotspot_min_density: float = 0.3
+    hotspot_suppression_radius_scale: float = 4.0
+    hotspot_suppression_radius_min_cells: int = 2
+    reward_wc: float = 0.5
+    reward_wqual: float = 1.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
     reward_wx: float = 1.0
@@ -76,8 +86,8 @@ class SharedConfig:
     reward_wfov: float = 0.0
     reward_coverage_edge_quality: float = 0.0
     reward_quality_mode: str = "principal_linear"
-    reward_boundary_margin: float = 4.0
-    reward_drone_closeness_margin: float = 4.0
+    reward_boundary_margin: float = 5.0
+    reward_drone_closeness_margin: float = 5.0
     reward_fov_margin: float = 1.0
     debug_observation_plots: bool = False
     debug_observation_plot_every: int = 25
@@ -90,13 +100,13 @@ class TrainConfig:
     total_updates: int = 10000
     rollout_len: int = 480*4
     num_epochs: int = 2
-    batch_size: int = 128
+    batch_size: int = 64
     clip_eps: float = 0.1
     gamma: float = 0.995
     gae_lambda: float = 0.95
     lr_actor: float = 3e-4
     lr_critic: float = 3e-4
-    entropy_coef: float = 0.005
+    entropy_coef: float = 0.003
     value_coef: float = 0.5
     save_dir: str = "checkpoints"
     log_interval: int = 1
@@ -115,11 +125,13 @@ class EvalConfig:
     deterministic: bool = True
     realtime: bool = False
     print_actions: bool = False
+    show_drone0_inputs: bool = False
+    show_drone0_inputs_every: int = 1
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    grid_channels: int = 10
+    grid_channels: int = 7
     grid_h: int = 60
     grid_w: int = 60
     cnn_out_dim: int = 128
@@ -168,9 +180,9 @@ def infer_checkpoint_actor_grid_channels(ckpt: dict) -> int:
 
 def infer_shared_people_channels(actor_grid_channels: int) -> int:
     shared_people_channels = int(actor_grid_channels) - 5
-    if shared_people_channels not in {3, 5}:
+    if shared_people_channels not in {2, 3, 4, 5}:
         raise ValueError(
-            "Unsupported actor grid layout: expected 8 or 10 actor channels, "
+            "Unsupported actor grid layout: expected 7, 8, 9, or 10 actor channels, "
             f"got {actor_grid_channels}"
         )
     return shared_people_channels
@@ -184,12 +196,39 @@ def infer_critic_grid_channels(
     return shared_people_channels + 3 + (3 * int(num_drones))
 
 
+def infer_checkpoint_hotspot_top_k(
+    ckpt: dict,
+    num_drones: int,
+    action_space: DiscreteActionSpace,
+    cmd_history_len: int,
+) -> int:
+    if "hotspot_top_k" in ckpt:
+        return int(ckpt["hotspot_top_k"])
+    if "local_dim" in ckpt:
+        full_local_dim = int(ckpt["local_dim"])
+    else:
+        full_local_dim = int(ckpt["actor"]["local_mlp.0.weight"].shape[1])
+    move_mask_dim = num_move_actions(action_space.vx_bins, action_space.vy_bins)
+    base_local_dim = full_local_dim - move_mask_dim
+    static_base_dim = 11 + 6 * (int(num_drones) - 1) + 3 * int(cmd_history_len)
+    extra_dim = base_local_dim - static_base_dim
+    if extra_dim < 0 or extra_dim % 5 != 0:
+        raise ValueError(
+            "Could not infer hotspot_top_k from checkpoint local_dim: "
+            f"full_local_dim={full_local_dim}, base_local_dim={base_local_dim}, "
+            f"static_base_dim={static_base_dim}"
+        )
+    return extra_dim // 5
+
+
 def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--gui", action="store_true", default=SHARED_DEFAULTS.gui)
     parser.add_argument("--x_min", type=float, default=SHARED_DEFAULTS.x_min)
     parser.add_argument("--x_max", type=float, default=SHARED_DEFAULTS.x_max)
     parser.add_argument("--y_min", type=float, default=SHARED_DEFAULTS.y_min)
     parser.add_argument("--y_max", type=float, default=SHARED_DEFAULTS.y_max)
+    parser.add_argument("--z_min", type=float, default=SHARED_DEFAULTS.z_min)
+    parser.add_argument("--z_max", type=float, default=SHARED_DEFAULTS.z_max)
     parser.add_argument("--drone_height", type=float, default=SHARED_DEFAULTS.drone_height)
     parser.add_argument(
         "--num_drones",
@@ -312,6 +351,30 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--blob_sigma", type=float, default=SHARED_DEFAULTS.blob_sigma)
     parser.add_argument("--ego_sigma", type=float, default=SHARED_DEFAULTS.ego_sigma)
     parser.add_argument(
+        "--people_count_normalizer",
+        type=float,
+        default=SHARED_DEFAULTS.people_count_normalizer,
+        help="Normalization divisor for visible-people count features in actor local state and critic context.",
+    )
+    parser.add_argument(
+        "--count_density_gain",
+        type=float,
+        default=SHARED_DEFAULTS.count_density_gain,
+        help="Gain before tanh compression for current-step people count density.",
+    )
+    parser.add_argument(
+        "--count_memory_recent_alpha",
+        type=float,
+        default=SHARED_DEFAULTS.count_memory_recent_alpha,
+        help="EMA-style update weight for the recent count memory inside currently visible cells.",
+    )
+    parser.add_argument(
+        "--count_memory_historic_miss_penalty",
+        type=float,
+        default=SHARED_DEFAULTS.count_memory_historic_miss_penalty,
+        help="Extra attenuation applied to historic count memory when a visible cell has no strong current density.",
+    )
+    parser.add_argument(
         "--max_horizontal_velocity",
         type=float,
         default=SHARED_DEFAULTS.max_horizontal_velocity,
@@ -348,6 +411,30 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=SHARED_DEFAULTS.cmd_history_len,
         help="Number of past (vx, vy, yaw_rate) commands appended to the actor local vector. 0=disabled.",
+    )
+    parser.add_argument(
+        "--hotspot_top_k",
+        type=int,
+        default=SHARED_DEFAULTS.hotspot_top_k,
+        help="Number of top historic-density hotspots encoded into each drone's local vector.",
+    )
+    parser.add_argument(
+        "--hotspot_min_density",
+        type=float,
+        default=SHARED_DEFAULTS.hotspot_min_density,
+        help="Minimum historic count-memory value required for a hotspot to be emitted into the local vector.",
+    )
+    parser.add_argument(
+        "--hotspot_suppression_radius_scale",
+        type=float,
+        default=SHARED_DEFAULTS.hotspot_suppression_radius_scale,
+        help="Hotspot non-maximum-suppression radius in blob-sigma units.",
+    )
+    parser.add_argument(
+        "--hotspot_suppression_radius_min_cells",
+        type=int,
+        default=SHARED_DEFAULTS.hotspot_suppression_radius_min_cells,
+        help="Minimum hotspot suppression radius in grid cells.",
     )
     parser.add_argument("--reward_wc", type=float, default=SHARED_DEFAULTS.reward_wc)
     parser.add_argument("--reward_wqual", type=float, default=SHARED_DEFAULTS.reward_wqual)
@@ -467,6 +554,18 @@ def add_eval_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--realtime", action="store_true", default=EVAL_DEFAULTS.realtime)
     parser.add_argument("--print_actions", action="store_true", default=EVAL_DEFAULTS.print_actions)
+    parser.add_argument(
+        "--show_drone0_inputs",
+        action="store_true",
+        default=EVAL_DEFAULTS.show_drone0_inputs,
+        help="Open a live matplotlib window showing Drone 0 actor CNN channels and local inputs during eval.",
+    )
+    parser.add_argument(
+        "--show_drone0_inputs_every",
+        type=int,
+        default=EVAL_DEFAULTS.show_drone0_inputs_every,
+        help="Step interval for updating the Drone 0 input debug window during eval.",
+    )
 
 
 def build_env_kwargs(
@@ -482,6 +581,8 @@ def build_env_kwargs(
         "x_max": args.x_max,
         "y_min": args.y_min,
         "y_max": args.y_max,
+        "z_min": args.z_min,
+        "z_max": args.z_max,
         "drone_height": args.drone_height,
         "num_drones": args.num_drones,
         "random_spawn": args.random_spawn,
@@ -518,6 +619,10 @@ def build_env_kwargs(
         "grid_w": MODEL_DEFAULTS.grid_w,
         "blob_sigma": args.blob_sigma,
         "ego_sigma": args.ego_sigma,
+        "people_count_normalizer": args.people_count_normalizer,
+        "count_density_gain": args.count_density_gain,
+        "count_memory_recent_alpha": args.count_memory_recent_alpha,
+        "count_memory_historic_miss_penalty": args.count_memory_historic_miss_penalty,
         "reward_wc": args.reward_wc,
         "reward_wqual": args.reward_wqual,
         "reward_wd": args.reward_wd,
@@ -538,6 +643,10 @@ def build_env_kwargs(
         "vel_tau_s": args.vel_tau_s,
         "yaw_rate_tau_s": args.yaw_rate_tau_s,
         "cmd_history_len": args.cmd_history_len,
+        "hotspot_top_k": args.hotspot_top_k,
+        "hotspot_min_density": args.hotspot_min_density,
+        "hotspot_suppression_radius_scale": args.hotspot_suppression_radius_scale,
+        "hotspot_suppression_radius_min_cells": args.hotspot_suppression_radius_min_cells,
         "max_horizontal_velocity": args.max_horizontal_velocity,
         "max_yaw_rate": args.max_yaw_rate,
         "debug_observation_plots": args.debug_observation_plots,
@@ -561,14 +670,16 @@ def local_dim(
     num_drones: int,
     action_space: DiscreteActionSpace | None = None,
     cmd_history_len: int = 0,
+    hotspot_top_k: int = 0,
 ) -> int:
     # Base local features:
     #   5 ego pose/visibility scalars (x, y, sin_yaw, cos_yaw, num_visible)
     #   3 phase scalars (search progress, is_search_phase, is_coverage_phase)
     #   3 explicit detection-centroid vs principal-point alignment scalars
+    #   5 scalars per hotspot slot: [valid, rel_dx_world, rel_dy_world, density, age]
     #   6 scalars per teammate slot
     #   3 scalars per command history entry (vx, vy, yaw_rate)
-    base_dim = 11 + 6 * (num_drones - 1) + 3 * cmd_history_len
+    base_dim = 11 + 5 * int(hotspot_top_k) + 6 * (num_drones - 1) + 3 * cmd_history_len
     if action_space is None:
         return base_dim
     return base_dim + num_move_actions(action_space.vx_bins, action_space.vy_bins)
@@ -617,10 +728,11 @@ def actor_kwargs(
     num_drones: int,
     action_space: DiscreteActionSpace,
     cmd_history_len: int = 0,
+    hotspot_top_k: int = 0,
     grid_channels: int | None = None,
 ) -> Dict[str, Any]:
     return {
-        "local_dim": local_dim(num_drones, action_space, cmd_history_len),
+        "local_dim": local_dim(num_drones, action_space, cmd_history_len, hotspot_top_k),
         "grid_channels": MODEL_DEFAULTS.grid_channels if grid_channels is None else int(grid_channels),
         "grid_h": MODEL_DEFAULTS.grid_h,
         "grid_w": MODEL_DEFAULTS.grid_w,
@@ -640,6 +752,7 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
         args.num_drones,
         action_space,
         getattr(args, "cmd_history_len", 0),
+        getattr(args, "hotspot_top_k", 0),
         grid_channels=actor_grid_channels,
     )
     kwargs.update(

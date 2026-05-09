@@ -3,11 +3,12 @@ Utilities for building the centralised global state used by the critic.
 
 The critic grid has shape ((shared_people_channels + 3) + 3 * max_agents, H, W):
   channel  0              — shared instantaneous spatial support union
-  channel  1              — shared recent spatial support
-  channel  2              — shared historic spatial support
-  channel  3              — shared current-step count density
-  channel  4              — shared recent count memory (optional)
-  channel  5              — shared historic count memory (optional)
+  channel ...             — shared people channels from the actor layout
+                            (current default: count density, historic count)
+                            (legacy 8/10-channel checkpoints additionally include
+                             recent count memory)
+                            (legacy 9/10-channel checkpoints additionally include
+                             recent/historic spatial-support maps)
   channel ...             — shared FOV coverage union
   channel ...             — shared drone map
   channels ...            — per-drone instantaneous maps, padded to max_agents
@@ -71,9 +72,12 @@ def build_global_state(
     step_progress = current_step_clamped / step_denom
     remaining_progress = max(step_denom - current_step_clamped, 0) / step_denom
 
+    people_count_normalizer = float(
+        getattr(obs_builder, "people_count_normalizer", 30.0)
+    )
     context = np.array(
         [
-            num_people / 30.0,
+            num_people / people_count_normalizer,
             ever_seen / max(num_people, 1),
             visible_count / max(num_people, 1),
             active_agents / max(max_agents, 1),

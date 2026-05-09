@@ -21,8 +21,10 @@ from config import (
     build_action_space,
     build_env,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_hotspot_top_k,
 )
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
+from rl.live_debug import LiveDebugConfig, LiveDebugWindow
 from rl.networks import ActorNetwork
 
 
@@ -100,7 +102,7 @@ def infer_checkpoint_local_dim(ckpt: dict) -> int:
     return int(local_weight.shape[1])
 
 
-def run_episode(env, actor, action_space, device, args):
+def run_episode(env, actor, action_space, device, args, live_debug=None):
     obs       = env.reset()
     ep_reward = 0.0
     done      = False
@@ -138,6 +140,15 @@ def run_episode(env, actor, action_space, device, args):
             )
         ).to(device)
         move_masks_t = torch.FloatTensor(move_masks).to(device)
+
+        if live_debug is not None and step % live_debug.config.every_steps == 0:
+            live_debug.update(
+                step=step,
+                update=0,
+                active_drones=len(obs),
+                grid=np.asarray(obs[0]["grid"], dtype=np.float32),
+                local_vec=np.asarray(locs[0].detach().cpu().numpy(), dtype=np.float32),
+            )
 
         with torch.no_grad():
             if args.deterministic:
@@ -177,16 +188,29 @@ def main():
         trained_num_drones=trained_num_drones,
     )
 
+    action_space = build_action_space(args)
+    trained_hotspot_top_k = infer_checkpoint_hotspot_top_k(
+        ckpt,
+        num_drones=trained_num_drones,
+        action_space=action_space,
+        cmd_history_len=args.cmd_history_len,
+    )
     env = build_env(
         args,
         overrides={
             "num_drones": trained_num_drones,
             "fixed_active_num_drones": active_num_drones,
             "actor_grid_channels": trained_grid_channels,
+            "hotspot_top_k": trained_hotspot_top_k,
         },
     )
-    action_space = build_action_space(args)
-    actor_config = actor_kwargs(trained_num_drones, action_space, grid_channels=trained_grid_channels)
+    actor_config = actor_kwargs(
+        trained_num_drones,
+        action_space,
+        cmd_history_len=args.cmd_history_len,
+        hotspot_top_k=trained_hotspot_top_k,
+        grid_channels=trained_grid_channels,
+    )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)
 
@@ -198,9 +222,30 @@ def main():
         f"active_num_drones={active_num_drones}"
     )
 
+    live_debug = None
+    if args.show_drone0_inputs:
+        live_debug = LiveDebugWindow(
+            LiveDebugConfig(
+                enabled=True,
+                every_steps=max(1, int(args.show_drone0_inputs_every)),
+                num_drones=trained_num_drones,
+                cmd_history_len=args.cmd_history_len,
+                hotspot_top_k=trained_hotspot_top_k,
+                move_mask_dim=len(action_space.vx_bins) * len(action_space.vy_bins),
+                actor_channel_names=env.obs_builder.actor_channel_names,
+            )
+        )
+
     for ep in range(args.episodes):
         ep_start = time.perf_counter()
-        ep_reward, steps, info = run_episode(env, actor, action_space, device, args)
+        ep_reward, steps, info = run_episode(
+            env,
+            actor,
+            action_space,
+            device,
+            args,
+            live_debug=live_debug,
+        )
         elapsed = time.perf_counter() - ep_start
         sim_seconds = steps * env.dt
         rtf = sim_seconds / elapsed if elapsed > 0 else float("inf")

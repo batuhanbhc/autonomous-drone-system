@@ -15,70 +15,80 @@ from env.reward import RewardCalculator
 class MultiUAVEnv:
     def __init__(
         self,
-        gui: bool = True,
-        sim_hz: float = 10.0,
-        x_min: float = -5.0,
-        x_max: float = 5.0,
-        y_min: float = -5.0,
-        y_max: float = 5.0,
-        drone_height: float = 3.0,
-        num_drones: int = 1,
+        gui: bool = False,
+        sim_hz: float = 4.0,
+        x_min: float = -15.0,
+        x_max: float = 15.0,
+        y_min: float = -15.0,
+        y_max: float = 15.0,
+        z_min: float = 0.3,
+        z_max: float = 8.0,
+        drone_height: float = 6.0,
+        num_drones: int = 2,
         random_spawn: bool = False,
-        drone_spawn_radius: float = 2.0,
+        drone_spawn_radius: float = 3.0,
         fixed_active_num_drones: int | None = None,
         num_people: int = 20,
-        min_people: int = 20,
-        max_people: int = 20,
-        episode_steps: int = 500,
-        search_phase_seconds: float = 0.0,
-        max_groups: int = 2,
+        min_people: int = 10,
+        max_people: int = 30,
+        episode_steps: int = 480,
+        search_phase_seconds: float = 20.0,
+        max_groups: int = 4,
         num_group_regions: int = 4,
-        drone_wall_margin: float = 2.0,
+        drone_wall_margin: float = 0.0,
         person_spawn_margin: float = 0.5,
         group_spawn_margin: float = 0.3,
         min_person_spawn_dist: float = 0.35,
-        group_center_speed_min: float = 0.04,
-        group_center_speed_max: float = 0.12,
-        group_center_turn_prob: float = 0.2,
-        group_center_turn_std: float = 0.35,
-        max_range: float = 6.0,
-        horizontal_fov_deg: float = 60.0,
-        vertical_fov_deg: float = 45.0,
+        group_center_speed_min: float = 0.05,
+        group_center_speed_max: float = 0.25,
+        group_center_turn_prob: float = 0.25,
+        group_center_turn_std: float = 0.4,
+        max_range: float = 15.0,
+        horizontal_fov_deg: float = 55.8,
+        vertical_fov_deg: float = 43.3,
         detection_prob: float = 1.0,
         position_noise_std: float = 0.1,
         camera_tilt_deg: float = 45.0,
-        recent_half_life_seconds: float = 3.0,
-        historic_half_life_seconds: float = 15.0,
-        coverage_half_life_seconds: float = 5.0,
+        recent_half_life_seconds: float = 10.0,
+        historic_half_life_seconds: float = 30.0,
+        coverage_half_life_seconds: float = 10.0,
         recent_hit_gain: float = 0.6,
         recent_miss_penalty: float = 0.25,
-        grid_h: int = 32,
-        grid_w: int = 32,
-        blob_sigma: float = 1.5,
+        grid_h: int = 60,
+        grid_w: int = 60,
+        blob_sigma: float = 1.0,
         ego_sigma: float = 2.5,
+        people_count_normalizer: float = 30.0,
+        count_density_gain: float = 0.35,
+        count_memory_recent_alpha: float = 0.7,
+        count_memory_historic_miss_penalty: float = 0.1,
         reward_wc: float = 1.0,
-        reward_wqual: float = 0.0,
+        reward_wqual: float = 2.0,
         reward_wd: float = 0.0,
         reward_wo: float = 0.0,
-        reward_wx: float = 0.0,
-        reward_ws: float = 0.0,
-        reward_wclose: float = 0.0,
-        reward_wfov_overlap: float = 0.0,
+        reward_wx: float = 1.0,
+        reward_ws: float = 1.0,
+        reward_wclose: float = 1.0,
+        reward_wfov_overlap: float = 3.0,
         reward_wcoll: float = 0.0,
         reward_we: float = 0.0,
         reward_wi: float = 0.0,
         reward_wfov: float = 0.0,
-        reward_coverage_edge_quality: float = 0.2,
+        reward_coverage_edge_quality: float = 0.0,
         reward_quality_mode: str = "principal_linear",
-        reward_boundary_margin: float = 0.2,
-        reward_drone_closeness_margin: float = 1.0,
+        reward_boundary_margin: float = 5.0,
+        reward_drone_closeness_margin: float = 5.0,
         reward_fov_margin: float = 1.0,
-        vel_tau_s: float = 0.0,
-        yaw_rate_tau_s: float = 0.0,
-        cmd_history_len: int = 0,
+        vel_tau_s: float = 0.4,
+        yaw_rate_tau_s: float = 0.4,
+        cmd_history_len: int = 4,
+        hotspot_top_k: int = 3,
+        hotspot_min_density: float = 0.25,
+        hotspot_suppression_radius_scale: float = 4.0,
+        hotspot_suppression_radius_min_cells: int = 2,
         max_horizontal_velocity: float = 1.0,
-        max_yaw_rate: float = 0.5,
-        actor_grid_channels: int = 10,
+        max_yaw_rate: float = 0.7,
+        actor_grid_channels: int = 7,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
         debug_reward_contours: bool = False,
@@ -101,8 +111,8 @@ class MultiUAVEnv:
         self.y_min = y_min
         self.y_max = y_max
         self.drone_wall_margin = drone_wall_margin
-        self.z_min = 0.3
-        self.z_max = 8.0
+        self.z_min = float(z_min)
+        self.z_max = float(z_max)
         if not (self.z_min <= drone_height <= self.z_max):
             raise ValueError(
                 f"drone_height must be within [{self.z_min}, {self.z_max}], got {drone_height}"
@@ -194,7 +204,17 @@ class MultiUAVEnv:
             coverage_half_life_seconds=coverage_half_life_seconds,
             recent_hit_gain=recent_hit_gain,
             recent_miss_penalty=recent_miss_penalty,
+            z_min=self.z_min,
+            z_max=self.z_max,
             cmd_history_len=self.cmd_history_len,
+            hotspot_top_k=hotspot_top_k,
+            hotspot_min_density=hotspot_min_density,
+            hotspot_suppression_radius_scale=hotspot_suppression_radius_scale,
+            hotspot_suppression_radius_min_cells=hotspot_suppression_radius_min_cells,
+            people_count_normalizer=people_count_normalizer,
+            count_density_gain=count_density_gain,
+            count_memory_recent_alpha=count_memory_recent_alpha,
+            count_memory_historic_miss_penalty=count_memory_historic_miss_penalty,
             max_horizontal_velocity=self.max_horizontal_velocity,
             max_yaw_rate=self.max_yaw_rate,
             actor_grid_channels=actor_grid_channels,
@@ -565,6 +585,28 @@ class MultiUAVEnv:
     def _get_people_positions(self):
         return [person.get_position() for person in self.people if person is not None]
 
+    def _build_person_reward_weights(self, num_people: int) -> list[float]:
+        assignments = list(self.episode_group_info.get("group_assignments", []))
+        if num_people <= 0:
+            return []
+        if len(assignments) < num_people:
+            assignments.extend([None] * (num_people - len(assignments)))
+        assignments = assignments[:num_people]
+
+        group_counts: dict[int, int] = {}
+        for group_id in assignments:
+            if group_id is None:
+                continue
+            group_counts[int(group_id)] = group_counts.get(int(group_id), 0) + 1
+
+        weights: list[float] = []
+        for group_id in assignments:
+            if group_id is None:
+                weights.append(1.0)
+            else:
+                weights.append(float(group_counts.get(int(group_id), 1)))
+        return weights
+
     def _phase_context_for_decision_step(self, decision_step: int) -> dict[str, float]:
         if self.search_phase_steps <= 0:
             return {
@@ -768,6 +810,7 @@ class MultiUAVEnv:
             drone_states,
             people_positions,
             phase_context=self.get_observation_phase_context(),
+            current_step=self.current_step,
         )
         self._update_debug_draw(drone_states=drone_states,
                                 visible_ids_per_drone=visible_ids_per_drone)
@@ -826,6 +869,7 @@ class MultiUAVEnv:
                     drone_states,
                     people_positions,
                     phase_context=self.get_observation_phase_context(),
+                    current_step=self.current_step,
                 )
             self._maybe_plot_observation_debug(
                 observations=observations,
@@ -835,6 +879,7 @@ class MultiUAVEnv:
             self._update_debug_draw(drone_states=drone_states,
                                     visible_ids_per_drone=visible_ids_per_drone)
 
+            person_reward_weights = self._build_person_reward_weights(len(people_positions))
             reward, reward_info, new_discoveries = self.reward_calc.compute_reward(
                 visible_ids_per_drone=visible_ids_per_drone,
                 drone_states=drone_states,
@@ -846,6 +891,7 @@ class MultiUAVEnv:
                 actions=actions,
                 coverage_map=coverage_map_before_step,
                 footprint_maps=self.obs_builder.footprint_maps_snapshot,
+                person_weights=person_reward_weights,
             )
             self.ever_seen.update(new_discoveries)
             visible_union = set()
@@ -875,6 +921,7 @@ class MultiUAVEnv:
                 self._get_drone_states(),
                 self._get_people_positions(),
                 phase_context=self.get_observation_phase_context(),
+                current_step=self.current_step,
             )
             info = {
                 "simulation_error": str(e),

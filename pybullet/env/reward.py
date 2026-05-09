@@ -222,10 +222,10 @@ class RewardCalculator:
     def is_search_phase(self, current_step: int) -> bool:
         return self.search_phase_steps > 0 and current_step <= self.search_phase_steps
 
-    def coverage_reward_scales(self, current_step: int) -> Tuple[float, float]:
+    def phase_reward_scales(self, current_step: int) -> Tuple[float, float, float]:
         if self.is_search_phase(current_step):
-            return 0.0, 0.0
-        return 1.0, 1.0
+            return 0.0, 0.0, 1.0
+        return 1.0, 1.0, 0.0
 
     # ------------------------------------------------------------------ #
     #  Coverage — quality-weighted unique coverage using camera-local
@@ -236,16 +236,31 @@ class RewardCalculator:
         self,
         visible_ids_per_drone: List[List[int]],
         num_people: int,
+        person_weights: Optional[List[float]] = None,
         eps: float = 1e-6,
-    ) -> Tuple[float, int, set]:
+    ) -> Tuple[float, int, set, float]:
         visible_union = set()
         for ids in visible_ids_per_drone:
             visible_union.update(ids)
         c_t = len(visible_union)
         if num_people <= 0:
-            return 0.0, c_t, visible_union
-        r_cov = (c_t / (num_people + eps))
-        return r_cov, c_t, visible_union
+            return 0.0, c_t, visible_union, 0.0
+        if person_weights is None:
+            visible_weight = float(c_t)
+            total_weight = float(num_people)
+        else:
+            max_people = min(num_people, len(person_weights))
+            visible_weight = sum(
+                float(person_weights[person_id])
+                for person_id in visible_union
+                if 0 <= person_id < max_people
+            )
+            total_weight = max(
+                sum(float(person_weights[idx]) for idx in range(max_people)),
+                eps,
+            )
+        r_cov = (visible_weight / (total_weight + eps))
+        return r_cov, c_t, visible_union, visible_weight
 
     def compute_fov_quality_reward(
         self,
@@ -253,6 +268,7 @@ class RewardCalculator:
         drone_states: List[Dict],
         people_positions: List[Tuple[float, float, float]],
         num_people: int,
+        person_weights: Optional[List[float]] = None,
         eps: float = 1e-6,
     ) -> float:
         if num_people <= 0:
@@ -273,7 +289,21 @@ class RewardCalculator:
                 )
                 if quality > per_person_quality.get(person_id, 0.0):
                     per_person_quality[person_id] = quality
-        return (sum(per_person_quality.values())/ (num_people + eps))
+        if person_weights is None:
+            weighted_quality = sum(per_person_quality.values())
+            total_weight = float(num_people)
+        else:
+            max_people = min(num_people, len(person_weights))
+            weighted_quality = sum(
+                float(person_weights[person_id]) * quality
+                for person_id, quality in per_person_quality.items()
+                if 0 <= person_id < max_people
+            )
+            total_weight = max(
+                sum(float(person_weights[idx]) for idx in range(max_people)),
+                eps,
+            )
+        return (weighted_quality / (total_weight + eps))
 
     # ------------------------------------------------------------------ #
     #  Discovery — reward finding NEW people
@@ -529,17 +559,20 @@ class RewardCalculator:
         actions: Optional[List[Tuple[float, float, float, float]]] = None,
         coverage_map: Optional[np.ndarray] = None,
         footprint_maps: Optional[np.ndarray] = None,
+        person_weights: Optional[List[float]] = None,
     ) -> Tuple[float, dict, set]:
 
-        r_cov, c_t, visible_union = self.compute_coverage_reward(
+        r_cov, c_t, visible_union, visible_weight = self.compute_coverage_reward(
             visible_ids_per_drone,
             num_people,
+            person_weights=person_weights,
         )
         r_fovq = self.compute_fov_quality_reward(
             visible_ids_per_drone,
             drone_states,
             people_positions,
             num_people,
+            person_weights=person_weights,
         )
 
         r_disc, new_discoveries = self.compute_discovery_reward(
@@ -560,7 +593,7 @@ class RewardCalculator:
         r_safe   = r_bound + r_close + r_coll
         r_energy = self.compute_energy_penalty(actions)
 
-        cov_scale, fovq_scale = self.coverage_reward_scales(current_step)
+        cov_scale, fovq_scale, exp_scale = self.phase_reward_scales(current_step)
         is_search_phase = float(self.is_search_phase(current_step))
         is_coverage_phase = 1.0 - is_search_phase
 
@@ -568,7 +601,7 @@ class RewardCalculator:
             (self.wc * cov_scale) * r_cov
             + (self.wqual * fovq_scale) * r_fovq
             + self.wd  * r_disc
-            + self.wx  * r_exp
+            + (self.wx * exp_scale) * r_exp
             - self.wo  * r_ov
             - self.wi  * r_idle
             - self.wfov * r_fov
@@ -586,6 +619,7 @@ class RewardCalculator:
             "discovery_time_weight": self._discovery_time_weight(current_step, episode_steps),
             "new_discovered": len(new_discoveries),
             "coverage_count": c_t,
+            "coverage_weight": visible_weight,
             "r_ov":           r_ov,
             "r_idle":         r_idle,
             "r_fov":          r_fov,
@@ -598,6 +632,7 @@ class RewardCalculator:
             "r_energy":       r_energy,
             "coverage_reward_scale": cov_scale,
             "fov_quality_reward_scale": fovq_scale,
+            "exploration_reward_scale": exp_scale,
             "is_search_phase": is_search_phase,
             "is_coverage_phase": is_coverage_phase,
             "total_reward":   total_reward,

@@ -1,7 +1,7 @@
 """
 MAPPO Trainer for a masked joint-move actor over ((vx, vy), yaw_rate).
 
-Actor grid: (grid_channels, H, W)               — 8 or 10 channels
+Actor grid: (grid_channels, H, W)               — 7, 8, 9, or 10 channels
 Critic grid: (grid_channels - 2 + 3 * num_agents, H, W)
             — shared + per-drone instant/coverage/ego maps
 """
@@ -85,7 +85,7 @@ class MAPPOTrainer:
         self,
         env,
         local_dim: int = 11,
-        grid_channels: int = 10,      # actor: local instant + shared maps + own/teammate coverage + own ego
+        grid_channels: int = 7,       # actor default: instant + count density + historic count + own/teammate coverage + shared drone + own ego
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
@@ -147,8 +147,8 @@ class MAPPOTrainer:
         self.move_mask_dim = int(self.vx_bins.shape[0] * self.vy_bins.shape[0])
 
         self.grid_channels = int(grid_channels)
-        if self.grid_channels < 8:
-            raise ValueError(f"grid_channels must be >= 8, got {self.grid_channels}")
+        if self.grid_channels < 7:
+            raise ValueError(f"grid_channels must be >= 7, got {self.grid_channels}")
         self.critic_grid_channels = self.grid_channels - 2 + (3 * self.num_agents)
         self.grid_h               = grid_h
         self.grid_w               = grid_w
@@ -224,6 +224,9 @@ class MAPPOTrainer:
                 enabled=live_debug,
                 every_steps=max(1, int(live_debug_every)),
                 num_drones=self.num_agents,
+                cmd_history_len=self.env.cmd_history_len,
+                hotspot_top_k=getattr(self.env.obs_builder, "hotspot_top_k", 0),
+                actor_channel_names=getattr(self.env.obs_builder, "actor_channel_names", None),
             )
         )
 
@@ -791,6 +794,7 @@ class MAPPOTrainer:
                 "grid_channels": self.grid_channels,
                 "critic_grid_channels": self.critic_grid_channels,
                 "local_dim": self.buffer.local_dim,
+                "hotspot_top_k": getattr(self.env.obs_builder, "hotspot_top_k", 0),
                 "move_mask_dim": self.move_mask_dim,
                 "total_steps": self.total_steps,
                 "update": self.current_update,

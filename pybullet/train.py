@@ -17,6 +17,7 @@ from config import (
     build_action_space,
     build_env,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_hotspot_top_k,
     trainer_kwargs,
 )
 from rl.trainer import MAPPOTrainer
@@ -44,12 +45,19 @@ def build_run_save_dir(base_save_dir: str, load_path: str | None) -> str:
     return candidate
 def main():
     args = parse_args()
+    action_space = build_action_space(args)
     if args.load:
         ckpt = torch.load(args.load, map_location="cpu")
         args.actor_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
+        trained_num_drones = int(ckpt.get("num_agents", args.num_drones))
+        args.hotspot_top_k = infer_checkpoint_hotspot_top_k(
+            ckpt,
+            num_drones=trained_num_drones,
+            action_space=action_space,
+            cmd_history_len=args.cmd_history_len,
+        )
     args.save_dir = build_run_save_dir(args.save_dir, args.load)
     env = build_env(args)
-    action_space = build_action_space(args)
     trainer = MAPPOTrainer(env=env, **trainer_kwargs(args, action_space))
     print(f"[MAPPO] Saving this training run under {args.save_dir}")
 
