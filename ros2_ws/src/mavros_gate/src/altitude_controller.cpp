@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
 #include <rclcpp/qos.hpp>
+
+namespace fs = std::filesystem;
 
 
 // ============================================================================
@@ -15,6 +20,7 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
 : rclcpp::Node("altitude_controller", options)
 {
   RCLCPP_INFO(get_logger(), "altitude_controller starting");
+  declare_parameter<std::string>("session_dir", "");
 
   // ── drone namespace ──────────────────────────────────────────────────────
   this->declare_parameter<int>("drone_id", 0);
@@ -33,6 +39,7 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
   topic_cmd_    = base_ns + topic_cmd_;
   topic_output_ = base_ns + topic_output_;
   topic_mcu_    = base_ns + topic_mcu_;
+  initLogging();
 
   RCLCPP_INFO(get_logger(), "PID gains — kp=%.5f  ki=%.5f  kd=%.5f", kp_, ki_, kd_);
   RCLCPP_INFO(get_logger(), "D-term vz LPF tau: %.5f s", d_lpf_tau_s_);
@@ -41,6 +48,7 @@ AltitudeControllerNode::AltitudeControllerNode(const rclcpp::NodeOptions & optio
   RCLCPP_INFO(get_logger(), "Subscribing  cmd    : %s", topic_cmd_.c_str());
   RCLCPP_INFO(get_logger(), "Subscribing  mcu    : %s", topic_mcu_.c_str());
   RCLCPP_INFO(get_logger(), "Publishing   output : %s", topic_output_.c_str());
+  RCLCPP_INFO(get_logger(), "CSV logging  state   : %s", (session_dir_ + "/altitude_controller.csv").c_str());
 
   // ── QoS ──────────────────────────────────────────────────────────────────
   //  cmd:    reliable — must not miss active/inactive/target transitions
@@ -98,6 +106,13 @@ bool AltitudeControllerNode::loadConfig()
     return false;
   }
 
+  try {
+    logs_path_ = root["flight_params"]["logs_path"].as<std::string>();
+  } catch (const YAML::Exception & e) {
+    RCLCPP_ERROR(get_logger(), "YAML missing flight_params.logs_path: %s", e.what());
+    return false;
+  }
+
   // ── topic paths ───────────────────────────────────────────────────────────
   bool ok = true;
   auto get_topic = [&](const char* key, std::string& out) {
@@ -144,6 +159,48 @@ bool AltitudeControllerNode::loadConfig()
   return true;
 }
 
+std::string AltitudeControllerNode::resolveSessionDir(const std::string & logs_path)
+{
+  const std::string configured_session_dir = get_parameter("session_dir").as_string();
+  if (!configured_session_dir.empty()) {
+    fs::create_directories(configured_session_dir);
+    return configured_session_dir;
+  }
+
+  fs::create_directories(logs_path);
+  std::size_t dir_count = 0;
+  for (const auto & entry : fs::directory_iterator(logs_path)) {
+    if (entry.is_directory()) {
+      ++dir_count;
+    }
+  }
+
+  std::ostringstream oss;
+  oss << std::setw(4) << std::setfill('0') << (dir_count + 1);
+  const std::string candidate = logs_path + "/" + oss.str();
+  fs::create_directory(candidate);
+  return candidate;
+}
+
+void AltitudeControllerNode::initLogging()
+{
+  session_dir_ = resolveSessionDir(logs_path_);
+  const std::string log_path = session_dir_ + "/altitude_controller.csv";
+
+  log_file_.open(log_path, std::ios::out | std::ios::app);
+  if (!log_file_.is_open()) {
+    throw std::runtime_error("Cannot open altitude controller CSV: " + log_path);
+  }
+
+  log_file_.seekp(0, std::ios::end);
+  if (log_file_.tellp() == 0) {
+    log_file_
+      << "timestamp_sec,timestamp_nanosec,target_agl_m,current_agl_m,error_m,"
+      << "command_vz_mps,p_term,i_term,d_term\n";
+    log_file_.flush();
+  }
+}
+
 
 // ============================================================================
 // PID helpers
@@ -157,7 +214,7 @@ void AltitudeControllerNode::resetPid()
   RCLCPP_DEBUG(get_logger(), "[alt_ctrl_pid] State reset.");
 }
 
-float AltitudeControllerNode::computeDesiredVelocity(
+AltitudeControllerNode::ControlTerms AltitudeControllerNode::computeDesiredVelocity(
   float target_agl, float current_agl, float current_vz, double dt_s)
 {
   float kp, ki, kd;
@@ -168,12 +225,13 @@ float AltitudeControllerNode::computeDesiredVelocity(
     kd = kd_;
   }
 
-  const float error  = target_agl - current_agl;
-  const float p_term = kp * error;
+  ControlTerms terms;
+  terms.error = target_agl - current_agl;
+  terms.p_term = kp * terms.error;
 
-  integral_ += ki * error * static_cast<float>(dt_s);
+  integral_ += ki * terms.error * static_cast<float>(dt_s);
   integral_  = std::clamp(integral_, integral_min_, integral_max_);
-  const float i_term = integral_;
+  terms.i_term = integral_;
 
   float d_input_vz = current_vz;
   if (d_lpf_tau_s_ > 0.0f) {
@@ -186,16 +244,40 @@ float AltitudeControllerNode::computeDesiredVelocity(
     d_input_vz = *filtered_vz_;
   }
 
-  const float d_term = -kd * d_input_vz;
+  terms.d_term = -kd * d_input_vz;
 
-  const float raw = p_term + i_term + d_term;
-  const float out = std::clamp(raw, output_min_, output_max_);
+  const float raw = terms.p_term + terms.i_term + terms.d_term;
+  terms.command_vz = std::clamp(raw, output_min_, output_max_);
 
   RCLCPP_DEBUG(get_logger(),
     "[pid] tgt=%.3f agl=%.3f err=%.3f vz=%.3f vz_f=%.3f P=%.3f I=%.3f D=%.3f → %.3f (%.3f clamped)",
-    target_agl, current_agl, error, current_vz, d_input_vz, p_term, i_term, d_term, raw, out);
+    target_agl, current_agl, terms.error, current_vz, d_input_vz,
+    terms.p_term, terms.i_term, terms.d_term, raw, terms.command_vz);
 
-  return out;
+  return terms;
+}
+
+void AltitudeControllerNode::logState(
+  const std_msgs::msg::Header & header,
+  float current_agl,
+  const ControlTerms & terms)
+{
+  std::lock_guard<std::mutex> lk(log_mtx_);
+  if (!log_file_.is_open()) {
+    return;
+  }
+
+  log_file_
+    << header.stamp.sec << ','
+    << header.stamp.nanosec << ','
+    << target_agl_ << ','
+    << current_agl << ','
+    << terms.error << ','
+    << terms.command_vz << ','
+    << terms.p_term << ','
+    << terms.i_term << ','
+    << terms.d_term << '\n';
+  log_file_.flush();
 }
 
 
@@ -287,12 +369,13 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
     return;
   }
 
-  const float vz_cmd = computeDesiredVelocity(
+  const ControlTerms terms = computeDesiredVelocity(
     target_agl_, current_agl, current_vz, dt_s);
 
   AltCtrlOutput out;
-  out.data = vz_cmd;
+  out.data = terms.command_vz;
   pub_output_->publish(out);
+  logState(msg->header, current_agl, terms);
 
   // RCLCPP_INFO(get_logger(),
   //   "[alt_ctrl_pid] tgt=%.3f agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",

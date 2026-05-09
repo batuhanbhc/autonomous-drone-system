@@ -70,6 +70,7 @@
  */
 
 #include <chrono>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -97,11 +98,28 @@ private:
 
   // ── Config ────────────────────────────────────────────────────────────────
   bool loadConfig();
+  std::string resolveSessionDir(const std::string & logs_path);
+  void initLogging();
 
   // ── PID helpers ───────────────────────────────────────────────────────────
   void  resetPid();
-  float computeDesiredVelocity(float target_agl, float current_agl,
-                               float current_vz, double dt_s);
+  struct ControlTerms
+  {
+    float error{0.0f};
+    float p_term{0.0f};
+    float i_term{0.0f};
+    float d_term{0.0f};
+    float command_vz{0.0f};
+  };
+  ControlTerms computeDesiredVelocity(
+    float target_agl,
+    float current_agl,
+    float current_vz,
+    double dt_s);
+  void logState(
+    const std_msgs::msg::Header & header,
+    float current_agl,
+    const ControlTerms & terms);
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void onCommand(const AltCtrlInput::SharedPtr msg);          // control_gate commands
@@ -114,6 +132,7 @@ private:
   std::string topic_cmd_;       // alt_ctrl_input  (command, from control_gate)
   std::string topic_output_;    // alt_ctrl_output
   std::string topic_mcu_;       // mcu_bridge topic (measurements)
+  std::string logs_path_;
 
   // ── PID gains (mutex-protected for live tuning) ───────────────────────────
   mutable std::mutex gains_mtx_;
@@ -142,6 +161,10 @@ private:
   rclcpp::Subscription<VerticalEst>::SharedPtr   sub_mcu_;
   rclcpp::Publisher<AltCtrlOutput>::SharedPtr    pub_output_;
   rclcpp::Service<SetPidGains>::SharedPtr        srv_set_gains_;
+
+  std::string session_dir_;
+  std::ofstream log_file_;
+  std::mutex log_mtx_;
 };
 
 #endif  // MAVROS_GATE__ALTITUDE_CONTROLLER_HPP_
