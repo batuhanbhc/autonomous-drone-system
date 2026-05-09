@@ -1,7 +1,8 @@
 """
 MAPPO Trainer for a masked joint-move actor over ((vx, vy), yaw_rate).
 
-Actor grid: (grid_channels, H, W)               — 7, 8, 9, or 10 channels
+Actor grid: (grid_channels, H, W)               — 8 channels by default
+                                                  (legacy 7/8/9/10 layouts still load)
 Critic grid: (grid_channels - 2 + 3 * num_agents, H, W)
             — shared + per-drone instant/coverage/ego maps
 """
@@ -16,6 +17,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, List
 
+from config import infer_checkpoint_include_persistent_coverage_channel
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
 from rl.live_debug import LiveDebugConfig, LiveDebugWindow
 from rl.networks import ActorNetwork, CriticNetwork
@@ -85,7 +87,7 @@ class MAPPOTrainer:
         self,
         env,
         local_dim: int = 11,
-        grid_channels: int = 7,       # actor default: instant + count density + historic count + own/teammate coverage + shared drone + own ego
+        grid_channels: int = 8,       # actor default: instant + count density + historic count + persistent coverage + own/teammate coverage + shared drone + own ego
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
@@ -793,6 +795,9 @@ class MAPPOTrainer:
                 "num_agents":  self.num_agents,
                 "grid_channels": self.grid_channels,
                 "critic_grid_channels": self.critic_grid_channels,
+                "include_persistent_coverage_channel": bool(
+                    getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
+                ),
                 "local_dim": self.buffer.local_dim,
                 "hotspot_top_k": getattr(self.env.obs_builder, "hotspot_top_k", 0),
                 "move_mask_dim": self.move_mask_dim,
@@ -821,6 +826,12 @@ class MAPPOTrainer:
         )
         current_local_dim = int(self.actor.local_mlp[0].in_features)
         current_grid_channels = int(self.actor.cnn.net[0].in_channels)
+        ckpt_include_persistent_coverage_channel = (
+            infer_checkpoint_include_persistent_coverage_channel(ckpt)
+        )
+        current_include_persistent_coverage_channel = bool(
+            getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
+        )
         if ckpt_local_dim != current_local_dim:
             raise ValueError(
                 "Checkpoint local_dim does not match the current observation layout: "
@@ -832,6 +843,17 @@ class MAPPOTrainer:
                 "Checkpoint actor grid channel count does not match the current "
                 f"observation layout: checkpoint={ckpt_grid_channels}, "
                 f"current={current_grid_channels}."
+            )
+        if (
+            ckpt_include_persistent_coverage_channel
+            != current_include_persistent_coverage_channel
+        ):
+            raise ValueError(
+                "Checkpoint actor coverage layout does not match the current "
+                "observation layout: "
+                f"checkpoint include_persistent_coverage_channel="
+                f"{ckpt_include_persistent_coverage_channel}, "
+                f"current={current_include_persistent_coverage_channel}."
             )
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])

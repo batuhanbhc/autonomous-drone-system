@@ -21,6 +21,7 @@ from config import (
     build_action_space,
     build_env,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_include_persistent_coverage_channel,
     infer_checkpoint_hotspot_top_k,
 )
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
@@ -183,6 +184,9 @@ def main():
     ckpt = torch.load(args.load, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
     trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
+    trained_include_persistent_coverage = (
+        infer_checkpoint_include_persistent_coverage_channel(ckpt)
+    )
     active_num_drones = resolve_eval_active_num_drones(
         requested_num_drones=args.num_drones,
         trained_num_drones=trained_num_drones,
@@ -201,6 +205,7 @@ def main():
             "num_drones": trained_num_drones,
             "fixed_active_num_drones": active_num_drones,
             "actor_grid_channels": trained_grid_channels,
+            "include_persistent_coverage_channel": trained_include_persistent_coverage,
             "hotspot_top_k": trained_hotspot_top_k,
         },
     )

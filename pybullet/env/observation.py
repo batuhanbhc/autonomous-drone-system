@@ -62,6 +62,10 @@ class ObservationBuilder:
                   A slower decayed peak-memory over observed count density.
                   Preserves "the strongest crowd density seen here recently."
 
+      Shared permanent coverage
+                  Shared across all drones. If any drone ever visits a cell
+                  during the episode, that cell becomes 1 and never decays.
+
       Own FOV coverage
                   (simulation-time half-life: coverage_half_life_seconds)
                   Bright = this drone's camera was aimed here recently.
@@ -77,21 +81,27 @@ class ObservationBuilder:
                   Gaussian blob at this drone's own position.
                   Lets the actor distinguish "me" from the shared drone layer.
 
-    The current/default actor layout uses 7 channels total:
-      [instant spatial support] + [count density, historic count]
-      + [own coverage, teammate coverage, shared drone, ego].
+    The current/default actor layout uses 8 channels total:
+      [instant spatial support] + [count density, historic count,
+      permanent coverage] + [own coverage, teammate coverage, shared drone, ego].
 
     The recent count memory map is still computed internally, but its exposure
     to the actor/critic is currently disabled in the default layout.
 
     Legacy layouts are still supported for old checkpoints:
-      8 channels: current count-only layout + recent count memory
-      9 channels: spatial-memory layout + count density + historic count memory
-     10 channels: spatial-memory layout + count density + recent count + historic count
+      without permanent coverage:
+        7 channels: count-only without recent count memory
+        8 channels: count-only with recent count memory
+        9 channels: spatial+count without recent count memory
+       10 channels: spatial+count with recent count memory
+      with permanent coverage:
+        8 channels: count-only without recent count memory
+        9 channels: count-only with recent count memory
+       10 channels: spatial+count without recent count memory
+       11 channels: spatial+count with recent count memory
 
-    Legacy 9/10-channel layouts insert shared recent/historic spatial-support
-    maps ahead of the count-density channels. New runs should use the 7-channel
-    default unless you intentionally want the recent count memory channel back.
+    Spatial-memory layouts insert shared recent/historic spatial-support maps
+    ahead of the count-density channels.
 
     The centralised critic receives a ((shared_people_channels + 3) + 3 * num_agents, H, W)
     grid built by build_global_state() in state_utils.py:
@@ -143,7 +153,8 @@ class ObservationBuilder:
         count_memory_historic_miss_penalty: float = 0.1,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
-        actor_grid_channels: int = 7,
+        actor_grid_channels: int = 8,
+        include_persistent_coverage_channel: bool = True,
     ):
         self.x_min = x_min
         self.x_max = x_max
@@ -184,21 +195,36 @@ class ObservationBuilder:
         self._max_hvel = float(max_horizontal_velocity)
         self._max_yaw_rate = float(max_yaw_rate)
         self.actor_grid_channels = int(actor_grid_channels)
-        if self.actor_grid_channels not in {7, 8, 9, 10}:
+        self.include_persistent_coverage_channel = bool(
+            include_persistent_coverage_channel
+        )
+        base_actor_grid_channels = 8 if self.include_persistent_coverage_channel else 7
+        actor_grid_delta = self.actor_grid_channels - base_actor_grid_channels
+        if actor_grid_delta not in {0, 1, 2, 3}:
             raise ValueError(
-                "actor_grid_channels must be 7, 8, 9, or 10: "
-                "7=count-only without recent count memory, "
-                "8=count-only with recent count memory, "
-                "9=spatial+count without recent count memory, "
-                "10=spatial+count with recent count memory; "
+                "actor_grid_channels does not match the configured actor layout: "
+                f"include_persistent_coverage_channel={self.include_persistent_coverage_channel}, "
+                f"got actor_grid_channels={self.actor_grid_channels}"
+            )
+        if self.include_persistent_coverage_channel and self.actor_grid_channels not in {8, 9, 10, 11}:
+            raise ValueError(
+                "With include_persistent_coverage_channel=True, actor_grid_channels "
+                "must be 8, 9, 10, or 11; "
                 f"got {self.actor_grid_channels}"
             )
-        self.include_recent_count_memory_channel = self.actor_grid_channels in {8, 10}
-        self.exposes_spatial_memory_channels = self.actor_grid_channels in {9, 10}
+        if (not self.include_persistent_coverage_channel) and self.actor_grid_channels not in {7, 8, 9, 10}:
+            raise ValueError(
+                "With include_persistent_coverage_channel=False, actor_grid_channels "
+                "must be 7, 8, 9, or 10; "
+                f"got {self.actor_grid_channels}"
+            )
+        self.include_recent_count_memory_channel = actor_grid_delta in {1, 3}
+        self.exposes_spatial_memory_channels = actor_grid_delta in {2, 3}
         self.shared_people_channels = (
             2
             + (2 if self.exposes_spatial_memory_channels else 0)
             + (1 if self.include_recent_count_memory_channel else 0)
+            + (1 if self.include_persistent_coverage_channel else 0)
         )
         self.actor_own_coverage_channel = 1 + self.shared_people_channels
         self.actor_teammate_coverage_channel = self.actor_own_coverage_channel + 1
@@ -221,6 +247,8 @@ class ObservationBuilder:
                 len(self.actor_channel_names) - 1,
                 "Shared recent count memory",
             )
+        if self.include_persistent_coverage_channel:
+            self.actor_channel_names.append("Shared permanent coverage")
         self.actor_channel_names += [
             "Own FOV coverage",
             "Teammate FOV coverage",
@@ -244,6 +272,8 @@ class ObservationBuilder:
                 len(self.critic_shared_channel_names) - 1,
                 "Shared recent count memory",
             )
+        if self.include_persistent_coverage_channel:
+            self.critic_shared_channel_names.append("Shared permanent coverage")
         self.critic_shared_channel_names += [
             "Shared FOV coverage",
             "Shared drone map",
@@ -329,6 +359,7 @@ class ObservationBuilder:
             f"recent_miss_penalty={self.recent_miss_penalty:.3f}\n"
             f"  Exposed spatial-memory channels: {'enabled' if self.exposes_spatial_memory_channels else 'disabled'}\n"
             f"  Recent count memory channel: {'enabled' if self.include_recent_count_memory_channel else 'disabled (computed internally only)'}\n"
+            f"  Persistent coverage channel: {'enabled' if self.include_persistent_coverage_channel else 'disabled'}\n"
             f"  Historic count memory channel: enabled\n"
             f"  Critic shared channels: {', '.join(self.critic_shared_channel_names)}"
         )
@@ -344,9 +375,10 @@ class ObservationBuilder:
         self.people_count_memory_recent = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.people_count_memory_historic = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.people_count_last_observed_step = np.full((grid_h, grid_w), -1, dtype=np.int32)
-        # Ch4: FOV coverage — "camera was aimed here recently" — shared across all drones.
+        # Shared recent FOV coverage — "camera was aimed here recently".
         self.coverage_map = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.coverage_maps_per_drone = np.zeros((num_drones, grid_h, grid_w), dtype=np.float32)
+        self.persistent_coverage_map = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.footprint_maps_snapshot = np.zeros((num_drones, grid_h, grid_w), dtype=np.float32)
         self.instant_maps_snapshot = self.people_detect_instant.copy()
 
@@ -367,6 +399,7 @@ class ObservationBuilder:
         self.people_count_last_observed_step.fill(-1)
         self.coverage_map.fill(0.0)
         self.coverage_maps_per_drone.fill(0.0)
+        self.persistent_coverage_map.fill(0.0)
         self.footprint_maps_snapshot.fill(0.0)
         self.instant_maps_snapshot = self.people_detect_instant.copy()
         self.prev_drone_positions = {}
@@ -539,9 +572,8 @@ class ObservationBuilder:
 
     def update_coverage_map(self, current_footprint_maps: np.ndarray):
         """
-        Decay per-drone and shared coverage maps at the configured half-life,
-        then mark all cells currently inside each active drone's camera FOV
-        footprint.
+        Decay the recent per-drone/shared coverage maps, and accumulate a
+        separate shared permanent coverage map with no decay.
         """
         active_drones = int(current_footprint_maps.shape[0])
         self.coverage_map *= self.decay_coverage
@@ -558,6 +590,11 @@ class ObservationBuilder:
             out=self.coverage_maps_per_drone[:active_drones],
         )
         self.coverage_map[...] = self.coverage_maps_per_drone[:active_drones].max(axis=0)
+        np.maximum(
+            self.persistent_coverage_map,
+            current_footprint_maps[:active_drones].max(axis=0),
+            out=self.persistent_coverage_map,
+        )
 
     def build_people_maps(
         self,
@@ -691,6 +728,8 @@ class ObservationBuilder:
         # in the default actor/critic layout.
         # shared_people.append(recent_count_memory)
         shared_people.append(historic_count_memory)
+        if self.include_persistent_coverage_channel:
+            shared_people.append(self.persistent_coverage_map.copy())
         return np.stack(shared_people, axis=0), instant_maps, own_coverage_maps, teammate_coverage_maps
 
     def build_local_vector(
@@ -907,12 +946,11 @@ class ObservationBuilder:
             # drone-position map containing all active drones.
             own_ego_map = self._make_ego_map(drone_state)
 
-            # Actor grid (C, H, W), where C is 7 for the current default
-            # count-only layout, 8 for the legacy count-only + recent-count
-            # layout, 9 for spatial+count without recent count, and 10 for
-            # the legacy spatial+count layout.
+            # Actor grid (C, H, W), where C is 8 for the current default
+            # count-only + permanent-coverage layout. Legacy layouts without
+            # the permanent shared coverage channel are still loadable.
             #   ch0 — instantaneous spatial support LOCAL to this drone  (per-drone)
-            #   ch1.. — shared people memory/count channels         (shared)
+            #   ch1.. — shared memory/count/coverage channels       (shared)
             #   ...  — own FOV coverage                             (per-drone)
             #   ...  — teammate-only FOV coverage                   (per-drone)
             #   ...  — shared drone map                             (shared)

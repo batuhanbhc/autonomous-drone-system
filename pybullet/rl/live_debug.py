@@ -55,8 +55,8 @@ class LiveDebugWindow:
             channel_titles = [
                 "Instant Spatial Support",
                 "Count Density",
-                "Recent Count Memory",
                 "Historic Count Memory",
+                "Persistent Coverage",
                 "Own Coverage",
                 "Teammate Coverage",
                 "Shared Drone Map",

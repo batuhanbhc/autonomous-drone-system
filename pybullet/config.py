@@ -32,7 +32,7 @@ class SharedConfig:
     min_people: int = 10
     max_people: int = 30
     episode_steps: int = 480
-    search_phase_seconds: float = 15.0
+    search_phase_seconds: float = 30.0
     max_groups: int = 4
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
@@ -73,7 +73,7 @@ class SharedConfig:
     hotspot_suppression_radius_scale: float = 4.0
     hotspot_suppression_radius_min_cells: int = 2
     reward_wc: float = 0.5
-    reward_wqual: float = 1.0
+    reward_wqual: float = 1.5
     reward_wd: float = 0.0
     reward_wo: float = 0.0
     reward_wx: float = 1.0
@@ -131,7 +131,7 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    grid_channels: int = 7
+    grid_channels: int = 8
     grid_h: int = 60
     grid_w: int = 60
     cnn_out_dim: int = 128
@@ -178,11 +178,15 @@ def infer_checkpoint_actor_grid_channels(ckpt: dict) -> int:
     return int(actor_state["cnn.net.0.weight"].shape[1])
 
 
+def infer_checkpoint_include_persistent_coverage_channel(ckpt: dict) -> bool:
+    return bool(ckpt.get("include_persistent_coverage_channel", False))
+
+
 def infer_shared_people_channels(actor_grid_channels: int) -> int:
     shared_people_channels = int(actor_grid_channels) - 5
-    if shared_people_channels not in {2, 3, 4, 5}:
+    if shared_people_channels not in {2, 3, 4, 5, 6}:
         raise ValueError(
-            "Unsupported actor grid layout: expected 7, 8, 9, or 10 actor channels, "
+            "Unsupported actor grid layout: expected 7-11 actor channels, "
             f"got {actor_grid_channels}"
         )
     return shared_people_channels
@@ -575,6 +579,11 @@ def build_env_kwargs(
     actor_grid_channels = getattr(args, "actor_grid_channels", None)
     if actor_grid_channels is None:
         actor_grid_channels = MODEL_DEFAULTS.grid_channels
+    include_persistent_coverage_channel = getattr(
+        args,
+        "include_persistent_coverage_channel",
+        True,
+    )
     kwargs = {
         "gui": args.gui,
         "x_min": args.x_min,
@@ -653,6 +662,7 @@ def build_env_kwargs(
         "debug_observation_plot_every": args.debug_observation_plot_every,
         "debug_reward_contours": args.debug_reward_contours,
         "actor_grid_channels": actor_grid_channels,
+        "include_persistent_coverage_channel": include_persistent_coverage_channel,
     }
     if overrides:
         kwargs.update(overrides)

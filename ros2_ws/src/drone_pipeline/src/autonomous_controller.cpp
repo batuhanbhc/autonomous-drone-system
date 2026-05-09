@@ -97,6 +97,23 @@ std::pair<int, int> worldToGrid(
   };
 }
 
+std::pair<double, double> gridToWorld(
+  int v,
+  int u,
+  double x_min,
+  double x_max,
+  double y_min,
+  double y_max,
+  int grid_h,
+  int grid_w)
+{
+  const double x = x_min +
+    (static_cast<double>(u) / std::max(1, grid_w - 1)) * (x_max - x_min);
+  const double y = y_min +
+    (static_cast<double>(v) / std::max(1, grid_h - 1)) * (y_max - y_min);
+  return {x, y};
+}
+
 double clampPitchFromDown(double angle_rad)
 {
   constexpr double kHorizonEps = 1e-3;
@@ -292,6 +309,8 @@ AutonomousController::Config AutonomousController::loadConfig()
     yamlOr<double>(controller, "horizontal_fov_deg", cfg.horizontal_fov_deg);
   cfg.vertical_fov_deg =
     yamlOr<double>(controller, "vertical_fov_deg", cfg.vertical_fov_deg);
+  cfg.search_phase_seconds =
+    yamlOr<double>(controller, "search_phase_seconds", cfg.search_phase_seconds);
   cfg.recent_half_life_seconds =
     yamlOr<double>(controller, "recent_half_life_seconds", cfg.recent_half_life_seconds);
   cfg.historic_half_life_seconds =
@@ -303,6 +322,16 @@ AutonomousController::Config AutonomousController::loadConfig()
     yamlOr<double>(controller, "recent_miss_penalty", cfg.recent_miss_penalty);
   cfg.blob_sigma = yamlOr<double>(controller, "blob_sigma", cfg.blob_sigma);
   cfg.ego_sigma = yamlOr<double>(controller, "ego_sigma", cfg.ego_sigma);
+  cfg.people_count_normalizer =
+    yamlOr<double>(controller, "people_count_normalizer", cfg.people_count_normalizer);
+  cfg.count_density_gain =
+    yamlOr<double>(controller, "count_density_gain", cfg.count_density_gain);
+  cfg.count_memory_recent_alpha =
+    yamlOr<double>(controller, "count_memory_recent_alpha", cfg.count_memory_recent_alpha);
+  cfg.count_memory_historic_miss_penalty = yamlOr<double>(
+    controller,
+    "count_memory_historic_miss_penalty",
+    cfg.count_memory_historic_miss_penalty);
   cfg.max_horizontal_velocity =
     yamlOr<double>(controller, "max_horizontal_velocity", cfg.max_horizontal_velocity);
   cfg.horizontal_bin_interval =
@@ -312,6 +341,21 @@ AutonomousController::Config AutonomousController::loadConfig()
     yamlOr<double>(controller, "yaw_bin_interval", cfg.yaw_bin_interval);
   cfg.max_agents = yamlOr<int>(controller, "max_agents", cfg.max_agents);
   cfg.cmd_history_len = yamlOr<int>(controller, "cmd_history_len", cfg.cmd_history_len);
+  cfg.hotspot_top_k = yamlOr<int>(controller, "hotspot_top_k", cfg.hotspot_top_k);
+  cfg.hotspot_min_density =
+    yamlOr<double>(controller, "hotspot_min_density", cfg.hotspot_min_density);
+  cfg.hotspot_suppression_radius_scale = yamlOr<double>(
+    controller,
+    "hotspot_suppression_radius_scale",
+    cfg.hotspot_suppression_radius_scale);
+  cfg.hotspot_suppression_radius_min_cells = yamlOr<int>(
+    controller,
+    "hotspot_suppression_radius_min_cells",
+    cfg.hotspot_suppression_radius_min_cells);
+  cfg.include_persistent_coverage_channel = yamlOr<bool>(
+    controller,
+    "include_persistent_coverage_channel",
+    cfg.include_persistent_coverage_channel);
 
   return cfg;
 }
@@ -391,8 +435,27 @@ void AutonomousController::initOnnx()
     throw std::runtime_error("Unexpected ONNX tensor ranks");
   }
 
+  actor_grid_channels_ = static_cast<int>(grid_shape_[1]);
   config_.grid_h = static_cast<int>(grid_shape_[2]);
   config_.grid_w = static_cast<int>(grid_shape_[3]);
+  include_persistent_coverage_channel_ = config_.include_persistent_coverage_channel;
+  const int base_actor_grid_channels = include_persistent_coverage_channel_ ? 8 : 7;
+  const int actor_grid_delta = actor_grid_channels_ - base_actor_grid_channels;
+  include_recent_count_memory_channel_ = (actor_grid_delta == 1 || actor_grid_delta == 3);
+  exposes_spatial_memory_channels_ = (actor_grid_delta == 2 || actor_grid_delta == 3);
+  shared_people_channels_ = 2 + (exposes_spatial_memory_channels_ ? 2 : 0) +
+    (include_recent_count_memory_channel_ ? 1 : 0) +
+    (include_persistent_coverage_channel_ ? 1 : 0);
+  historic_half_life_steps_ = std::max(1.0, config_.historic_half_life_seconds * config_.control_hz);
+  hotspot_suppression_radius_cells_ = std::max(
+    config_.hotspot_suppression_radius_min_cells,
+    static_cast<int>(std::lround(config_.hotspot_suppression_radius_scale * config_.blob_sigma)));
+  if (config_.search_phase_seconds > 0.0) {
+    search_phase_steps_ = static_cast<std::uint64_t>(std::ceil(
+      config_.search_phase_seconds * config_.control_hz - 1e-9));
+  } else {
+    search_phase_steps_ = 0;
+  }
 
   input_names_ = {
     grid_input_name_.c_str(),
@@ -405,15 +468,34 @@ void AutonomousController::initOnnx()
   vy_bins_ = vx_bins_;
   yaw_rate_bins_ = buildSymmetricBins(config_.max_yaw_rate, config_.yaw_bin_interval);
 
-  const std::size_t expected_local_dim = static_cast<std::size_t>(
-    8 + 6 * (config_.max_agents - 1) + 3 * config_.cmd_history_len);
-  const std::size_t expected_move_mask_dim = vx_bins_.size() * vy_bins_.size();
-  if (static_cast<std::size_t>(local_shape_[1]) != expected_local_dim) {
-    throw std::runtime_error(
-      "ONNX local_base dimension (" + std::to_string(local_shape_[1]) +
-      ") does not match expected " + std::to_string(expected_local_dim) +
-      " = 8 + 6*(max_agents-1) + 3*cmd_history_len");
+  if (actor_grid_delta < 0 || actor_grid_delta > 3) {
+    throw std::runtime_error("Unsupported ONNX actor grid channel count");
   }
+
+  const std::size_t base_local_dim = static_cast<std::size_t>(local_shape_[1]);
+  bool found_layout = false;
+  for (int teammate_slots_candidate = 0;
+    teammate_slots_candidate <= std::max(0, config_.max_agents - 1);
+    ++teammate_slots_candidate)
+  {
+    const std::size_t static_base_dim = static_cast<std::size_t>(
+      11 + 6 * teammate_slots_candidate + 3 * config_.cmd_history_len);
+    if (base_local_dim < static_base_dim) {
+      continue;
+    }
+    const std::size_t extra_dim = base_local_dim - static_base_dim;
+    if (extra_dim % 5 != 0) {
+      continue;
+    }
+    teammate_slots_ = teammate_slots_candidate;
+    hotspot_top_k_inferred_ = static_cast<int>(extra_dim / 5);
+    found_layout = true;
+  }
+  if (!found_layout) {
+    throw std::runtime_error(
+      "ONNX local_base dimension does not match the current PyBullet feature layout");
+  }
+  const std::size_t expected_move_mask_dim = vx_bins_.size() * vy_bins_.size();
   if (static_cast<std::size_t>(move_mask_shape_[1]) != expected_move_mask_dim) {
     throw std::runtime_error("ONNX move_mask dimension does not match configured action bins");
   }
@@ -446,17 +528,82 @@ void AutonomousController::resetObservationState()
     static_cast<std::size_t>(config_.grid_h) * static_cast<std::size_t>(config_.grid_w);
   obs_state_.people_belief_recent.assign(cell_count, 0.0f);
   obs_state_.people_belief_historic.assign(cell_count, 0.0f);
+  obs_state_.people_count_density.assign(cell_count, 0.0f);
+  obs_state_.people_count_memory_recent.assign(cell_count, 0.0f);
+  obs_state_.people_count_memory_historic.assign(cell_count, 0.0f);
   obs_state_.coverage_map.assign(cell_count, 0.0f);
+  obs_state_.persistent_coverage_map.assign(cell_count, 0.0f);
   obs_state_.own_coverage_map.assign(cell_count, 0.0f);
   obs_state_.shared_drone_map.assign(cell_count, 0.0f);
   obs_state_.own_ego_map.assign(cell_count, 0.0f);
   obs_state_.footprint_map.assign(cell_count, 0.0f);
+  obs_state_.people_count_last_observed_step.assign(cell_count, -1);
   controller_step_ = 0;
 
   cmd_history_.clear();
   for (int i = 0; i < config_.cmd_history_len; ++i) {
     cmd_history_.push_back({0.0f, 0.0f, 0.0f});
   }
+}
+
+std::vector<AutonomousController::Hotspot> AutonomousController::extractHotspots() const
+{
+  std::vector<Hotspot> hotspots;
+  hotspots.reserve(static_cast<std::size_t>(hotspot_top_k_inferred_));
+  if (hotspot_top_k_inferred_ <= 0) {
+    return hotspots;
+  }
+
+  std::vector<float> working = obs_state_.people_count_memory_historic;
+  const int radius = hotspot_suppression_radius_cells_;
+
+  for (int hotspot_idx = 0; hotspot_idx < hotspot_top_k_inferred_; ++hotspot_idx) {
+    const auto peak_it = std::max_element(working.begin(), working.end());
+    if (peak_it == working.end() || *peak_it < static_cast<float>(config_.hotspot_min_density)) {
+      break;
+    }
+    const std::size_t flat_idx = static_cast<std::size_t>(std::distance(working.begin(), peak_it));
+    const int v = static_cast<int>(flat_idx / static_cast<std::size_t>(config_.grid_w));
+    const int u = static_cast<int>(flat_idx % static_cast<std::size_t>(config_.grid_w));
+    const auto [wx, wy] = gridToWorld(
+      v,
+      u,
+      config_.x_min,
+      config_.x_max,
+      config_.y_min,
+      config_.y_max,
+      config_.grid_h,
+      config_.grid_w);
+    const int last_seen_step = obs_state_.people_count_last_observed_step[flat_idx];
+    const float age = (last_seen_step < 0) ? 1.0f : static_cast<float>(clampDouble(
+      (static_cast<double>(controller_step_) - static_cast<double>(last_seen_step)) /
+      historic_half_life_steps_,
+      0.0,
+      1.0));
+    hotspots.push_back(Hotspot{
+      static_cast<float>(wx),
+      static_cast<float>(wy),
+      *peak_it,
+      age,
+    });
+
+    const int v0 = std::max(0, v - radius);
+    const int v1 = std::min(config_.grid_h, v + radius + 1);
+    const int u0 = std::max(0, u - radius);
+    const int u1 = std::min(config_.grid_w, u + radius + 1);
+    for (int sv = v0; sv < v1; ++sv) {
+      for (int su = u0; su < u1; ++su) {
+        const int dv = sv - v;
+        const int du = su - u;
+        if (dv * dv + du * du <= radius * radius) {
+          working[gridIndex(config_.grid_h, config_.grid_w, sv, su)] =
+            -std::numeric_limits<float>::infinity();
+        }
+      }
+    }
+  }
+
+  return hotspots;
 }
 
 void AutonomousController::flushLogBuffer()
@@ -580,14 +727,13 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     static_cast<std::size_t>(config_.grid_h) * static_cast<std::size_t>(config_.grid_w);
 
   InferenceInputs inputs;
-  inputs.grid.assign(8 * cell_count, 0.0f);
+  inputs.grid.assign(static_cast<std::size_t>(actor_grid_channels_) * cell_count, 0.0f);
   inputs.local_base.assign(static_cast<std::size_t>(local_shape_[1]), 0.0f);
   inputs.move_mask.assign(static_cast<std::size_t>(move_mask_shape_[1]), 0.0f);
 
   std::vector<float> instant_map(cell_count, 0.0f);
   std::vector<float> step_density(cell_count, 0.0f);
-  std::vector<float> recent_hits(cell_count, 0.0f);
-  std::vector<float> team_detection_support(cell_count, 0.0f);
+  std::vector<float> count_density_obs(cell_count, 0.0f);
   std::vector<float> teammate_coverage_map(cell_count, 0.0f);
 
   const double dt = 1.0 / config_.control_hz;
@@ -595,25 +741,39 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   const double decay_historic = std::pow(0.5, dt / config_.historic_half_life_seconds);
   const double decay_coverage = std::pow(0.5, dt / config_.coverage_half_life_seconds);
 
-  for (float & value : obs_state_.people_belief_recent) {
+  if (exposes_spatial_memory_channels_) {
+    for (float & value : obs_state_.people_belief_recent) {
+      value *= static_cast<float>(decay_recent);
+    }
+    for (float & value : obs_state_.people_belief_historic) {
+      value *= static_cast<float>(decay_historic);
+    }
+  }
+  for (float & value : obs_state_.people_count_memory_recent) {
     value *= static_cast<float>(decay_recent);
   }
-  for (float & value : obs_state_.people_belief_historic) {
+  for (float & value : obs_state_.people_count_memory_historic) {
     value *= static_cast<float>(decay_historic);
   }
   for (float & value : obs_state_.own_coverage_map) {
+    value *= static_cast<float>(decay_coverage);
+  }
+  for (float & value : obs_state_.coverage_map) {
     value *= static_cast<float>(decay_coverage);
   }
 
   obs_state_.footprint_map.assign(cell_count, 0.0f);
   for (int v = 0; v < config_.grid_h; ++v) {
     for (int u = 0; u < config_.grid_w; ++u) {
-      const double wx = config_.x_min +
-        static_cast<double>(u) / static_cast<double>(config_.grid_w - 1) *
-        (config_.x_max - config_.x_min);
-      const double wy = config_.y_min +
-        static_cast<double>(v) / static_cast<double>(config_.grid_h - 1) *
-        (config_.y_max - config_.y_min);
+      const auto [wx, wy] = gridToWorld(
+        v,
+        u,
+        config_.x_min,
+        config_.x_max,
+        config_.y_min,
+        config_.y_max,
+        config_.grid_h,
+        config_.grid_w);
       const auto [forward, lateral] =
         worldToDroneLocal(wx, wy, scene.drone_x, scene.drone_y, scene.drone_yaw);
       if (std::hypot(wx - scene.drone_x, wy - scene.drone_y) > config_.max_range) {
@@ -637,9 +797,23 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
       obs_state_.own_coverage_map[i],
       obs_state_.footprint_map[i]);
     obs_state_.coverage_map[i] = obs_state_.own_coverage_map[i];
+    obs_state_.persistent_coverage_map[i] = std::max(
+      obs_state_.persistent_coverage_map[i],
+      obs_state_.footprint_map[i]);
   }
 
   inputs.visible_count = scene.tracks.size();
+  const bool is_search_phase = search_phase_steps_ > 0 && controller_step_ <= search_phase_steps_;
+  const double search_phase_progress = [&]() {
+      if (search_phase_steps_ == 0) {
+        return 1.0;
+      }
+      const auto completed_search_steps = std::min<std::uint64_t>(
+        controller_step_ > 0 ? controller_step_ - 1 : 0,
+        search_phase_steps_);
+      return static_cast<double>(completed_search_steps) /
+        static_cast<double>(search_phase_steps_);
+    }();
   double centroid_x = 0.0;
   double centroid_y = 0.0;
   if (!scene.tracks.empty()) {
@@ -658,39 +832,52 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
         config_.grid_w);
       splatGaussianMax(instant_map, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
       splatGaussianAdd(step_density, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
-      splatGaussianMax(recent_hits, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
-      splatGaussianMax(
-        team_detection_support,
-        config_.grid_h,
-        config_.grid_w,
-        det_v,
-        det_u,
-        config_.blob_sigma);
-      splatGaussianMax(
-        obs_state_.people_belief_historic,
-        config_.grid_h,
-        config_.grid_w,
-        det_v,
-        det_u,
-        config_.blob_sigma);
+      if (exposes_spatial_memory_channels_) {
+        splatGaussianMax(
+          obs_state_.people_belief_recent,
+          config_.grid_h,
+          config_.grid_w,
+          det_v,
+          det_u,
+          config_.blob_sigma);
+        splatGaussianMax(
+          obs_state_.people_belief_historic,
+          config_.grid_h,
+          config_.grid_w,
+          det_v,
+          det_u,
+          config_.blob_sigma);
+      }
     }
     std::tie(centroid_x, centroid_y) = geometricMedian(track_positions);
   }
 
-  if (config_.recent_miss_penalty > 0.0) {
-    for (std::size_t i = 0; i < cell_count; ++i) {
-      if (obs_state_.footprint_map[i] > 0.5f && team_detection_support[i] < 0.1f) {
-        obs_state_.people_belief_recent[i] *= static_cast<float>(1.0 - config_.recent_miss_penalty);
-      }
+  obs_state_.people_count_density = step_density;
+  for (std::size_t i = 0; i < cell_count; ++i) {
+    count_density_obs[i] = std::tanh(
+      static_cast<float>(config_.count_density_gain) * obs_state_.people_count_density[i]);
+    if (count_density_obs[i] >= static_cast<float>(config_.hotspot_min_density)) {
+      obs_state_.people_count_last_observed_step[i] = static_cast<int32_t>(controller_step_);
     }
   }
-  if (config_.recent_hit_gain > 0.0) {
-    for (std::size_t i = 0; i < cell_count; ++i) {
-      obs_state_.people_belief_recent[i] = std::min(
-        1.0f,
-        obs_state_.people_belief_recent[i] +
-        static_cast<float>(config_.recent_hit_gain) * recent_hits[i]);
+
+  for (std::size_t i = 0; i < cell_count; ++i) {
+    if (obs_state_.footprint_map[i] <= 0.0f) {
+      continue;
     }
+    const float alpha = static_cast<float>(config_.count_memory_recent_alpha);
+    obs_state_.people_count_memory_recent[i] =
+      ((1.0f - alpha) * obs_state_.people_count_memory_recent[i]) +
+      (alpha * count_density_obs[i]);
+    if (count_density_obs[i] < static_cast<float>(config_.hotspot_min_density)) {
+      obs_state_.people_count_memory_historic[i] *= static_cast<float>(
+        1.0 - config_.count_memory_historic_miss_penalty);
+    }
+  }
+  for (std::size_t i = 0; i < cell_count; ++i) {
+    obs_state_.people_count_memory_historic[i] = std::max(
+      obs_state_.people_count_memory_historic[i],
+      count_density_obs[i]);
   }
 
   obs_state_.shared_drone_map.assign(cell_count, 0.0f);
@@ -722,20 +909,36 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   for (int v = 0; v < config_.grid_h; ++v) {
     for (int u = 0; u < config_.grid_w; ++u) {
       const auto idx = gridIndex(config_.grid_h, config_.grid_w, v, u);
-      const float count_density_obs = std::tanh(0.1f * step_density[idx]);
       inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 0, v, u)] = instant_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 1, v, u)] =
-        obs_state_.people_belief_recent[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 2, v, u)] =
-        obs_state_.people_belief_historic[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 3, v, u)] = count_density_obs;
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 4, v, u)] =
+      if (exposes_spatial_memory_channels_) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 1, v, u)] =
+          obs_state_.people_belief_recent[idx];
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 2, v, u)] =
+          obs_state_.people_belief_historic[idx];
+      }
+      const int count_density_channel = exposes_spatial_memory_channels_ ? 3 : 1;
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, count_density_channel, v, u)] =
+        count_density_obs[idx];
+      int next_channel = count_density_channel + 1;
+      if (include_recent_count_memory_channel_) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel, v, u)] =
+          obs_state_.people_count_memory_recent[idx];
+        ++next_channel;
+      }
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel, v, u)] =
+        obs_state_.people_count_memory_historic[idx];
+      if (include_persistent_coverage_channel_) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 1, v, u)] =
+          obs_state_.persistent_coverage_map[idx];
+        ++next_channel;
+      }
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 1, v, u)] =
         obs_state_.own_coverage_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 5, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 2, v, u)] =
         teammate_coverage_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 6, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 3, v, u)] =
         obs_state_.shared_drone_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 7, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 4, v, u)] =
         obs_state_.own_ego_map[idx];
     }
   }
@@ -754,7 +957,7 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     worldToDroneLocal(principal_x, principal_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
   (void)unused_principal_lateral;
 
-  if (!scene.tracks.empty()) {
+  if (!scene.tracks.empty() && !is_search_phase) {
     inputs.centroid_present = 1.0f;
     const auto [centroid_forward, centroid_lateral] =
       worldToDroneLocal(centroid_x, centroid_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
@@ -781,14 +984,43 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     2.0 * (scene.drone_y - config_.y_min) / (config_.y_max - config_.y_min) - 1.0);
   inputs.local_base[2] = static_cast<float>(std::sin(scene.drone_yaw));
   inputs.local_base[3] = static_cast<float>(std::cos(scene.drone_yaw));
-  inputs.local_base[4] = static_cast<float>(scene.tracks.size()) / 30.0f;
-  inputs.local_base[5] = inputs.centroid_present;
-  inputs.local_base[6] = inputs.centroid_forward_offset;
-  inputs.local_base[7] = inputs.centroid_lateral_offset;
+  inputs.local_base[4] = static_cast<float>(scene.tracks.size()) /
+    static_cast<float>(config_.people_count_normalizer);
+  inputs.local_base[5] = static_cast<float>(clampDouble(search_phase_progress, 0.0, 1.0));
+  inputs.local_base[6] = is_search_phase ? 1.0f : 0.0f;
+  inputs.local_base[7] = is_search_phase ? 0.0f : 1.0f;
+  inputs.local_base[8] = inputs.centroid_present;
+  inputs.local_base[9] = inputs.centroid_forward_offset;
+  inputs.local_base[10] = inputs.centroid_lateral_offset;
+
+  const double area_diag = std::max(
+    std::hypot(config_.x_max - config_.x_min, config_.y_max - config_.y_min),
+    1e-6);
+  const auto hotspots = is_search_phase ? std::vector<Hotspot>{} : extractHotspots();
+  std::size_t local_idx = 11;
+  for (int hotspot_idx = 0; hotspot_idx < hotspot_top_k_inferred_; ++hotspot_idx) {
+    if (hotspot_idx < static_cast<int>(hotspots.size())) {
+      const auto & hotspot = hotspots[static_cast<std::size_t>(hotspot_idx)];
+      inputs.local_base[local_idx++] = 1.0f;
+      inputs.local_base[local_idx++] = static_cast<float>(clampDouble(
+        (static_cast<double>(hotspot.x) - scene.drone_x) / area_diag,
+        -1.0,
+        1.0));
+      inputs.local_base[local_idx++] = static_cast<float>(clampDouble(
+        (static_cast<double>(hotspot.y) - scene.drone_y) / area_diag,
+        -1.0,
+        1.0));
+      inputs.local_base[local_idx++] = hotspot.density;
+      inputs.local_base[local_idx++] = hotspot.age;
+    } else {
+      local_idx += 5;
+    }
+  }
 
   // Append command history (oldest → newest), normalized to [-1, 1]
   if (config_.cmd_history_len > 0) {
-    std::size_t hist_idx = static_cast<std::size_t>(8 + 6 * (config_.max_agents - 1));
+    std::size_t hist_idx = static_cast<std::size_t>(
+      11 + 5 * hotspot_top_k_inferred_ + 6 * teammate_slots_);
     for (const auto & cmd : cmd_history_) {
       inputs.local_base[hist_idx++] = config_.max_horizontal_velocity > 0.0
         ? cmd[0] / static_cast<float>(config_.max_horizontal_velocity) : 0.0f;

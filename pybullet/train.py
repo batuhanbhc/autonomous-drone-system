@@ -17,6 +17,7 @@ from config import (
     build_action_space,
     build_env,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_include_persistent_coverage_channel,
     infer_checkpoint_hotspot_top_k,
     trainer_kwargs,
 )
@@ -49,6 +50,9 @@ def main():
     if args.load:
         ckpt = torch.load(args.load, map_location="cpu")
         args.actor_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
+        args.include_persistent_coverage_channel = (
+            infer_checkpoint_include_persistent_coverage_channel(ckpt)
+        )
         trained_num_drones = int(ckpt.get("num_agents", args.num_drones))
         args.hotspot_top_k = infer_checkpoint_hotspot_top_k(
             ckpt,

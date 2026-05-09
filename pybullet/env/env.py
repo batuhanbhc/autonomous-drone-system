@@ -88,7 +88,8 @@ class MultiUAVEnv:
         hotspot_suppression_radius_min_cells: int = 2,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
-        actor_grid_channels: int = 7,
+        actor_grid_channels: int = 8,
+        include_persistent_coverage_channel: bool = True,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
         debug_reward_contours: bool = False,
@@ -218,6 +219,7 @@ class MultiUAVEnv:
             max_horizontal_velocity=self.max_horizontal_velocity,
             max_yaw_rate=self.max_yaw_rate,
             actor_grid_channels=actor_grid_channels,
+            include_persistent_coverage_channel=include_persistent_coverage_channel,
         )
 
         self.reward_calc = RewardCalculator(

@@ -96,7 +96,7 @@ custom_topics:
 autonomous_controller:
   hz: 4.0
   model_path: /marl_agent.onnx
-  max_agents: 2
+  max_agents: 2  # match the trained model architecture; teammate slots are zero-filled in single-drone deployment
   cmd_history_len: 4
 
   # PyBullet eval arena / observation defaults
@@ -107,21 +107,31 @@ autonomous_controller:
   max_range: 15.0
   horizontal_fov_deg: 55.8
   vertical_fov_deg: 43.3
+  search_phase_seconds: 15.0
 
   # Observation-state decay and belief update parameters
-  recent_half_life_seconds: 10.0
+  recent_half_life_seconds: 20.0
   historic_half_life_seconds: 60.0
-  coverage_half_life_seconds: 60.0
+  coverage_half_life_seconds: 20.0
   recent_hit_gain: 0.6
   recent_miss_penalty: 0.25
-  blob_sigma: 1.0
+  blob_sigma: 1.5
   ego_sigma: 2.5
+  people_count_normalizer: 30.0
+  count_density_gain: 0.35
+  count_memory_recent_alpha: 0.7
+  count_memory_historic_miss_penalty: 0.2
+  hotspot_top_k: 3
+  hotspot_min_density: 0.3
+  hotspot_suppression_radius_scale: 4.0
+  hotspot_suppression_radius_min_cells: 2
+  include_persistent_coverage_channel: true
 
   # Discrete action bins used by the exported ONNX actor
   max_horizontal_velocity: 1.0
   horizontal_bin_interval: 1.0
-  max_yaw_rate: 0.5
-  yaw_bin_interval: 0.5
+  max_yaw_rate: 0.7
+  yaw_bin_interval: 0.7
 
 mavros_topics:
     state: "/mavros/state"

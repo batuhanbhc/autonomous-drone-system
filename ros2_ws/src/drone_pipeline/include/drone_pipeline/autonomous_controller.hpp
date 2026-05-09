@@ -45,32 +45,47 @@ private:
     double horizontal_fov_deg{55.8};
     double vertical_fov_deg{43.3};
     double camera_tilt_deg{45.0};
-    double recent_half_life_seconds{10.0};
+    double recent_half_life_seconds{20.0};
     double historic_half_life_seconds{60.0};
-    double coverage_half_life_seconds{60.0};
+    double coverage_half_life_seconds{20.0};
     double recent_hit_gain{0.6};
     double recent_miss_penalty{0.25};
-    double blob_sigma{1.0};
+    double search_phase_seconds{15.0};
+    double blob_sigma{1.5};
     double ego_sigma{2.5};
+    double people_count_normalizer{30.0};
+    double count_density_gain{0.35};
+    double count_memory_recent_alpha{0.7};
+    double count_memory_historic_miss_penalty{0.2};
     double max_horizontal_velocity{1.0};
     double horizontal_bin_interval{1.0};
-    double max_yaw_rate{0.5};
-    double yaw_bin_interval{0.5};
-    int grid_h{80};
-    int grid_w{80};
+    double max_yaw_rate{0.7};
+    double yaw_bin_interval{0.7};
+    int grid_h{60};
+    int grid_w{60};
     int max_agents{2};
     int cmd_history_len{4};
+    int hotspot_top_k{3};
+    double hotspot_min_density{0.3};
+    double hotspot_suppression_radius_scale{4.0};
+    int hotspot_suppression_radius_min_cells{2};
+    bool include_persistent_coverage_channel{true};
   };
 
   struct ObservationState
   {
     std::vector<float> people_belief_recent;
     std::vector<float> people_belief_historic;
+    std::vector<float> people_count_density;
+    std::vector<float> people_count_memory_recent;
+    std::vector<float> people_count_memory_historic;
     std::vector<float> coverage_map;
+    std::vector<float> persistent_coverage_map;
     std::vector<float> own_coverage_map;
     std::vector<float> shared_drone_map;
     std::vector<float> own_ego_map;
     std::vector<float> footprint_map;
+    std::vector<int32_t> people_count_last_observed_step;
   };
 
   struct InferenceInputs
@@ -84,6 +99,14 @@ private:
     float centroid_lateral_offset{0.0f};
   };
 
+  struct Hotspot
+  {
+    float x{0.0f};
+    float y{0.0f};
+    float density{0.0f};
+    float age{0.0f};
+  };
+
   struct CsvRow
   {
     std::string line;
@@ -95,6 +118,7 @@ private:
   void initLogging();
   void resetObservationState();
   void flushLogBuffer();
+  std::vector<Hotspot> extractHotspots() const;
 
   void onScene(drone_msgs::msg::SceneState::ConstSharedPtr msg);
   void onEnable(drone_msgs::msg::Toggle::ConstSharedPtr msg);
@@ -154,6 +178,16 @@ private:
   std::vector<float> vx_bins_;
   std::vector<float> vy_bins_;
   std::vector<float> yaw_rate_bins_;
+  int actor_grid_channels_{0};
+  int shared_people_channels_{0};
+  int teammate_slots_{0};
+  int hotspot_top_k_inferred_{0};
+  int hotspot_suppression_radius_cells_{0};
+  bool include_persistent_coverage_channel_{true};
+  bool include_recent_count_memory_channel_{false};
+  bool exposes_spatial_memory_channels_{false};
+  double historic_half_life_steps_{1.0};
+  std::uint64_t search_phase_steps_{0};
 
   std::string session_dir_;
   std::ofstream log_file_;

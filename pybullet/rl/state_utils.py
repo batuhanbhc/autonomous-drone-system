@@ -4,7 +4,8 @@ Utilities for building the centralised global state used by the critic.
 The critic grid has shape ((shared_people_channels + 3) + 3 * max_agents, H, W):
   channel  0              — shared instantaneous spatial support union
   channel ...             — shared people channels from the actor layout
-                            (current default: count density, historic count)
+                            (current default: count density, historic count,
+                             permanent coverage)
                             (legacy 8/10-channel checkpoints additionally include
                              recent count memory)
                             (legacy 9/10-channel checkpoints additionally include

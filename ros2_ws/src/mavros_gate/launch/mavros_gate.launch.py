@@ -26,13 +26,19 @@ def generate_launch_description():
         description="Serial port for the MCU bridge (vertical estimate packets)",
     )
 
+    session_dir_arg = DeclareLaunchArgument(
+        "session_dir",
+        default_value="",
+        description="Optional shared session directory for CSV/video outputs.",
+    )
+
     control_gate_node = Node(
         package="mavros_gate",
         executable="control_gate",
         name="control_gate",
         output="screen",
         parameters=[
-            {"drone_id": LaunchConfiguration("drone_id")}
+            {"drone_id": LaunchConfiguration("drone_id")},
         ],
     )
 
@@ -53,13 +59,15 @@ def generate_launch_description():
         name="altitude_controller",
         output="screen",
         parameters=[
-            {"drone_id": LaunchConfiguration("drone_id")}
+            {"drone_id": LaunchConfiguration("drone_id")},
+            {"session_dir": LaunchConfiguration("session_dir")},
         ],
     )
 
     return LaunchDescription([
         drone_id_arg,
         serial_port_arg,
+        session_dir_arg,
         control_gate_node,
         mcu_bridge_node,
         altitude_controller_node,
