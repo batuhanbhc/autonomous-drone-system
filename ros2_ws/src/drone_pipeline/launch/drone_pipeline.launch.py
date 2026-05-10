@@ -2,7 +2,7 @@ import os
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.actions import ComposableNodeContainer
@@ -27,20 +27,12 @@ def create_session_dir():
     os.makedirs(session_dir, exist_ok=False)
     return session_dir
 
-def generate_launch_description():
-    stream_codec_arg = DeclareLaunchArgument(
-        "stream_codec",
-        default_value="",
-        description="Stream codec override: 'mjpeg' or 'h264'. Empty string uses mavros_config.",
-    )
-    gcs_host_arg = DeclareLaunchArgument(
-        "gcs_host",
-        default_value="",
-        description="GCS host for direct video streaming. Empty string uses mavros_config if set.",
-    )
+
+def launch_setup(context, *args, **kwargs):
     stream_codec = LaunchConfiguration("stream_codec")
     gcs_host = LaunchConfiguration("gcs_host")
-    session_dir = create_session_dir()
+    configured_session_dir = LaunchConfiguration("session_dir").perform(context).strip()
+    session_dir = configured_session_dir or create_session_dir()
 
     container = ComposableNodeContainer(
         name="drone_pipeline_container",
@@ -89,4 +81,29 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    return LaunchDescription([stream_codec_arg, gcs_host_arg, container, flight_logger])
+    return [container, flight_logger]
+
+
+def generate_launch_description():
+    stream_codec_arg = DeclareLaunchArgument(
+        "stream_codec",
+        default_value="",
+        description="Stream codec override: 'mjpeg' or 'h264'. Empty string uses mavros_config.",
+    )
+    gcs_host_arg = DeclareLaunchArgument(
+        "gcs_host",
+        default_value="",
+        description="GCS host for direct video streaming. Empty string uses mavros_config if set.",
+    )
+    session_dir_arg = DeclareLaunchArgument(
+        "session_dir",
+        default_value="",
+        description="Optional shared session directory for CSV/video outputs.",
+    )
+
+    return LaunchDescription([
+        stream_codec_arg,
+        gcs_host_arg,
+        session_dir_arg,
+        OpaqueFunction(function=launch_setup),
+    ])

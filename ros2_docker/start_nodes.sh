@@ -3,12 +3,19 @@ set -e
 source /entrypoint.sh
 
 # Set ROS2 related environment variables
-DRONE_ID=$(yq '.drone_id' /home/batuhan/ros2_ws/src/mavros_config/config/control_params.yaml)
+CONFIG_PATH=/home/batuhan/ros2_ws/src/mavros_config/config/control_params.yaml
+DRONE_ID=$(yq '.drone_id' "$CONFIG_PATH")
+RECORDINGS_DIR=$(yq -r '.flight_params.logs_path' "$CONFIG_PATH")
 LOG_DIR="/home/batuhan/shared/logs"
 mkdir -p "$LOG_DIR"
+mkdir -p "$RECORDINGS_DIR"
+DIR_COUNT=$(find "$RECORDINGS_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
+printf -v SESSION_DIR "%s/%04d" "$RECORDINGS_DIR" "$((DIR_COUNT + 1))"
+mkdir "$SESSION_DIR"
 
 echo "DRONE_ID: $DRONE_ID"
 echo "ROS_DOMAIN_ID: $ROS_DOMAIN_ID"
+echo "SESSION_DIR: $SESSION_DIR"
 
 
 echo "[startup] Checking for FCU on UART /dev/ttyAMA0..."
@@ -42,6 +49,7 @@ echo "[startup] FCU heartbeat received."
 
 echo "[startup] FCU connected, starting mavros_gate..."
 ros2 launch mavros_gate mavros_gate_compositor.launch.py drone_id:=$DRONE_ID \
+  session_dir:=$SESSION_DIR \
   >> "$LOG_DIR/mavros_gate.log" 2>&1 &
 
 MAVROS_GATE_PID=$! 
@@ -51,6 +59,7 @@ echo "[startup] mavros_gate started with PID $MAVROS_GATE_PID."
 
 echo "[startup] Starting drone_pipeline..."
 ros2 launch drone_pipeline drone_pipeline.launch.py \
+    session_dir:=$SESSION_DIR \
     >> "$LOG_DIR/drone_pipeline.log" 2>&1 &
 echo "[startup] drone_pipeline started with PID $!."
 
