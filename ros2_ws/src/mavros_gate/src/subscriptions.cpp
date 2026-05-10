@@ -1,7 +1,21 @@
 #include "mavros_gate/control_gate.hpp"
 
+#include <cmath>
+
 
 using DroneInfo = drone_msgs::msg::DroneInfo;
+
+namespace {
+bool shouldEmitThrottled(std::chrono::steady_clock::time_point& last_t, double period_s) {
+  const auto now = std::chrono::steady_clock::now();
+  if (last_t.time_since_epoch().count() == 0 ||
+      std::chrono::duration<double>(now - last_t).count() >= period_s) {
+    last_t = now;
+    return true;
+  }
+  return false;
+}
+}  // namespace
 
 
 // ============================================================================
@@ -308,11 +322,87 @@ void ControlGateNode::onFailsafeWatchdog() {
 void ControlGateNode::onVerticalEstimate(const VerticalEstimate::SharedPtr msg) {
   if (inInitializationPhase()) return;
 
-  std::lock_guard<std::mutex> lk(vert_est_mtx_);
-  vert_est_.z_world_m = msg->z_world_m;
-  vert_est_.vz_mps    = msg->vz_world_mps;
-  vert_est_.agl_m     = msg->agl_m;
-  vert_est_.valid     = true;
+  {
+    std::lock_guard<std::mutex> lk(vert_est_mtx_);
+    vert_est_.z_world_m        = msg->z_world_m;
+    vert_est_.vz_mps           = msg->vz_world_mps;
+    vert_est_.agl_m            = msg->agl_m;
+    vert_est_.latest_lidar_m   = msg->latest_lidar_m;
+    vert_est_.baro_pressure_pa = msg->baro_pressure_pa;
+    vert_est_.lidar_age_ms     = msg->lidar_age_ms;
+    vert_est_.ekf_initialized  = msg->ekf_initialized;
+    vert_est_.lidar_accepted   = msg->lidar_accepted;
+    vert_est_.lidar_rejected   = msg->lidar_rejected;
+    vert_est_.baro_rejected    = msg->baro_rejected;
+    vert_est_.valid            = true;
+  }
+
+  if (msg->lidar_rejected && shouldEmitThrottled(last_lidar_reject_warn_t_, 1.0)) {
+    RCLCPP_WARN(get_logger(),
+      "[mcu_est] Lidar rejected. latest_lidar=%.3f m age_ms=%u",
+      msg->latest_lidar_m, msg->lidar_age_ms);
+    publishInfo(DroneInfo::LEVEL_WARN,
+      "MCU estimator warning: lidar is currently rejected.");
+  }
+
+  if (msg->baro_rejected && shouldEmitThrottled(last_baro_reject_warn_t_, 1.0)) {
+    RCLCPP_ERROR(get_logger(),
+      "[mcu_est] Barometer rejected. baro_pressure_pa=%.1f lidar_rejected=%u",
+      msg->baro_pressure_pa, msg->lidar_rejected ? 1u : 0u);
+    publishInfo(DroneInfo::LEVEL_ERROR,
+      "MCU estimator critical: barometer is currently rejected; lidar fallback active.");
+  }
+
+  if (msg->lidar_rejected && msg->baro_rejected && alt_ctrl_mode_ == AltCtrlMode::AltHold) {
+    abortAltitudeController(
+      "MCU estimate corrupted (barometer rejected and lidar rejected).",
+      DroneInfo::LEVEL_ERROR);
+    return;
+  }
+
+  if (alt_ctrl_mode_ != AltCtrlMode::AltHold || alt_hold_operator_override_) {
+    resetAltHoldSafetyMonitor();
+    return;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  const float current_agl = msg->agl_m;
+  const float current_error_mag = std::fabs(current_agl - alt_ctrl_target_agl_);
+
+  if (!alt_hold_safety_monitor_initialized_) {
+    alt_hold_safety_monitor_initialized_ = true;
+    alt_hold_last_agl_m_ = current_agl;
+    alt_hold_last_agl_t_ = now;
+    alt_hold_min_error_mag_m_ = current_error_mag;
+    return;
+  }
+
+  const double dt_s = std::chrono::duration<double>(now - alt_hold_last_agl_t_).count();
+  if (dt_s > 0.0 && dt_s <= 1.0) {
+    const float estimated_vz_mps = (current_agl - alt_hold_last_agl_m_) / static_cast<float>(dt_s);
+    const float vz_lo = alt_ctrl_output_min_ * alt_hold_estimated_vz_limit_scale_;
+    const float vz_hi = alt_ctrl_output_max_ * alt_hold_estimated_vz_limit_scale_;
+    if (estimated_vz_mps < vz_lo || estimated_vz_mps > vz_hi) {
+      abortAltitudeController(
+        stringf("estimated AGL rate %.2f m/s exceeds safety limit [%.2f, %.2f] m/s.",
+                estimated_vz_mps, vz_lo, vz_hi),
+        DroneInfo::LEVEL_ERROR);
+      return;
+    }
+  }
+
+  alt_hold_last_agl_m_ = current_agl;
+  alt_hold_last_agl_t_ = now;
+  if (current_error_mag < alt_hold_min_error_mag_m_) {
+    alt_hold_min_error_mag_m_ = current_error_mag;
+  }
+
+  if (current_error_mag > alt_hold_min_error_mag_m_ + alt_hold_max_error_deviation_m_) {
+    abortAltitudeController(
+      stringf("AGL deviation grew from %.2f m best-error to %.2f m (limit + %.2f m).",
+              alt_hold_min_error_mag_m_, current_error_mag, alt_hold_max_error_deviation_m_),
+      DroneInfo::LEVEL_ERROR);
+  }
 }
 
 

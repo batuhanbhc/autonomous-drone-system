@@ -268,9 +268,11 @@ void McuBridgeNode::serialReadLoop()
     std::memcpy(&p, payloadBytes, sizeof(p));
 
     RCLCPP_DEBUG(get_logger(),
-      "seq=%u t_ms=%u z=%.3f vz=%.3f agl=%.3f init=%u lidar=%u latest_lidar=%.3f age_ms=%u",
+      "seq=%u t_ms=%u z=%.3f vz=%.3f agl=%.3f init=%u lidar_acc=%u lidar_rej=%u "
+      "baro_rej=%u latest_lidar=%.3f age_ms=%u baro_pa=%.1f",
       seq, p.timestamp_ms, p.z_world_m, p.vz_world_mps, p.agl_m,
-      p.ekf_initialized, p.lidar_accepted, p.latest_lidar_m, p.lidar_age_ms);
+      p.ekf_initialized, p.lidar_accepted, p.lidar_rejected, p.baro_rejected,
+      p.latest_lidar_m, p.lidar_age_ms, p.baro_pressure_pa);
 
     // ── publish ───────────────────────────────────────────────────────────
     //   x = z_world_m  (height above origin)
@@ -284,8 +286,11 @@ void McuBridgeNode::serialReadLoop()
     msg.agl_m = p.agl_m;
     msg.ekf_initialized = (p.ekf_initialized != 0);
     msg.lidar_accepted = (p.lidar_accepted != 0);
+    msg.lidar_rejected = (p.lidar_rejected != 0);
+    msg.baro_rejected = (p.baro_rejected != 0);
     msg.latest_lidar_m = p.latest_lidar_m;
     msg.lidar_age_ms = p.lidar_age_ms;
+    msg.baro_pressure_pa = p.baro_pressure_pa;
 
     pub_vertical_->publish(msg);
   }

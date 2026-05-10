@@ -8,7 +8,9 @@ flight_params:
   vz_override_timeout_s: 1.0          # how long to wait for operator inactivity before entering AltHold
   alt_ctrl_setpoint_hz: 20.0          # how often guided velocity setpoints are sent to FCU
   cmd_stale_timeout_s: 0.5            
-  alt_ctrl_min_agl_m: 2.0
+  alt_ctrl_min_agl_m: 3.0
+  alt_hold_estimated_vz_limit_scale: 2.0
+  alt_hold_max_error_deviation_m: 0.75
 
   takeoff_m: 2.0
   takeoff_reach_threshold_m:  0.20   # ±tolerance to consider takeoff altitude reached (m)
@@ -18,9 +20,9 @@ flight_params:
   logs_path: "/home/batuhan/shared/recordings"
 
 altitude_controller:
-  kp: 0.9
+  kp: 0.8
   ki: 0.0
-  kd: 1.0
+  kd: 0.2
   d_lpf_tau_s: 0.1
   output_min: -1.5
   output_max:  1.5
@@ -46,13 +48,13 @@ vision_pipeline:
   obj_det_person_class_idx: 0     # person class index
 
   use_mcu_height_estimate: true
-  projection_altitude_lpf_alpha: 0.7  # current-height weight; 1.0 disables smoothing
+  projection_altitude_lpf_alpha: 0.5  # current-height weight; 1.0 disables smoothing
 
   tracker:
     max_association_distance_m: 5.0
     mahalanobis_gate: 12.25
-    max_missed_frames: 20
-    min_hits_to_confirm: 6
+    max_missed_frames: 5
+    min_hits_to_confirm: 5
     process_noise_std_pos: 0.75
     process_noise_std_vel: 2.0
     base_meas_noise_m: 2.0

@@ -19,9 +19,9 @@ static constexpr uint32_t COMPANION_SEND_HZ      = 20;
 static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
 
 // Set to 1 if you want to stop text prints after boot and only emit binary.
-static constexpr bool USB_BINARY_ONLY_AFTER_INIT = true;
+static constexpr bool USB_BINARY_ONLY_AFTER_INIT = false;
 static constexpr bool PRINT_EULER_DEBUG_AFTER_INIT = false;
-static constexpr bool PRINT_ESTIMATOR_DEBUG_AFTER_INIT = false;
+static constexpr bool PRINT_ESTIMATOR_DEBUG_AFTER_INIT = true;
 static constexpr bool PRINT_WORLD_ACCEL_Z_DEBUG_AFTER_INIT = false;
 static constexpr uint32_t EULER_DEBUG_PERIOD_MS = 100;
 static constexpr uint32_t ESTIMATOR_DEBUG_PERIOD_MS = 100;
@@ -58,8 +58,11 @@ struct VerticalEstimatePayload {
   float agl_m;
   uint8_t ekf_initialized;
   uint8_t lidar_accepted;
+  uint8_t lidar_rejected;
+  uint8_t baro_rejected;
   float latest_lidar_m;
   uint32_t lidar_age_ms;
+  float baro_pressure_pa;
 };
 #pragma pack(pop)
 
@@ -124,6 +127,9 @@ static void sendVerticalEstimatePacket() {
   p.agl_m              = altitudeEkf.s.agl_m;
   p.ekf_initialized    = altitudeEkf.s.initialized ? 1 : 0;
   p.lidar_accepted     = altitudeEkf.s.lastLidarAccepted ? 1 : 0;
+  p.lidar_rejected     =
+      (altitudeEkf.s.lidarBlocked || altitudeEkf.s.lidarHardRejected) ? 1 : 0;
+  p.baro_rejected      = altitudeEkf.s.baroRejected ? 1 : 0;
   if (lidarData.timestampMs == 0) {
     p.latest_lidar_m = NAN;
     p.lidar_age_ms = 0xFFFFFFFFu;
@@ -131,6 +137,7 @@ static void sendVerticalEstimatePacket() {
     p.latest_lidar_m = 0.01f * static_cast<float>(lidarData.distanceCm);
     p.lidar_age_ms = nowMs - lidarData.timestampMs;
   }
+  p.baro_pressure_pa = baroData.pressurePa;
 
   const uint8_t payloadLen = (uint8_t)sizeof(VerticalEstimatePayload);
 

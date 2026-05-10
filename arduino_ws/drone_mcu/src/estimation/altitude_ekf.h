@@ -13,13 +13,19 @@ struct AltitudeEkfState {
   bool  initialized         = false;
 
   // Diagnostics
+  bool  lastBaroAccepted     = false;
   float lastBaroResidual_m   = 0.0f;
   float lastLidarResidual_m  = 0.0f;
   float lastRecoverySpread_m = 0.0f;
   bool  lastLidarAccepted    = false;
+  bool  baroRejected         = false;
   bool  lidarBlocked         = false;
+  bool  lidarHardRejected    = false;
+  uint8_t baroBadCount       = 0;
+  uint8_t baroGoodCount      = 0;
   uint8_t lidarRecoveryCount = 0;
   uint8_t lidarRejectCount   = 0;
+  uint8_t lidarHardRejectCount = 0;
 };
 
 struct AltitudeEkf {
@@ -33,10 +39,12 @@ struct AltitudeEkf {
   float qAccelBias          = 0.01f;   // accel bias RW
   float qBaroBias_m         = 0.005f;  // baro bias RW
 
-  float rBaro_m             = 0.3f;    // baro stddev
+  float rBaro_m             = 0.9f;    // baro stddev
   float maxPredictAccel_mps2 = 10.0f;  // reject impossible vertical accel spikes
   float maxBaroRate_mps      = 2.5f;  // reject implausible baro step-to-step jumps
-  float maxBaroResidual_m    = 10.0f;  // hard cap on single baro innovation
+  float maxBaroResidual_m    = 5.0f;  // hard cap on single baro innovation
+  uint8_t baroRejectConsecutiveNeeded = 3;
+  uint8_t baroRecoverConsecutiveNeeded = 6;
 
   // Max tilt degree for lidar vaalidity.
   float maxTiltDeg          = 45.0f;
@@ -44,9 +52,9 @@ struct AltitudeEkf {
   // Lidar outage / recovery logic.
   uint8_t rejectConsecutiveNeeded  = 5;
   uint8_t recoverConsecutiveNeeded = 6;
-  float recoverStableBand_m        = 0.15f;
-  float occlusionMinShort_m        = 0.25f;
-  float occlusionMaxShort_m        = 0.60f;
+  float recoverStableBand_m        = 0.20f;
+  float occlusionMinShort_m        = 0.80f;
+  float occlusionMaxShort_m        = 1.5f;
   float occlusionSigma             = 3.0f;
   float recoverySigma              = 8.0f;
   float recoveryLidarSum_m         = 0.0f;

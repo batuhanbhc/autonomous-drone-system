@@ -145,6 +145,13 @@ private:
     float agl_m{0.0f};
     float z_world_m{0.0f};
     float vz_mps{0.0f};
+    float latest_lidar_m{0.0f};
+    float baro_pressure_pa{0.0f};
+    uint32_t lidar_age_ms{0xFFFFFFFFu};
+    bool  ekf_initialized{false};
+    bool  lidar_accepted{false};
+    bool  lidar_rejected{false};
+    bool  baro_rejected{false};
     bool  valid{false};
   };
 
@@ -199,6 +206,10 @@ private:
   float  alt_ctrl_setpoint_hz_{20.0f};     // rate of the guided-setpoint publish timer
   float  cmd_stale_timeout_s_{0.5f};       // seconds without update → component zeroed
   float  alt_ctrl_min_agl_m_{2.0f};        // below this AGL, negative Vz from PID is suppressed
+  float  alt_ctrl_output_min_{-1.5f};
+  float  alt_ctrl_output_max_{1.5f};
+  float  alt_hold_estimated_vz_limit_scale_{2.0f};
+  float  alt_hold_max_error_deviation_m_{1.0f};
 
   // ── Runtime flags ─────────────────────────────────────────────────────────
   bool setpoint_blocked_{true};
@@ -239,6 +250,16 @@ private:
 
   // Throttle log: last time we printed the "PID Vz suppressed near ground" warning.
   std::chrono::steady_clock::time_point last_suppress_warn_t_{};
+  std::chrono::steady_clock::time_point last_lidar_reject_warn_t_{};
+  std::chrono::steady_clock::time_point last_baro_reject_warn_t_{};
+  std::chrono::steady_clock::time_point last_dual_reject_abort_t_{};
+  std::chrono::steady_clock::time_point last_alt_hold_vz_abort_t_{};
+  std::chrono::steady_clock::time_point last_alt_hold_error_abort_t_{};
+
+  bool  alt_hold_safety_monitor_initialized_{false};
+  float alt_hold_last_agl_m_{0.0f};
+  MonotonicTime alt_hold_last_agl_t_{};
+  float alt_hold_min_error_mag_m_{1e9f};
 
   // ── Guided setpoint state ─────────────────────────────────────────────────
   // Single-point-of-entry for all MAVLink setpoint publishing.
@@ -295,8 +316,11 @@ private:
   void enterAltHold();
   void exitAltHold();
   void closeAltitudeController(const std::string& reason);
+  void abortAltitudeController(const std::string& reason,
+                               uint8_t info_level = DroneInfo::LEVEL_ERROR);
   void activatePid(float target_agl);   // send active=true command to altitude_controller
   void deactivatePid();                 // send active=false command to altitude_controller
+  void resetAltHoldSafetyMonitor();
 
   // Update a single component of guided_cmd_ and stamp its update time.
   void updateGuidedVx(float vx);

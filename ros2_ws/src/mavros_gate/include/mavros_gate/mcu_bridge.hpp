@@ -25,8 +25,11 @@
 //    float     agl_m
 //    uint8_t   ekf_initialized
 //    uint8_t   lidar_accepted
+//    uint8_t   lidar_rejected
+//    uint8_t   baro_rejected
 //    float     latest_lidar_m
 //    uint32_t  lidar_age_ms
+//    float     baro_pressure_pa
 // ---------------------------------------------------------------------------
 
 class McuBridgeNode : public rclcpp::Node
@@ -40,7 +43,7 @@ private:
   static constexpr uint8_t SYNC0               = 0xA5;
   static constexpr uint8_t SYNC1               = 0x5A;
   static constexpr uint8_t MSG_VERTICAL        = 0x01;
-  static constexpr uint8_t EXPECTED_PAYLOAD_LEN = 26;
+  static constexpr uint8_t EXPECTED_PAYLOAD_LEN = 32;
 
 #pragma pack(push, 1)
   struct VerticalEstimatePayload
@@ -51,8 +54,11 @@ private:
     float    agl_m;
     uint8_t  ekf_initialized;
     uint8_t  lidar_accepted;
+    uint8_t  lidar_rejected;
+    uint8_t  baro_rejected;
     float    latest_lidar_m;
     uint32_t lidar_age_ms;
+    float    baro_pressure_pa;
   };
 #pragma pack(pop)
 

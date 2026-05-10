@@ -170,6 +170,21 @@ bool ControlGateNode::loadConfig() {
   load_f("cmd_stale_timeout_s",         cmd_stale_timeout_s_);
   load_f("alt_ctrl_min_agl_m",          alt_ctrl_min_agl_m_);
 
+  YAML::Node ac = root["altitude_controller"];
+  auto load_ac = [&](const char* key, float& field) {
+    try {
+      field = ac[key].as<float>();
+    } catch (const YAML::Exception&) {
+      RCLCPP_WARN(get_logger(), "YAML missing altitude_controller.%s", key);
+      ok = false;
+    }
+  };
+
+  load_ac("output_min", alt_ctrl_output_min_);
+  load_ac("output_max", alt_ctrl_output_max_);
+  load_f("alt_hold_estimated_vz_limit_scale", alt_hold_estimated_vz_limit_scale_);
+  load_f("alt_hold_max_error_deviation_m", alt_hold_max_error_deviation_m_);
+
   return ok;
 }
 
@@ -379,6 +394,7 @@ void ControlGateNode::enterAltHold()
   alt_ctrl_output_fresh_     = false;
   guided_cmd_                = GuidedCmd{};   // zero all components
   last_vz_override_t_        = std::chrono::steady_clock::now();  // start timeout clock now
+  resetAltHoldSafetyMonitor();
 
   guided_setpoint_timer_->reset();  // start publishing setpoints
 
@@ -392,6 +408,7 @@ void ControlGateNode::exitAltHold()
   alt_hold_operator_override_ = true;
   alt_ctrl_output_fresh_     = false;
   guided_cmd_                = GuidedCmd{};
+  resetAltHoldSafetyMonitor();
 
   guided_setpoint_timer_->cancel();
   deactivatePid();
@@ -402,11 +419,17 @@ void ControlGateNode::exitAltHold()
 
 void ControlGateNode::closeAltitudeController(const std::string& reason)
 {
+  abortAltitudeController(reason, DroneInfo::LEVEL_INFO);
+}
+
+void ControlGateNode::abortAltitudeController(const std::string& reason, uint8_t info_level)
+{
   alt_ctrl_mode_              = AltCtrlMode::Off;
   alt_hold_operator_override_ = true;
   alt_ctrl_vz_output_         = 0.0f;
   alt_ctrl_output_fresh_      = false;
   guided_cmd_                 = GuidedCmd{};
+  resetAltHoldSafetyMonitor();
 
   guided_setpoint_timer_->cancel();
   deactivatePid();
@@ -415,14 +438,21 @@ void ControlGateNode::closeAltitudeController(const std::string& reason)
     ? "Altitude controller disabled."
     : stringf("Altitude controller disabled: %s", reason.c_str());
 
-  RCLCPP_INFO(get_logger(), "[alt_hold] %s", msg.c_str());
-  publishInfo(DroneInfo::LEVEL_INFO, msg);
+  if (info_level >= DroneInfo::LEVEL_ERROR) {
+    RCLCPP_ERROR(get_logger(), "[alt_hold] %s", msg.c_str());
+  } else if (info_level == DroneInfo::LEVEL_WARN) {
+    RCLCPP_WARN(get_logger(), "[alt_hold] %s", msg.c_str());
+  } else {
+    RCLCPP_INFO(get_logger(), "[alt_hold] %s", msg.c_str());
+  }
+  publishInfo(info_level, msg);
 }
 
 void ControlGateNode::activatePid(float target_agl)
 {
   alt_ctrl_target_agl_   = target_agl;
   alt_ctrl_output_fresh_ = false;   // wait for fresh PID output before using it
+  resetAltHoldSafetyMonitor();
   publishAltCtrlInput(/*active=*/true, target_agl, /*reset_integral=*/true);
 
   RCLCPP_INFO(get_logger(),
@@ -434,6 +464,15 @@ void ControlGateNode::deactivatePid()
   publishAltCtrlInput(/*active=*/false, /*target_agl_m=*/0.0f);
   guided_cmd_.vz         = 0.0f;
   alt_ctrl_output_fresh_ = false;
+  resetAltHoldSafetyMonitor();
+}
+
+void ControlGateNode::resetAltHoldSafetyMonitor()
+{
+  alt_hold_safety_monitor_initialized_ = false;
+  alt_hold_last_agl_m_ = 0.0f;
+  alt_hold_last_agl_t_ = MonotonicTime{};
+  alt_hold_min_error_mag_m_ = 1e9f;
 }
 
 

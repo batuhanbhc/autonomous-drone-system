@@ -195,8 +195,10 @@ void AltitudeControllerNode::initLogging()
   log_file_.seekp(0, std::ios::end);
   if (log_file_.tellp() == 0) {
     log_file_
-      << "timestamp_sec,timestamp_nanosec,target_agl_m,current_agl_m,error_m,"
-      << "command_vz_mps,p_term,i_term,d_term\n";
+      << "timestamp_sec,timestamp_nanosec,target_agl_m,current_agl_m,current_vz_mps,"
+      << "z_world_m,ekf_initialized,lidar_accepted,lidar_rejected,baro_rejected,"
+      << "latest_lidar_m,lidar_age_ms,baro_pressure_pa,error_m,command_vz_mps,"
+      << "p_term,i_term,d_term\n";
     log_file_.flush();
   }
 }
@@ -258,8 +260,7 @@ AltitudeControllerNode::ControlTerms AltitudeControllerNode::computeDesiredVeloc
 }
 
 void AltitudeControllerNode::logState(
-  const std_msgs::msg::Header & header,
-  float current_agl,
+  const VerticalEst & measurement,
   const ControlTerms & terms)
 {
   std::lock_guard<std::mutex> lk(log_mtx_);
@@ -268,10 +269,19 @@ void AltitudeControllerNode::logState(
   }
 
   log_file_
-    << header.stamp.sec << ','
-    << header.stamp.nanosec << ','
+    << measurement.header.stamp.sec << ','
+    << measurement.header.stamp.nanosec << ','
     << target_agl_ << ','
-    << current_agl << ','
+    << measurement.agl_m << ','
+    << measurement.vz_world_mps << ','
+    << measurement.z_world_m << ','
+    << measurement.ekf_initialized << ','
+    << measurement.lidar_accepted << ','
+    << measurement.lidar_rejected << ','
+    << measurement.baro_rejected << ','
+    << measurement.latest_lidar_m << ','
+    << measurement.lidar_age_ms << ','
+    << measurement.baro_pressure_pa << ','
     << terms.error << ','
     << terms.command_vz << ','
     << terms.p_term << ','
@@ -375,7 +385,7 @@ void AltitudeControllerNode::onMcuEstimate(const VerticalEst::SharedPtr msg)
   AltCtrlOutput out;
   out.data = terms.command_vz;
   pub_output_->publish(out);
-  logState(msg->header, current_agl, terms);
+  logState(*msg, terms);
 
   // RCLCPP_INFO(get_logger(),
   //   "[alt_ctrl_pid] tgt=%.3f agl=%.3f vz=%.3f dt=%.4f cmd=%.3f",

@@ -117,8 +117,7 @@ private:
     float current_vz,
     double dt_s);
   void logState(
-    const std_msgs::msg::Header & header,
-    float current_agl,
+    const VerticalEst & measurement,
     const ControlTerms & terms);
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
