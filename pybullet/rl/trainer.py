@@ -117,6 +117,7 @@ class MAPPOTrainer:
         live_debug_every: int = 100,
         sticky_action_prob: float = 0.0,
         gui: bool = False,
+        anneal_lr: bool = True,
     ):
         self.env        = env
         self.num_agents = env.max_drones
@@ -131,6 +132,9 @@ class MAPPOTrainer:
         self.value_coef    = value_coef
         self.entropy_coef  = entropy_coef
         self.max_grad_norm = max_grad_norm
+        self.anneal_lr     = anneal_lr
+        self.lr_actor_init  = lr_actor
+        self.lr_critic_init = lr_critic
         self.gui = gui
         self._pause_btn = None
         self._pause_btn_last = None
@@ -249,6 +253,7 @@ class MAPPOTrainer:
                     "actor_loss",
                     "critic_loss",
                     "entropy",
+                    "clip_frac",
                     "elapsed_seconds",
                 ]
             )
@@ -289,6 +294,7 @@ class MAPPOTrainer:
         actor_loss: float,
         critic_loss: float,
         entropy: float,
+        clip_frac: float,
         elapsed: float,
     ):
         with open(self.metrics_log_path, "a", newline="", encoding="ascii") as f:
@@ -305,6 +311,7 @@ class MAPPOTrainer:
                     actor_loss,
                     critic_loss,
                     entropy,
+                    clip_frac,
                     elapsed,
                 ]
             )
@@ -621,8 +628,7 @@ class MAPPOTrainer:
         self.critic.train()
         self.value_rms.update(self.buffer.returns)
 
-        actor_losses, critic_losses, entropies = [], [], []
-        ratios_all = []
+        actor_losses, critic_losses, entropies, clip_fracs = [], [], [], []
 
         for _ in range(self.num_epochs):
             for batch in self.buffer.get_batches(self.batch_size):
@@ -664,12 +670,19 @@ class MAPPOTrainer:
                 nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
                 self.critic_opt.step()
 
+                with torch.no_grad():
+                    active = actor_masks_b > 0
+                    if active.any():
+                        clip_frac = ((ratio - 1.0).abs() > self.clip_eps)[active].float().mean().item()
+                    else:
+                        clip_frac = 0.0
+
                 actor_losses.append(actor_loss.item())
                 critic_losses.append(critic_loss.item())
                 entropies.append(((entropy * actor_masks_b).sum() / valid_count).item())
-                ratios_all.append(ratio.detach().cpu())
+                clip_fracs.append(clip_frac)
 
-        return np.mean(actor_losses), np.mean(critic_losses), np.mean(entropies)
+        return np.mean(actor_losses), np.mean(critic_losses), np.mean(entropies), np.mean(clip_fracs)
 
     def _infer_loaded_update(self, path: str, ckpt: Dict[str, object]) -> int:
         if "update" in ckpt:
@@ -711,7 +724,14 @@ class MAPPOTrainer:
                 ep_count += done_count
             critic_diag = self._compute_critic_diagnostics()
 
-            a_loss, c_loss, ent = self._update()
+            if self.anneal_lr:
+                frac = 1.0 - (update - 1) / target_update
+                for pg in self.actor_opt.param_groups:
+                    pg["lr"] = self.lr_actor_init * frac
+                for pg in self.critic_opt.param_groups:
+                    pg["lr"] = self.lr_critic_init * frac
+
+            a_loss, c_loss, ent, clip_frac = self._update()
             self.current_update = update
 
             if update % self.log_interval == 0:
@@ -739,6 +759,7 @@ class MAPPOTrainer:
                     f"ev={critic_diag['explained_variance']:.3f}  "
                     f"corr={critic_diag['value_return_corr']:.3f}  "
                     f"entropy={ent:.3f}  "
+                    f"clip_frac={clip_frac:.3f}  "
                     f"elapsed={elapsed:.1f}s"
                 )
                 if self.writer:
@@ -746,6 +767,7 @@ class MAPPOTrainer:
                     self.writer.add_scalar("train/actor_loss",    a_loss,        update)
                     self.writer.add_scalar("train/critic_loss",   c_loss,        update)
                     self.writer.add_scalar("train/entropy",       ent,           update)
+                    self.writer.add_scalar("train/clip_frac",    clip_frac,     update)
                     self.writer.add_scalar("critic/value_mean", critic_diag["value_mean"], update)
                     self.writer.add_scalar("critic/value_std", critic_diag["value_std"], update)
                     self.writer.add_scalar("critic/return_mean", critic_diag["return_mean"], update)
@@ -772,6 +794,7 @@ class MAPPOTrainer:
                     actor_loss=a_loss,
                     critic_loss=c_loss,
                     entropy=ent,
+                    clip_frac=clip_frac,
                     elapsed=elapsed,
                 )
                 self._append_critic_diag_row(update=update, diagnostics=critic_diag)

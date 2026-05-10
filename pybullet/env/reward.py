@@ -504,7 +504,15 @@ class RewardCalculator:
         total_weight = float(weights.sum())
         if total_weight <= 0.0:
             return 0.0
-        novelty = 1.0 - np.asarray(coverage_map, dtype=np.float32)
+
+        # Binary exploration: cells already visited this episode have zero novelty,
+        # unvisited cells have full novelty. Keep the old decaying path commented
+        # out so it is easy to restore later.
+        visited = (np.asarray(coverage_map, dtype=np.float32) > 0.0).astype(np.float32)
+        novelty = 1.0 - visited
+
+        # Old decaying exploration:
+        # novelty = 1.0 - np.asarray(coverage_map, dtype=np.float32)
         return float((novelty * weights).sum() / total_weight)
 
     def compute_fov_overlap_penalty(

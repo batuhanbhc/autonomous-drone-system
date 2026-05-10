@@ -864,7 +864,10 @@ class MultiUAVEnv:
 
             drone_states     = self._get_drone_states()
             people_positions = self._get_people_positions()
-            coverage_map_before_step = self.obs_builder.coverage_map.copy()
+            # Binary per-episode visited map for exploration reward.
+            # Old decaying behavior:
+            # coverage_map_before_step = self.obs_builder.coverage_map.copy()
+            coverage_map_before_step = self.obs_builder.persistent_coverage_map.copy()
 
             observations, visible_ids_per_drone, detections_per_drone = \
                 self.obs_builder.build_observations(

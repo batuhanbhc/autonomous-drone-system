@@ -32,7 +32,7 @@ class SharedConfig:
     min_people: int = 10
     max_people: int = 30
     episode_steps: int = 480
-    search_phase_seconds: float = 30.0
+    search_phase_seconds: float = 20.0
     max_groups: int = 4
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
@@ -51,7 +51,7 @@ class SharedConfig:
     position_noise_std: float = 0.1
     camera_tilt_deg: float = 45.0
     recent_half_life_seconds: float = 20.0
-    historic_half_life_seconds: float = 60.0
+    historic_half_life_seconds: float = 40.0
     coverage_half_life_seconds: float = 20.0
     recent_hit_gain: float = 0.6
     recent_miss_penalty: float = 0.25
@@ -97,17 +97,18 @@ class SharedConfig:
 
 @dataclass(frozen=True)
 class TrainConfig:
-    total_updates: int = 10000
+    total_updates: int = 3000
     rollout_len: int = 480*4
-    num_epochs: int = 2
-    batch_size: int = 64
+    num_epochs: int = 1
+    batch_size: int = 128
     clip_eps: float = 0.1
     gamma: float = 0.995
     gae_lambda: float = 0.95
-    lr_actor: float = 3e-4
-    lr_critic: float = 3e-4
+    lr_actor: float = 1e-4
+    lr_critic: float = 1e-4
     entropy_coef: float = 0.003
     value_coef: float = 0.5
+    anneal_lr: bool = True
     save_dir: str = "checkpoints"
     log_interval: int = 1
     tensorboard: bool = False
@@ -121,7 +122,7 @@ class TrainConfig:
 @dataclass(frozen=True)
 class EvalConfig:
     load: str = "checkpoints/final.pt"
-    episodes: int = 10
+    episodes: int = 100
     deterministic: bool = True
     realtime: bool = False
     print_actions: bool = False
@@ -532,6 +533,12 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
         help="Probability of repeating each agent's last executed action during training rollouts.",
     )
     parser.add_argument(
+        "--anneal_lr",
+        action=argparse.BooleanOptionalAction,
+        default=TRAIN_DEFAULTS.anneal_lr,
+        help="Linearly decay actor and critic LRs to zero over the course of training.",
+    )
+    parser.add_argument(
         "--fixed_active_num_drones",
         type=int,
         default=TRAIN_DEFAULTS.fixed_active_num_drones,
@@ -787,6 +794,7 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
             "live_debug": args.live_debug,
             "live_debug_every": args.live_debug_every,
             "sticky_action_prob": args.sticky_action_prob,
+            "anneal_lr": args.anneal_lr,
             "gui": args.gui,
         }
     )

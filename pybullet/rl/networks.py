@@ -37,18 +37,18 @@ class CNNEncoder(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(in_channels, 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.SiLU(),
         )
         # Keep coarse spatial structure instead of collapsing to a single
         # translation-invariant descriptor with global pooling.
         self.spatial_pool = nn.AdaptiveAvgPool2d((4, 4))
         self.proj = nn.Sequential(
             nn.Linear(64 * 4 * 4, out_dim),
-            nn.ReLU(),
+            nn.SiLU(),
         )
         _orthogonal_init(self)
 
@@ -84,15 +84,15 @@ class ActorNetwork(nn.Module):
 
         self.local_mlp = nn.Sequential(
             nn.Linear(local_dim, 64),
-            nn.ReLU(),
+            nn.SiLU(),
         )
 
         fused_dim = cnn_out_dim + 64
         self.shared = nn.Sequential(
             nn.Linear(fused_dim, hidden_dim),
-            nn.Tanh(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
+            nn.SiLU(),
         )
         self.move_head = nn.Linear(hidden_dim, self.num_move_bins)
         self.yaw_head = nn.Linear(hidden_dim, num_yaw_bins)
@@ -206,16 +206,16 @@ class CriticNetwork(nn.Module):
         self.pose_mlp = nn.Sequential(
             nn.LayerNorm(poses_dim),
             nn.Linear(poses_dim, 64),
-            nn.Tanh(),
+            nn.SiLU(),
         )
 
         # Shared head
         fused_dim = cnn_out_dim + 64
         self.shared = nn.Sequential(
             nn.Linear(fused_dim, hidden_dim),
-            nn.Tanh(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, 1),
         )
 
