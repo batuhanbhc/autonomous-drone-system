@@ -424,12 +424,20 @@ void ControlGateNode::closeAltitudeController(const std::string& reason)
 
 void ControlGateNode::abortAltitudeController(const std::string& reason, uint8_t info_level)
 {
+  const InternalState st = snapshotState();
+
   alt_ctrl_mode_              = AltCtrlMode::Off;
   alt_hold_operator_override_ = true;
   alt_ctrl_vz_output_         = 0.0f;
   alt_ctrl_output_fresh_      = false;
   guided_cmd_                 = GuidedCmd{};
   resetAltHoldSafetyMonitor();
+
+  // In MANUAL, publish one neutral body-frame setpoint immediately so the FCU
+  // does not keep flying the last AltHold velocity until the next operator input.
+  if (st.control_mode == ControlMode::Manual) {
+    publishSetpoint(0.0f, 0.0f, 0.0f, 0.0f);
+  }
 
   guided_setpoint_timer_->cancel();
   deactivatePid();
