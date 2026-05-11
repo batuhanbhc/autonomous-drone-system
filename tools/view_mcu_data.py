@@ -13,15 +13,18 @@ Packet format:
   [N+1]  CRC low
   [N+2]  CRC high
 
-VerticalEstimatePayload (packed, 26 bytes):
+VerticalEstimatePayload (packed, 32 bytes):
   uint32  timestamp_ms
   float   z_world_m
   float   vz_world_mps
   float   agl_m
   uint8   ekf_initialized
   uint8   lidar_accepted
+  uint8   lidar_rejected
+  uint8   baro_rejected
   float   latest_lidar_m
   uint32  lidar_age_ms
+  float   baro_pressure_pa
 """
 
 import math
@@ -37,8 +40,10 @@ import sys
 SYNC0          = 0xA5
 SYNC1          = 0x5A
 MSG_VERTICAL   = 0x01
-PAYLOAD_FMT    = "<IfffBBfI"
-PAYLOAD_SIZE   = struct.calcsize(PAYLOAD_FMT)   # 26 bytes
+PAYLOAD_FMT_LEGACY = "<IfffBBfI"
+PAYLOAD_FMT_CURRENT = "<IfffBBBBfIf"
+PAYLOAD_SIZE_LEGACY = struct.calcsize(PAYLOAD_FMT_LEGACY)    # 26 bytes
+PAYLOAD_SIZE_CURRENT = struct.calcsize(PAYLOAD_FMT_CURRENT)  # 32 bytes
 
 SERIAL_PORT    = "/dev/ttyACM0"
 BAUD_RATE      = 460800
@@ -114,21 +119,55 @@ def parse_packets(ser, callback):
                     stats["dropped"] += gap
             stats["seq_last"] = seq
 
-            if msg_id == MSG_VERTICAL and payload_len == PAYLOAD_SIZE:
-                ts_ms, z_m, vz_mps, agl_m, ekf_init, lidar_acc, latest_lidar_m, lidar_age_ms = \
-                    struct.unpack(PAYLOAD_FMT, payload_bytes)
-                callback({
-                    "timestamp_ms":    ts_ms,
-                    "z_world_m":       z_m,
-                    "vz_world_mps":    vz_mps,
-                    "agl_m":           agl_m,
-                    "ekf_initialized": bool(ekf_init),
-                    "lidar_accepted":  bool(lidar_acc),
-                    "latest_lidar_m":  latest_lidar_m,
-                    "lidar_age_ms":    lidar_age_ms,
-                    "seq":             seq,
-                    "stats":           dict(stats),
-                })
+            if msg_id != MSG_VERTICAL:
+                continue
+
+            if payload_len == PAYLOAD_SIZE_CURRENT:
+                (
+                    ts_ms,
+                    z_m,
+                    vz_mps,
+                    agl_m,
+                    ekf_init,
+                    lidar_acc,
+                    lidar_rej,
+                    baro_rej,
+                    latest_lidar_m,
+                    lidar_age_ms,
+                    baro_pressure_pa,
+                ) = struct.unpack(PAYLOAD_FMT_CURRENT, payload_bytes)
+            elif payload_len == PAYLOAD_SIZE_LEGACY:
+                (
+                    ts_ms,
+                    z_m,
+                    vz_mps,
+                    agl_m,
+                    ekf_init,
+                    lidar_acc,
+                    latest_lidar_m,
+                    lidar_age_ms,
+                ) = struct.unpack(PAYLOAD_FMT_LEGACY, payload_bytes)
+                lidar_rej = 0
+                baro_rej = 0
+                baro_pressure_pa = math.nan
+            else:
+                continue
+
+            callback({
+                "timestamp_ms":      ts_ms,
+                "z_world_m":         z_m,
+                "vz_world_mps":      vz_mps,
+                "agl_m":             agl_m,
+                "ekf_initialized":   bool(ekf_init),
+                "lidar_accepted":    bool(lidar_acc),
+                "lidar_rejected":    bool(lidar_rej),
+                "baro_rejected":     bool(baro_rej),
+                "latest_lidar_m":    latest_lidar_m,
+                "lidar_age_ms":      lidar_age_ms,
+                "baro_pressure_pa":  baro_pressure_pa,
+                "seq":               seq,
+                "stats":             dict(stats),
+            })
 
 # ── GUI ─────────────────────────────────────────────────────────────────────
 BG        = "#0d0f14"
@@ -146,7 +185,10 @@ CARDS = [
     ("AGL",         "agl_m",         "m",    ACCENT,   "Height above ground"),
     ("Vz",          "vz_world_mps",  "m/s",  GREEN,    "Vertical velocity"),
     ("Z world",     "z_world_m",     "m",    YELLOW,   "World-frame altitude"),
+    ("Baro P",      "baro_pressure_pa", "Pa", YELLOW,  "Latest barometer pressure"),
     ("Lidar acc.",  "lidar_accepted", "",    RED_SOFT, "Last lidar update accepted"),
+    ("Lidar rej.",  "lidar_rejected", "",    RED_SOFT, "Lidar measurement rejected"),
+    ("Baro rej.",   "baro_rejected", "",     RED_SOFT, "Barometer measurement rejected"),
     ("Lidar raw",   "latest_lidar_m", "m",   ACCENT,   "Latest decoded lidar reading"),
     ("Lidar age",   "lidar_age_ms",  "ms",   YELLOW,   "Time since last lidar frame"),
 ]
@@ -157,7 +199,7 @@ class DroneMonitor(tk.Tk):
         self.title("Vertical Estimator")
         self.configure(bg=BG)
         self.resizable(True, True)
-        self.minsize(520, 680)
+        self.minsize(520, 820)
 
         self._data = {}
         self._lock = threading.Lock()
@@ -301,8 +343,17 @@ class DroneMonitor(tk.Tk):
                 if key == "lidar_accepted":
                     text  = "YES" if raw else "NO"
                     color_now = GREEN if raw else RED_SOFT
+                elif key in {"lidar_rejected", "baro_rejected"}:
+                    text  = "YES" if raw else "NO"
+                    color_now = RED_SOFT if raw else GREEN
                 elif key == "lidar_age_ms":
                     text = "—" if raw in (None, 0xFFFFFFFF) else str(raw)
+                    color_now = color
+                elif key == "baro_pressure_pa":
+                    if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+                        text = "—"
+                    else:
+                        text = f"{raw:.1f}"
                     color_now = color
                 elif raw is None or (isinstance(raw, float) and math.isnan(raw)):
                     text = "—"
