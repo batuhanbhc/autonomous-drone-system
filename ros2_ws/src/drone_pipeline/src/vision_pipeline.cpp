@@ -186,6 +186,7 @@ VisionConfig VisionPipeline::loadConfig()
     *this, root, get_parameter("stream_codec").as_string());
 
   cfg.use_mcu_height_estimate = yamlOr<bool>(vp, "use_mcu_height_estimate", false);
+  cfg.operation_height = yamlOr<double>(vp, "operation_height", cfg.operation_height);
   cfg.projection_altitude_lpf_alpha =
     yamlOr<double>(vp, "projection_altitude_lpf_alpha", cfg.projection_altitude_lpf_alpha);
 
@@ -233,13 +234,15 @@ VisionConfig VisionPipeline::loadConfig()
 
   RCLCPP_INFO(get_logger(),
     "Config → drone_id=%u  frames=%s  res=%dx%d@%dfps  stream_codec=%s  hef=%s  "
-    "score_thresh=%.2f  model_input=%d  person_class=%d  use_mcu_height=%s  alt_lpf=%.2f",
+    "score_thresh=%.2f  model_input=%d  person_class=%d  use_mcu_height=%s  "
+    "operation_height=%.2f  alt_lpf=%.2f",
     cfg.drone_id, cfg.frames_topic.c_str(),
     cfg.width, cfg.height, cfg.fps,
     streamCodecName(cfg.stream_codec),
     cfg.hef_path.c_str(), cfg.score_threshold,
     cfg.model_input_size, cfg.person_class_idx,
     cfg.use_mcu_height_estimate ? "true" : "false",
+    cfg.operation_height,
     cfg.projection_altitude_lpf_alpha);
 
   RCLCPP_INFO(get_logger(), "Camera mount angle=%.2f deg  use_gimbal=%s  reverse_mounted=%s",
@@ -1251,9 +1254,7 @@ void VisionPipeline::publishSceneLocked(
   msg.odom_valid    = result.odom_valid;
   msg.drone_x       = result.pos_x;
   msg.drone_y       = result.pos_y;
-  msg.drone_z       = (config_.use_mcu_height_estimate && result.mcu_valid)
-    ? static_cast<double>(result.agl_m)
-    : result.pos_z;
+  msg.drone_z       = config_.operation_height;
 
   double yaw = 0.0;
   if (result.odom_valid) {
@@ -1263,9 +1264,7 @@ void VisionPipeline::publishSceneLocked(
     yaw += yaw_offset_;
   }
   msg.drone_yaw = yaw;
-  const double principal_height =
-    (config_.use_mcu_height_estimate && result.mcu_valid) ?
-    static_cast<double>(result.agl_m) : result.pos_z;
+  const double principal_height = config_.operation_height;
   const double principal_forward =
     principal_height * std::tan(0.5 * M_PI - config_.camera_mount_angle * M_PI / 180.0);
   msg.principal_x = result.pos_x + principal_forward * std::cos(yaw);

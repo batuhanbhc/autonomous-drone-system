@@ -73,6 +73,7 @@ struct VisionConfig
   // When true, use agl_m from the MCU vertical estimate (if mcu_valid) for
   // ground projection instead of the odometry pos_z.
   bool use_mcu_height_estimate{false};
+  double operation_height{0.0};
   double projection_altitude_lpf_alpha{0.35};
   TrackerConfig tracker;
   StreamCodec  stream_codec{StreamCodec::kMjpeg};
