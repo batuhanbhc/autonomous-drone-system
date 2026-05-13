@@ -145,6 +145,7 @@ bool ControlGateNode::loadConfig() {
   ok &= get_str("manual_action",     topics_.manual_action);
   ok &= get_str("manual_command",    topics_.manual_command);
   ok &= get_str("mcu_bridge",        topics_.mcu_bridge);
+  ok &= get_str("alt_hold_state",    topics_.alt_hold_state);
   ok &= get_str("alt_ctrl_input",    topics_.alt_ctrl_input);
   ok &= get_str("alt_ctrl_output",   topics_.alt_ctrl_output);
 
@@ -397,6 +398,7 @@ void ControlGateNode::enterAltHold()
   resetAltHoldSafetyMonitor();
 
   guided_setpoint_timer_->reset();  // start publishing setpoints
+  publishAltHoldState();
 
   RCLCPP_INFO(get_logger(), "[alt_hold] Entered AltHold — waiting for first override timeout.");
   publishInfo(DroneInfo::LEVEL_INFO, "AltHold enabled. Waiting for operator release.");
@@ -412,6 +414,7 @@ void ControlGateNode::exitAltHold()
 
   guided_setpoint_timer_->cancel();
   deactivatePid();
+  publishAltHoldState();
 
   RCLCPP_INFO(get_logger(), "[alt_hold] Exited AltHold.");
   publishInfo(DroneInfo::LEVEL_INFO, "AltHold deactivated.");
@@ -441,6 +444,7 @@ void ControlGateNode::abortAltitudeController(const std::string& reason, uint8_t
 
   guided_setpoint_timer_->cancel();
   deactivatePid();
+  publishAltHoldState();
 
   const std::string msg = reason.empty()
     ? "Altitude controller disabled."
@@ -579,6 +583,17 @@ void ControlGateNode::onAltTimeoutWatchdog() {
     // PID is active. Nothing to do here — PID output arrives via onAltCtrlOutput.
     // Re-activation of override happens in onTeleopAction when Vz != 0.
   }
+}
+
+void ControlGateNode::publishAltHoldState()
+{
+  if (!pub_alt_hold_state_) {
+    return;
+  }
+
+  Toggle msg;
+  msg.state = (alt_ctrl_mode_ == AltCtrlMode::AltHold);
+  pub_alt_hold_state_->publish(msg);
 }
 
 // ============================================================================

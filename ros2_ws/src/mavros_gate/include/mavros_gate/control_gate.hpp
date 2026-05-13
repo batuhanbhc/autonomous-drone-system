@@ -103,6 +103,7 @@ private:
     std::string manual_action;
     std::string manual_command;
     std::string mcu_bridge;
+    std::string alt_hold_state;    // control_gate → vision_pipeline (toggle)
     std::string alt_ctrl_input;    // publish target
     std::string alt_ctrl_output;   // subscribe source
   };
@@ -321,6 +322,7 @@ private:
   void activatePid(float target_agl);   // send active=true command to altitude_controller
   void deactivatePid();                 // send active=false command to altitude_controller
   void resetAltHoldSafetyMonitor();
+  void publishAltHoldState();
 
   // Update a single component of guided_cmd_ and stamp its update time.
   void updateGuidedVx(float vx);
@@ -386,6 +388,7 @@ private:
   rclcpp::Publisher<DroneState>::SharedPtr    pub_control_state_;
   rclcpp::Publisher<DroneInfo>::SharedPtr     pub_drone_info_;
   rclcpp::Publisher<AltCtrlInput>::SharedPtr  pub_alt_ctrl_input_;
+  rclcpp::Publisher<Toggle>::SharedPtr        pub_alt_hold_state_;
   rclcpp::Publisher<Toggle>::SharedPtr        pub_autonomous_enable_;
 
   // ── Service servers ────────────────────────────────────────────────────────

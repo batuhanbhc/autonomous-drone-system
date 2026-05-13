@@ -69,6 +69,7 @@ struct VisionConfig
   std::string logs_path;
 
   std::string scene_topic;
+  std::string alt_hold_topic;
 
   // When true, use agl_m from the MCU vertical estimate (if mcu_valid) for
   // ground projection instead of the odometry pos_z.
@@ -204,9 +205,11 @@ private:
 
   // ── ROS interfaces ────────────────────────────────────────────────────────
   rclcpp::CallbackGroup::SharedPtr frame_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr alt_hold_cb_group_;
   rclcpp::CallbackGroup::SharedPtr stream_cmd_cb_group_;
   rclcpp::CallbackGroup::SharedPtr record_cmd_cb_group_;
   rclcpp::Subscription<drone_msgs::msg::FrameData>::SharedPtr  frame_sub_;
+  rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr     alt_hold_sub_;
 
   // Streaming
   rclcpp::Subscription<drone_msgs::msg::Toggle>::SharedPtr     stream_cmd_sub_;
@@ -224,6 +227,7 @@ private:
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void frameCallback(drone_msgs::msg::FrameData::ConstSharedPtr msg);
+  void altHoldCallback(drone_msgs::msg::Toggle::ConstSharedPtr msg);
   void streamCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
   void recordCmdCallback(const drone_msgs::msg::Toggle::SharedPtr msg);
   void publishStreamState();
@@ -344,6 +348,7 @@ private:
   double prev_track_timestamp_s_{0.0};
   bool   has_smoothed_projection_height_{false};
   double smoothed_projection_height_m_{0.0};
+  std::atomic<bool> alt_hold_enabled_{false};
 
   void depositResult(PendingResult && r);   // called from Hailo callback
   void drainResultsLocked(std::vector<std::string> & ready_lines);
@@ -355,6 +360,7 @@ private:
   void resetTrackingStateLocked();
   double computeAngularVelocityDegPerSecLocked(const PendingResult & result) const;
   double smoothProjectionHeightLocked(double raw_height_m);
+  bool shouldUseMcuHeightEstimate(const PendingResult & result) const;
   std::vector<DetectionMeasurement> buildTrackMeasurementsLocked(
     const PendingResult & result,
     double noise_scale);

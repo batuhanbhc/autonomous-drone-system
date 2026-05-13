@@ -32,6 +32,7 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
   topics_.autonomous_action  = base_ns + topics_.autonomous_action;
   topics_.autonomous_enable  = base_ns + topics_.autonomous_enable;
   topics_.mcu_bridge         = base_ns + topics_.mcu_bridge;
+  topics_.alt_hold_state     = base_ns + topics_.alt_hold_state;
   topics_.alt_ctrl_input     = base_ns + topics_.alt_ctrl_input;
   topics_.alt_ctrl_output    = base_ns + topics_.alt_ctrl_output;
 
@@ -45,6 +46,8 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
   // QoS profiles 
   const auto qos_be  = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto qos_rel = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+  const auto qos_rel_latched =
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
 
   // Subscriptions
   sub_teleop_command_ = this->create_subscription<TeleopCmd>(
@@ -88,8 +91,13 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
   pub_alt_ctrl_input_ = this->create_publisher<AltCtrlInput>(
     topics_.alt_ctrl_input, qos_rel);
 
+  pub_alt_hold_state_ = this->create_publisher<Toggle>(
+    topics_.alt_hold_state, qos_rel_latched);
+
   pub_autonomous_enable_ = this->create_publisher<Toggle>(
     topics_.autonomous_enable, qos_rel);
+
+  publishAltHoldState();
 
   // -----------------------------------
   if (!initializationRoutine()) {

@@ -182,6 +182,8 @@ VisionConfig VisionPipeline::loadConfig()
   cfg.logs_path   = root["flight_params"]["logs_path"].as<std::string>();
   cfg.scene_topic = "/drone_" + std::to_string(cfg.drone_id) +
                     root["custom_topics"]["scene"].as<std::string>();
+  cfg.alt_hold_topic = "/drone_" + std::to_string(cfg.drone_id) +
+                    root["custom_topics"]["alt_hold_state"].as<std::string>();
   cfg.stream_codec = resolveStreamCodec(
     *this, root, get_parameter("stream_codec").as_string());
 
@@ -468,13 +470,19 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   // ── ROS interfaces ────────────────────────────────────────────────────────
   const auto sensor_qos   = rclcpp::SensorDataQoS();
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  const auto reliable_latched_qos =
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
   const std::string dp    = "/drone_" + std::to_string(config_.drone_id);
 
   frame_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  alt_hold_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   record_cmd_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
   rclcpp::SubscriptionOptions frame_sub_opts;
   frame_sub_opts.callback_group = frame_cb_group_;
+
+  rclcpp::SubscriptionOptions alt_hold_sub_opts;
+  alt_hold_sub_opts.callback_group = alt_hold_cb_group_;
 
   rclcpp::SubscriptionOptions record_cmd_sub_opts;
   record_cmd_sub_opts.callback_group = record_cmd_cb_group_;
@@ -483,6 +491,11 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
     config_.frames_topic, sensor_qos,
     [this](drone_msgs::msg::FrameData::ConstSharedPtr msg) { frameCallback(msg); },
     frame_sub_opts);
+
+  alt_hold_sub_ = create_subscription<drone_msgs::msg::Toggle>(
+    config_.alt_hold_topic, reliable_latched_qos,
+    [this](drone_msgs::msg::Toggle::ConstSharedPtr msg) { altHoldCallback(msg); },
+    alt_hold_sub_opts);
 
   record_cmd_sub_ = create_subscription<drone_msgs::msg::Toggle>(
     dp + "/camera/record/cmd", reliable_qos,
@@ -1069,6 +1082,13 @@ double VisionPipeline::smoothProjectionHeightLocked(double raw_height_m)
   return smoothed_projection_height_m_;
 }
 
+bool VisionPipeline::shouldUseMcuHeightEstimate(const PendingResult & result) const
+{
+  return config_.use_mcu_height_estimate &&
+         alt_hold_enabled_.load(std::memory_order_relaxed) &&
+         result.mcu_valid;
+}
+
 std::vector<DetectionMeasurement> VisionPipeline::buildTrackMeasurementsLocked(
   const PendingResult & result,
   double noise_scale)
@@ -1090,7 +1110,7 @@ std::vector<DetectionMeasurement> VisionPipeline::buildTrackMeasurementsLocked(
   const double projection_pitch = config_.use_gimbal ? 0.0 : pitch;
   const double projection_roll = config_.use_gimbal ? 0.0 : roll;
   const double raw_projection_height =
-    (config_.use_mcu_height_estimate && result.mcu_valid)
+    shouldUseMcuHeightEstimate(result)
     ? static_cast<double>(result.agl_m)
     : result.pos_z;
 
@@ -1282,6 +1302,11 @@ void VisionPipeline::publishSceneLocked(
   }
 
   pub_scene_->publish(msg);
+}
+
+void VisionPipeline::altHoldCallback(drone_msgs::msg::Toggle::ConstSharedPtr msg)
+{
+  alt_hold_enabled_.store(msg->state, std::memory_order_relaxed);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
