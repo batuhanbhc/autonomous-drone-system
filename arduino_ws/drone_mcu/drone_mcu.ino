@@ -19,9 +19,9 @@ static constexpr uint32_t COMPANION_SEND_HZ      = 20;
 static constexpr uint32_t COMPANION_SEND_PERIOD_MS = 1000UL / COMPANION_SEND_HZ;
 
 // Set to 1 if you want to stop text prints after boot and only emit binary.
-static constexpr bool USB_BINARY_ONLY_AFTER_INIT = false;
+static constexpr bool USB_BINARY_ONLY_AFTER_INIT = true;
 static constexpr bool PRINT_EULER_DEBUG_AFTER_INIT = false;
-static constexpr bool PRINT_ESTIMATOR_DEBUG_AFTER_INIT = true;
+static constexpr bool PRINT_ESTIMATOR_DEBUG_AFTER_INIT = false;
 static constexpr bool PRINT_WORLD_ACCEL_Z_DEBUG_AFTER_INIT = false;
 static constexpr uint32_t EULER_DEBUG_PERIOD_MS = 100;
 static constexpr uint32_t ESTIMATOR_DEBUG_PERIOD_MS = 100;
