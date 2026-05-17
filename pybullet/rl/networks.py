@@ -32,31 +32,76 @@ def _orthogonal_init(module: nn.Module, gain: float = 1.0):
 #  CNN encoder — shared architecture for both actor and critic
 # ------------------------------------------------------------------ #
 
+
+class ResidualConvStage(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int = 1,
+        kernel_size: int = 3,
+        padding: int = 1,
+        skip_kernel_size: int = 1,
+        skip_padding: int = 0,
+    ):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+        )
+        self.skip = None
+        if stride != 1 or in_channels != out_channels:
+            self.skip = nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=skip_kernel_size,
+                stride=stride,
+                padding=skip_padding,
+            )
+        self.act = nn.SiLU()
+        _orthogonal_init(self)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x if self.skip is None else self.skip(x)
+        return self.act(self.conv(x) + residual)
+
 class CNNEncoder(nn.Module):
     def __init__(self, in_channels: int = 2, grid_h: int = 32, grid_w: int = 32, out_dim: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 16, kernel_size=3, stride=1, padding=1),
-            nn.SiLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.SiLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.SiLU(),
+            ResidualConvStage(in_channels, 16, stride=1),
+            ResidualConvStage(16, 32, stride=2),
+            ResidualConvStage(32, 64, stride=2),
+            ResidualConvStage(
+                64,
+                128,
+                stride=2,
+                kernel_size=2,
+                padding=0,
+                skip_kernel_size=2,
+                skip_padding=0,
+            ),
         )
-        # Keep coarse spatial structure instead of collapsing to a single
-        # translation-invariant descriptor with global pooling.
-        self.spatial_pool = nn.AdaptiveAvgPool2d((4, 4))
+        conv_c, conv_h, conv_w = self._infer_conv_output_shape(grid_h, grid_w)
         self.proj = nn.Sequential(
-            nn.Linear(64 * 4 * 4, out_dim),
+            nn.Linear(conv_c * conv_h * conv_w, out_dim),
             nn.SiLU(),
         )
         _orthogonal_init(self)
 
+    def _infer_conv_output_shape(self, grid_h: int, grid_w: int) -> tuple[int, int, int]:
+        with torch.no_grad():
+            dummy = torch.zeros(1, self.net[0].conv.in_channels, grid_h, grid_w)
+            out = self.net(dummy)
+        return int(out.shape[-3]), int(out.shape[-2]), int(out.shape[-1])
+
     def forward(self, grid: torch.Tensor) -> torch.Tensor:
         feat = self.net(grid)                          # (B, 64, H', W')
-        pooled = self.spatial_pool(feat)              # (B, 64, 4, 4)
-        pooled = pooled.flatten(start_dim=1)          # (B, 1024)
-        return self.proj(pooled)                      # (B, out_dim)
+        flattened = feat.flatten(start_dim=1)         # (B, 64 * H' * W')
+        return self.proj(flattened)                   # (B, out_dim)
 
 
 # ------------------------------------------------------------------ #

@@ -13,6 +13,7 @@ class LiveDebugConfig:
     every_steps: int = 100
     num_drones: int = 2
     cmd_history_len: int = 0
+    status_history_seconds: int = 0
     hotspot_top_k: int = 0
     move_mask_dim: int = 0
     actor_channel_names: Sequence[str] | None = None
@@ -34,6 +35,7 @@ class LiveDebugWindow:
         self._labels = self._build_local_labels(
             config.num_drones,
             config.cmd_history_len,
+            config.status_history_seconds,
             config.hotspot_top_k,
             config.move_mask_dim,
         )
@@ -53,10 +55,11 @@ class LiveDebugWindow:
         channel_titles = list(config.actor_channel_names or [])
         if not channel_titles:
             channel_titles = [
-                "Instant Spatial Support",
-                "Count Density",
+                "Local Count Density",
                 "Historic Count Memory",
                 "Persistent Coverage",
+                "Own Instant FOV Footprint",
+                "Teammate Instant FOV Footprint",
                 "Own Coverage",
                 "Teammate Coverage",
                 "Shared Drone Map",
@@ -132,6 +135,7 @@ class LiveDebugWindow:
     def _build_local_labels(
         num_drones: int,
         cmd_history_len: int,
+        status_history_seconds: int,
         hotspot_top_k: int,
         move_mask_dim: int,
     ) -> list[str]:
@@ -141,6 +145,8 @@ class LiveDebugWindow:
             "own_sin_yaw",
             "own_cos_yaw",
             "own_num_visible",
+            "own_delta_visible",
+            "visited_frac",
             "search_prog",
             "is_search",
             "is_coverage",
@@ -167,6 +173,16 @@ class LiveDebugWindow:
                     f"tm{teammate_idx}_rel_z",
                     f"tm{teammate_idx}_sin_yaw",
                     f"tm{teammate_idx}_cos_yaw",
+                ]
+            )
+        for hist_idx in range(max(0, status_history_seconds)):
+            labels.extend(
+                [
+                    f"st{hist_idx}_dx",
+                    f"st{hist_idx}_dy",
+                    f"st{hist_idx}_sin_dyaw",
+                    f"st{hist_idx}_cos_dyaw",
+                    f"st{hist_idx}_vis",
                 ]
             )
         for hist_idx in range(max(0, cmd_history_len)):

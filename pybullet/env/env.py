@@ -48,21 +48,24 @@ class MultiUAVEnv:
         vertical_fov_deg: float = 43.3,
         detection_prob: float = 1.0,
         position_noise_std: float = 0.1,
+        detection_forward_decay_start_norm: float = 1.0,
         camera_tilt_deg: float = 45.0,
         recent_half_life_seconds: float = 10.0,
         historic_half_life_seconds: float = 30.0,
         coverage_half_life_seconds: float = 10.0,
-        recent_hit_gain: float = 0.6,
-        recent_miss_penalty: float = 0.25,
         grid_h: int = 60,
         grid_w: int = 60,
         blob_sigma: float = 1.0,
         ego_sigma: float = 2.5,
         people_count_normalizer: float = 30.0,
-        count_density_gain: float = 0.35,
-        count_memory_recent_alpha: float = 0.7,
-        count_memory_historic_miss_penalty: float = 0.1,
+        local_people_map_mode: str = "count_density",
+        include_local_recent_count_memory_channel: bool = True,
+        include_shared_count_density_channel: bool = False,
+        include_instant_fov_channels: bool = True,
+        hide_person_features_during_search: bool = False,
+        count_memory_historic_miss_penalty: float = 0.35,
         reward_wc: float = 1.0,
+        reward_coverage_exponent: float = 1.5,
         reward_wqual: float = 2.0,
         reward_wd: float = 0.0,
         reward_wo: float = 0.0,
@@ -74,21 +77,26 @@ class MultiUAVEnv:
         reward_we: float = 0.0,
         reward_wi: float = 0.0,
         reward_wfov: float = 0.0,
+        reward_wcompletion: float = 0.0,
         reward_coverage_edge_quality: float = 0.0,
         reward_quality_mode: str = "principal_linear",
+        reward_quality_gamma: float = 1.0,
+        reward_completion_power: float = 1.0,
         reward_boundary_margin: float = 5.0,
         reward_drone_closeness_margin: float = 5.0,
         reward_fov_margin: float = 1.0,
         vel_tau_s: float = 0.4,
         yaw_rate_tau_s: float = 0.4,
-        cmd_history_len: int = 4,
+        cmd_history_len: int = 0,
+        status_history_seconds: int = 4,
         hotspot_top_k: int = 3,
-        hotspot_min_density: float = 0.25,
+        hotspot_min_density: float = 1.5,
         hotspot_suppression_radius_scale: float = 4.0,
         hotspot_suppression_radius_min_cells: int = 2,
+        reward_top_k_groups: int = 2,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
-        actor_grid_channels: int = 8,
+        actor_grid_channels: int = 10,
         include_persistent_coverage_channel: bool = True,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
@@ -99,6 +107,8 @@ class MultiUAVEnv:
         self.vel_tau_s         = float(vel_tau_s)
         self.yaw_rate_tau_s    = float(yaw_rate_tau_s)
         self.cmd_history_len   = int(cmd_history_len)
+        self.status_history_seconds = int(status_history_seconds)
+        self.reward_top_k_groups = int(reward_top_k_groups)
         self.max_horizontal_velocity = float(max_horizontal_velocity)
         self.max_yaw_rate      = float(max_yaw_rate)
 
@@ -112,6 +122,7 @@ class MultiUAVEnv:
         self.y_min = y_min
         self.y_max = y_max
         self.drone_wall_margin = drone_wall_margin
+        self.reward_boundary_margin = float(reward_boundary_margin)
         self.z_min = float(z_min)
         self.z_max = float(z_max)
         if not (self.z_min <= drone_height <= self.z_max):
@@ -123,6 +134,10 @@ class MultiUAVEnv:
         self.move_x_max = self.x_max - self.drone_wall_margin
         self.move_y_min = self.y_min + self.drone_wall_margin
         self.move_y_max = self.y_max - self.drone_wall_margin
+        self.random_spawn_x_min = self.x_min + self.reward_boundary_margin
+        self.random_spawn_x_max = self.x_max - self.reward_boundary_margin
+        self.random_spawn_y_min = self.y_min + self.reward_boundary_margin
+        self.random_spawn_y_max = self.y_max - self.reward_boundary_margin
         self.center_x = 0.5 * (self.x_min + self.x_max)
         self.center_y = 0.5 * (self.y_min + self.y_max)
         if self.move_x_min > self.move_x_max or self.move_y_min > self.move_y_max:
@@ -130,6 +145,15 @@ class MultiUAVEnv:
                 "drone_wall_margin leaves no movable arena: "
                 f"x=[{self.move_x_min}, {self.move_x_max}], "
                 f"y=[{self.move_y_min}, {self.move_y_max}]"
+            )
+        if (
+            self.random_spawn_x_min > self.random_spawn_x_max
+            or self.random_spawn_y_min > self.random_spawn_y_max
+        ):
+            raise ValueError(
+                "reward_boundary_margin leaves no random-spawn arena: "
+                f"x=[{self.random_spawn_x_min}, {self.random_spawn_x_max}], "
+                f"y=[{self.random_spawn_y_min}, {self.random_spawn_y_max}]"
             )
         self.max_center_spawn_radius = min(
             self.center_x - self.move_x_min,
@@ -195,6 +219,7 @@ class MultiUAVEnv:
             vertical_fov_deg=vertical_fov_deg,
             detection_prob=detection_prob,
             position_noise_std=position_noise_std,
+            detection_forward_decay_start_norm=detection_forward_decay_start_norm,
             camera_tilt_deg=camera_tilt_deg,
             num_drones=self.max_drones,
             sim_hz=self.sim_hz,
@@ -203,18 +228,20 @@ class MultiUAVEnv:
             recent_half_life_seconds=recent_half_life_seconds,
             historic_half_life_seconds=historic_half_life_seconds,
             coverage_half_life_seconds=coverage_half_life_seconds,
-            recent_hit_gain=recent_hit_gain,
-            recent_miss_penalty=recent_miss_penalty,
             z_min=self.z_min,
             z_max=self.z_max,
             cmd_history_len=self.cmd_history_len,
+            status_history_seconds=self.status_history_seconds,
             hotspot_top_k=hotspot_top_k,
             hotspot_min_density=hotspot_min_density,
             hotspot_suppression_radius_scale=hotspot_suppression_radius_scale,
             hotspot_suppression_radius_min_cells=hotspot_suppression_radius_min_cells,
             people_count_normalizer=people_count_normalizer,
-            count_density_gain=count_density_gain,
-            count_memory_recent_alpha=count_memory_recent_alpha,
+            local_people_map_mode=local_people_map_mode,
+            include_local_recent_count_memory_channel=include_local_recent_count_memory_channel,
+            include_shared_count_density_channel=include_shared_count_density_channel,
+            include_instant_fov_channels=include_instant_fov_channels,
+            hide_person_features_during_search=hide_person_features_during_search,
             count_memory_historic_miss_penalty=count_memory_historic_miss_penalty,
             max_horizontal_velocity=self.max_horizontal_velocity,
             max_yaw_rate=self.max_yaw_rate,
@@ -228,6 +255,7 @@ class MultiUAVEnv:
             y_min=self.y_min,
             y_max=self.y_max,
             wc=reward_wc,
+            coverage_exponent=reward_coverage_exponent,
             wqual=reward_wqual,
             wd=reward_wd,
             wo=reward_wo,
@@ -239,8 +267,11 @@ class MultiUAVEnv:
             we=reward_we,
             wi=reward_wi,
             wfov=reward_wfov,
+            wcompletion=reward_wcompletion,
             coverage_edge_quality=reward_coverage_edge_quality,
             reward_quality_mode=reward_quality_mode,
+            reward_quality_gamma=reward_quality_gamma,
+            reward_completion_power=reward_completion_power,
             boundary_margin=reward_boundary_margin,
             drone_closeness_margin=reward_drone_closeness_margin,
             tilt_deg=camera_tilt_deg,
@@ -256,6 +287,7 @@ class MultiUAVEnv:
             vertical_fov_deg=vertical_fov_deg,
             show_reward_contours=debug_reward_contours,
             coverage_edge_quality=reward_coverage_edge_quality,
+            client_id=self.world.client_id,
         )
         self.debug_observation_plots = bool(debug_observation_plots)
         self.debug_observation_plot_every = max(1, int(debug_observation_plot_every))
@@ -300,14 +332,27 @@ class MultiUAVEnv:
             raise ValueError(
                 f"drone_wall_margin must be >= 0, got {self.drone_wall_margin}"
             )
+        if self.reward_boundary_margin < 0.0:
+            raise ValueError(
+                "reward_boundary_margin must be >= 0, got "
+                f"{self.reward_boundary_margin}"
+            )
+        if self.status_history_seconds < 0:
+            raise ValueError(
+                f"status_history_seconds must be >= 0, got {self.status_history_seconds}"
+            )
+        if self.reward_top_k_groups < 0:
+            raise ValueError(
+                f"reward_top_k_groups must be >= 0, got {self.reward_top_k_groups}"
+            )
 
     # ------------------------------------------------------------------ #
     #  Spawn helpers
     # ------------------------------------------------------------------ #
 
     def _random_drone_pos(self):
-        x = random.uniform(self.move_x_min, self.move_x_max)
-        y = random.uniform(self.move_y_min, self.move_y_max)
+        x = random.uniform(self.random_spawn_x_min, self.random_spawn_x_max)
+        y = random.uniform(self.random_spawn_y_min, self.random_spawn_y_max)
         return (x, y, self.drone_height)
 
     def _center_circle_drone_pos(self):
@@ -393,7 +438,8 @@ class MultiUAVEnv:
         return (gcx, gcy, z)
 
     def _sample_group_structure(self, num_people: int):
-        max_possible_groups = min(self.max_groups, num_people)
+        max_regions = len(self._build_candidate_regions())
+        max_possible_groups = min(self.max_groups, num_people, max_regions)
         if max_possible_groups <= 0:
             num_groups = 0
         else:
@@ -404,7 +450,7 @@ class MultiUAVEnv:
 
         if num_groups > 0:
             regions          = self._build_candidate_regions()
-            selected_regions = random.sample(regions, min(num_groups, len(regions)))
+            selected_regions = random.sample(regions, num_groups)
 
             for g_id, region in enumerate(selected_regions):
                 center = self._sample_point_in_region(region, margin=0.8)
@@ -429,7 +475,7 @@ class MultiUAVEnv:
 
             # Assign a portion of remaining people to groups; leave the rest standalone
             remaining = num_people - assigned
-            num_to_group = int(remaining * 0.75)
+            num_to_group = int(remaining * 0.0)
             for i in range(num_to_group):
                 assignments[people_indices[assigned + i]] = i % num_groups
 
@@ -458,6 +504,7 @@ class MultiUAVEnv:
                 size=(0.08, 0.08, 0.03),
                 vel_tau_s=self.vel_tau_s,
                 yaw_rate_tau_s=self.yaw_rate_tau_s,
+                client_id=self.world.client_id,
             )
             drone.spawn()
             yaw = random.uniform(-math.pi, math.pi)
@@ -472,7 +519,10 @@ class MultiUAVEnv:
         spawned_positions     = []
 
         for person_idx in range(current_num_people):
-            person   = Person(start_pos=self._random_person_pos())
+            person   = Person(
+                start_pos=self._random_person_pos(),
+                client_id=self.world.client_id,
+            )
             person.spawn()
             group_id = assignments[person_idx]
             if group_id is not None:
@@ -587,10 +637,10 @@ class MultiUAVEnv:
     def _get_people_positions(self):
         return [person.get_position() for person in self.people if person is not None]
 
-    def _build_person_reward_weights(self, num_people: int) -> list[float]:
+    def _build_person_reward_weights(self, num_people: int) -> tuple[list[float], list[int]]:
         assignments = list(self.episode_group_info.get("group_assignments", []))
         if num_people <= 0:
-            return []
+            return [], []
         if len(assignments) < num_people:
             assignments.extend([None] * (num_people - len(assignments)))
         assignments = assignments[:num_people]
@@ -601,13 +651,30 @@ class MultiUAVEnv:
                 continue
             group_counts[int(group_id)] = group_counts.get(int(group_id), 0) + 1
 
+        target_group_ids: list[int] = []
+        if self.reward_top_k_groups > 0 and group_counts:
+            ranked_groups = sorted(
+                group_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+            target_group_ids = [
+                int(group_id)
+                for group_id, _ in ranked_groups[:self.reward_top_k_groups]
+            ]
+        target_group_id_set = set(target_group_ids)
+
         weights: list[float] = []
         for group_id in assignments:
-            if group_id is None:
+            if self.reward_top_k_groups > 0:
+                if group_id is None or int(group_id) not in target_group_id_set:
+                    weights.append(0.0)
+                else:
+                    weights.append(float(group_counts.get(int(group_id), 1)))
+            elif group_id is None:
                 weights.append(1.0)
             else:
                 weights.append(float(group_counts.get(int(group_id), 1)))
-        return weights
+        return weights, target_group_ids
 
     def _phase_context_for_decision_step(self, decision_step: int) -> dict[str, float]:
         if self.search_phase_steps <= 0:
@@ -633,7 +700,7 @@ class MultiUAVEnv:
         return self._phase_context_for_decision_step(next_decision_step)
 
     def _update_debug_draw(self, drone_states, visible_ids_per_drone):
-        if not self.gui or not p.isConnected():
+        if not self.gui or not self.world.is_connected():
             return
         self.debug_drawer.clear()
         visible_union = set()
@@ -750,15 +817,23 @@ class MultiUAVEnv:
         ]
         critic_shared_channels = len(self.obs_builder.critic_shared_channel_names)
         critic_channel_names += [
-            f"Critic Ch {critic_shared_channels + i}\nInstant map - Drone {i}"
+            f"Critic Ch {critic_shared_channels + i}\n{self.obs_builder.critic_local_people_channel_name} - Drone {i}"
             for i in range(self.max_drones)
         ]
+        next_channel_offset = critic_shared_channels + self.max_drones
+        if getattr(self.obs_builder, "include_instant_fov_channels", False):
+            critic_channel_names += [
+                f"Critic Ch {next_channel_offset + i}\nOwn instant footprint - Drone {i}"
+                for i in range(self.max_drones)
+            ]
+            next_channel_offset += self.max_drones
         critic_channel_names += [
-            f"Critic Ch {critic_shared_channels + self.max_drones + i}\nOwn coverage - Drone {i}"
+            f"Critic Ch {next_channel_offset + i}\nOwn coverage - Drone {i}"
             for i in range(self.max_drones)
         ]
+        next_channel_offset += self.max_drones
         critic_channel_names += [
-            f"Critic Ch {critic_shared_channels + (2 * self.max_drones) + i}\nEgo map - Drone {i}"
+            f"Critic Ch {next_channel_offset + i}\nEgo map - Drone {i}"
             for i in range(self.max_drones)
         ]
 
@@ -788,8 +863,9 @@ class MultiUAVEnv:
     # ------------------------------------------------------------------ #
 
     def reset(self):
-        if not p.isConnected():
+        if not self.world.is_connected():
             self.world.connect()
+            self.debug_drawer.client_id = self.world.client_id
 
         self.debug_drawer.clear()
         self.world.reset()
@@ -884,7 +960,9 @@ class MultiUAVEnv:
             self._update_debug_draw(drone_states=drone_states,
                                     visible_ids_per_drone=visible_ids_per_drone)
 
-            person_reward_weights = self._build_person_reward_weights(len(people_positions))
+            person_reward_weights, target_group_ids = self._build_person_reward_weights(
+                len(people_positions)
+            )
             reward, reward_info, new_discoveries = self.reward_calc.compute_reward(
                 visible_ids_per_drone=visible_ids_per_drone,
                 drone_states=drone_states,
@@ -895,16 +973,18 @@ class MultiUAVEnv:
                 episode_steps=self.episode_steps,
                 actions=actions,
                 coverage_map=coverage_map_before_step,
+                coverage_map_after_step=self.obs_builder.persistent_coverage_map,
                 footprint_maps=self.obs_builder.footprint_maps_snapshot,
                 person_weights=person_reward_weights,
             )
+            reward_info["coverage_target_group_ids"] = target_group_ids
             self.ever_seen.update(new_discoveries)
             visible_union = set()
             for ids in visible_ids_per_drone:
                 visible_union.update(ids)
             self.last_visible_count = len(visible_union)
 
-            done = (self.current_step >= self.episode_steps) or (not p.isConnected())
+            done = (self.current_step >= self.episode_steps) or (not self.world.is_connected())
 
             info = {
                 "visible_ids_per_drone": visible_ids_per_drone,
@@ -949,5 +1029,5 @@ class MultiUAVEnv:
     def close(self):
         self._close_debug_observation_plot()
         self.debug_drawer.clear()
-        if p.isConnected():
+        if self.world.is_connected():
             self.world.disconnect()

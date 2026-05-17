@@ -13,16 +13,21 @@ class DebugDrawer:
         vertical_fov_deg=45.0,
         show_reward_contours: bool = False,
         coverage_edge_quality: float = 0.2,
+        client_id: int | None = None,
     ):
         self.tilt_deg = tilt_deg
         self.horizontal_fov_deg = horizontal_fov_deg
         self.vertical_fov_deg = vertical_fov_deg
         self.show_reward_contours = bool(show_reward_contours)
         self.coverage_edge_quality = float(coverage_edge_quality)
+        self.client_id = client_id
+
+    def _pb(self) -> dict:
+        return {"physicsClientId": self.client_id} if self.client_id is not None else {}
 
     def clear(self):
-        if p.isConnected():
-            p.removeAllUserDebugItems()
+        if p.isConnected(self.client_id):
+            p.removeAllUserDebugItems(**self._pb())
 
     def clear_inactive_drones(self, active_drone_ids):
         # With the simple clear-and-redraw path, inactive cleanup is handled by clear().
@@ -120,6 +125,7 @@ class DebugDrawer:
                         color,
                         lineWidth=1,
                         lifeTime=0,
+                        **self._pb(),
                     )
                     p.addUserDebugLine(
                         [wx, wy - marker, z_draw],
@@ -127,6 +133,7 @@ class DebugDrawer:
                         color,
                         lineWidth=1,
                         lifeTime=0,
+                        **self._pb(),
                     )
                     if label_point is None:
                         label_point = point
@@ -139,10 +146,11 @@ class DebugDrawer:
                 textColorRGB=color,
                 textSize=0.9,
                 lifeTime=0,
+                **self._pb(),
             )
 
     def draw_camera_footprint(self, drone_state, drone_id=None, reward_calc=None):
-        if not p.isConnected():
+        if not p.isConnected(self.client_id):
             return
 
         x, y, z = drone_state["position"]
@@ -155,6 +163,7 @@ class DebugDrawer:
                 [0, 1, 0],
                 lineWidth=2,
                 lifeTime=0,
+                **self._pb(),
             )
 
         p.addUserDebugLine(
@@ -163,6 +172,7 @@ class DebugDrawer:
             [0, 0, 1],
             lineWidth=2,
             lifeTime=0,
+            **self._pb(),
         )
         self._draw_reward_quality_contours(drone_state, reward_calc=reward_calc)
 
@@ -173,10 +183,11 @@ class DebugDrawer:
                 textColorRGB=[1, 1, 1],
                 textSize=1.2,
                 lifeTime=0,
+                **self._pb(),
             )
 
     def draw_detections(self, people, visible_ids):
-        if not p.isConnected():
+        if not p.isConnected(self.client_id):
             return
 
         visible_set = set(visible_ids)
@@ -190,4 +201,4 @@ class DebugDrawer:
             else:
                 color = [1.0, 0.0, 0.0, 1.0]
 
-            p.changeVisualShape(person.body_id, -1, rgbaColor=color)
+            p.changeVisualShape(person.body_id, -1, rgbaColor=color, **self._pb())

@@ -1,14 +1,22 @@
 """
-eval.py — run a trained actor in the environment (no training).
+hotspot_debug_eval.py — deterministic hotspot ablation eval.
+
+Run the exact same seeded environment in two modes:
+  --episode_num 1 : normal actor inputs
+  --episode_num 2 : hotspot slice in the local vector is zeroed before acting
 
 Usage:
-    ./run_eval.sh --load checkpoints/final.pt --gui
-    ./run_eval.sh --load checkpoints/final.pt --gui --deterministic
-    ./run_eval.sh --load checkpoints/final.pt --num_drones 1 --gui
+    python hotspot_debug_eval.py --load checkpoints/final.pt --episode_num 1
+    python hotspot_debug_eval.py --load checkpoints/final.pt --episode_num 2
 """
 
 import argparse
+import hashlib
+import json
+import random
 import time
+from typing import Any
+
 import numpy as np
 import pybullet as p
 import torch
@@ -22,14 +30,18 @@ from config import (
     build_env,
     infer_checkpoint_actor_grid_channels,
     infer_checkpoint_cmd_history_len,
-    infer_checkpoint_hide_person_features_during_search,
-    infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_instant_fov_channels,
+    infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_include_persistent_coverage_channel,
     infer_checkpoint_hotspot_top_k,
     infer_checkpoint_local_people_map_mode,
     infer_checkpoint_status_history_seconds,
+)
+from eval import (
+    infer_checkpoint_local_dim,
+    infer_trained_num_drones,
+    resolve_eval_active_num_drones,
 )
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
 from rl.live_debug import LiveDebugConfig, LiveDebugWindow
@@ -40,84 +52,87 @@ def parse_args():
     parser = argparse.ArgumentParser()
     add_shared_args(parser)
     add_eval_args(parser)
+    parser.add_argument(
+        "--episode_num",
+        type=int,
+        choices=(1, 2),
+        required=True,
+        help="1 = normal inputs, 2 = zero hotspot inputs before the actor forward pass.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="Global seed used to recreate the exact same environment instance across runs.",
+    )
     return parser.parse_args()
 
 
-def infer_trained_num_drones(ckpt: dict) -> int:
-    def infer_from_base_dim(total_local_dim: int) -> int | None:
-        for base_dim in (13, 12, 11, 9, 8, 6):
-            if total_local_dim >= base_dim and (total_local_dim - base_dim) % 6 == 0:
-                return ((total_local_dim - base_dim) // 6) + 1
-        return None
-
-    if "num_agents" in ckpt:
-        return int(ckpt["num_agents"])
-
-    actor_state = ckpt["actor"]
-    local_weight = actor_state["local_mlp.0.weight"]
-    local_dim = int(local_weight.shape[1])
-    move_head_weight = actor_state.get("move_head.weight")
-    if move_head_weight is not None:
-        move_mask_dim = int(move_head_weight.shape[0])
-        base_local_dim = local_dim - move_mask_dim
-        inferred = infer_from_base_dim(base_local_dim)
-        if inferred is None:
-            raise ValueError(
-                "Could not infer trained num_drones from checkpoint: "
-                f"local_dim={local_dim}, move_mask_dim={move_mask_dim}"
-            )
-        return inferred
-
-    inferred = infer_from_base_dim(local_dim)
-    if inferred is None:
-        raise ValueError(
-            "Could not infer trained num_drones from checkpoint: "
-            f"unexpected local_dim={local_dim}"
-        )
-    return inferred
+def set_global_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
 
 
-def resolve_eval_active_num_drones(
-    requested_num_drones: int,
-    trained_num_drones: int,
-) -> int:
-    if requested_num_drones == trained_num_drones:
-        return trained_num_drones
+def zero_hotspot_slice(local_obs: np.ndarray, hotspot_top_k: int) -> np.ndarray:
+    if hotspot_top_k <= 0:
+        return local_obs
+    local_obs = np.array(local_obs, copy=True)
+    hotspot_start = 11
+    hotspot_end = hotspot_start + 5 * int(hotspot_top_k)
+    local_obs[:, hotspot_start:hotspot_end] = 0.0
+    return local_obs
 
-    # If eval kept the shared default but the checkpoint was trained with a
-    # different max drone count, prefer the checkpoint architecture.
-    if (
-        requested_num_drones == SHARED_DEFAULTS.num_drones
-        and trained_num_drones != SHARED_DEFAULTS.num_drones
-    ):
-        return trained_num_drones
 
-    if 1 <= requested_num_drones <= trained_num_drones:
-        return requested_num_drones
+def build_scenario_signature(env) -> tuple[str, dict[str, Any]]:
+    drone_states = env._get_drone_states()
+    people_positions = env._get_people_positions()
+    payload = {
+        "active_num_drones": int(env.active_num_drones),
+        "drone_states": [
+            {
+                "position": [round(float(v), 6) for v in state["position"]],
+                "yaw": round(float(state["yaw"]), 6),
+            }
+            for state in drone_states
+        ],
+        "people_positions": [
+            [round(float(v), 6) for v in pos]
+            for pos in people_positions
+        ],
+        "group_info": env.episode_group_info,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return digest, payload
 
-    raise ValueError(
-        f"Requested eval num_drones={requested_num_drones}, but checkpoint was "
-        f"trained with num_drones={trained_num_drones}. "
-        "For eval, pass a value within [1, trained_num_drones]."
+
+def run_episode(env, actor, action_space, device, args, hotspot_top_k, live_debug=None):
+    obs = env.reset()
+    scenario_hash, scenario_payload = build_scenario_signature(env)
+    ep_reward = 0.0
+    done = False
+    step = 0
+    info = {}
+
+    print(
+        f"[HotspotDebug] mode={'normal' if args.episode_num == 1 else 'zero_hotspots'}  "
+        f"seed={args.seed}  scenario_hash={scenario_hash}"
+    )
+    print(
+        f"[HotspotDebug] active_drones={scenario_payload['active_num_drones']}  "
+        f"num_groups={scenario_payload['group_info'].get('num_groups', 0)}"
     )
 
-
-def infer_checkpoint_local_dim(ckpt: dict) -> int:
-    if "local_dim" in ckpt:
-        return int(ckpt["local_dim"])
-    actor_state = ckpt["actor"]
-    local_weight = actor_state["local_mlp.0.weight"]
-    return int(local_weight.shape[1])
-
-
-def run_episode(env, actor, action_space, device, args, live_debug=None):
-    obs       = env.reset()
-    ep_reward = 0.0
-    done      = False
-    step      = 0
-    info      = {}
-
-    # Add "New Episode" button after reset (resetSimulation clears debug params).
     new_ep_btn = None
     btn_val = None
     if args.gui:
@@ -140,10 +155,13 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
             y_min=env.move_y_min,
             y_max=env.move_y_max,
         )
+        local_obs = np.stack([o["local"] for o in obs])
+        if args.episode_num == 2:
+            local_obs = zero_hotspot_slice(local_obs, hotspot_top_k)
         grids = torch.FloatTensor(np.stack([o["grid"] for o in obs])).to(device)
         locs = torch.FloatTensor(
             append_move_masks_to_local(
-                np.stack([o["local"] for o in obs]),
+                local_obs,
                 move_masks,
             )
         ).to(device)
@@ -186,7 +204,11 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
 
 
 def main():
-    args   = parse_args()
+    args = parse_args()
+    args.episodes = 1
+    args.deterministic = True
+    set_global_seed(args.seed)
+
     device = torch.device(args.device)
     ckpt = torch.load(args.load, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
@@ -196,9 +218,6 @@ def main():
     )
     trained_include_instant_fov_channels = (
         infer_checkpoint_include_instant_fov_channels(ckpt)
-    )
-    trained_hide_person_features_during_search = (
-        infer_checkpoint_hide_person_features_during_search(ckpt)
     )
     trained_include_local_recent_count_memory_channel = (
         infer_checkpoint_include_local_recent_count_memory_channel(ckpt)
@@ -234,7 +253,6 @@ def main():
             "actor_grid_channels": trained_grid_channels,
             "include_persistent_coverage_channel": trained_include_persistent_coverage,
             "include_instant_fov_channels": trained_include_instant_fov_channels,
-            "hide_person_features_during_search": trained_hide_person_features_during_search,
             "include_local_recent_count_memory_channel": (
                 trained_include_local_recent_count_memory_channel
             ),
@@ -253,13 +271,14 @@ def main():
     )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)
-
     actor.load_state_dict(ckpt["actor"])
     actor.eval()
 
     print(
-        f"[Eval] checkpoint_num_drones={trained_num_drones}  "
-        f"active_num_drones={active_num_drones}"
+        f"[HotspotDebug] checkpoint_num_drones={trained_num_drones}  "
+        f"active_num_drones={active_num_drones}  "
+        f"trained_hotspot_top_k={trained_hotspot_top_k}  "
+        f"episode_num={args.episode_num}"
     )
 
     live_debug = None
@@ -277,28 +296,29 @@ def main():
             )
         )
 
-    for ep in range(args.episodes):
+    try:
         ep_start = time.perf_counter()
         ep_reward, steps, info = run_episode(
-            env,
-            actor,
-            action_space,
-            device,
-            args,
+            env=env,
+            actor=actor,
+            action_space=action_space,
+            device=device,
+            args=args,
+            hotspot_top_k=trained_hotspot_top_k,
             live_debug=live_debug,
         )
         elapsed = time.perf_counter() - ep_start
         sim_seconds = steps * env.dt
         rtf = sim_seconds / elapsed if elapsed > 0 else float("inf")
 
-        reward_info    = info.get("reward_info", {})
+        reward_info = info.get("reward_info", {})
         active_num_drones = info.get("active_num_drones", len(env.drones))
         coverage_count = reward_info.get("coverage_count", 0)
-        r_disc         = reward_info.get("r_disc", 0.0)
-        new_disc       = reward_info.get("new_discovered", 0)
+        r_disc = reward_info.get("r_disc", 0.0)
+        new_disc = reward_info.get("new_discovered", 0)
 
         print(
-            f"Episode {ep + 1:2d}: "
+            f"Episode {args.episode_num:2d}: "
             f"active_drones={active_num_drones}  "
             f"total_reward={ep_reward:8.3f}  "
             f"steps={steps}  "
@@ -308,8 +328,8 @@ def main():
             f"last_r_disc={r_disc:.3f}  "
             f"last_new_disc={new_disc}"
         )
-
-    env.close()
+    finally:
+        env.close()
 
 
 if __name__ == "__main__":

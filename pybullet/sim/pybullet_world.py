@@ -17,21 +17,30 @@ class PyBulletWorld:
 
         connection_mode = p.GUI if self.gui else p.DIRECT
         self.client_id = p.connect(connection_mode)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setTimeStep(self.time_step)
-        p.setGravity(0, 0, -9.81)
+        p.setAdditionalSearchPath(
+            pybullet_data.getDataPath(),
+            physicsClientId=self.client_id,
+        )
+        p.setTimeStep(self.time_step, physicsClientId=self.client_id)
+        p.setGravity(0, 0, -9.81, physicsClientId=self.client_id)
+
+    def is_connected(self) -> bool:
+        return self.client_id is not None and bool(p.isConnected(self.client_id))
 
     def reset(self):
         """Reset the simulation world."""
         if self.client_id is None:
             self.connect()
 
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.81)
-        p.setTimeStep(self.time_step)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        p.resetSimulation(physicsClientId=self.client_id)
+        p.setGravity(0, 0, -9.81, physicsClientId=self.client_id)
+        p.setTimeStep(self.time_step, physicsClientId=self.client_id)
+        p.setAdditionalSearchPath(
+            pybullet_data.getDataPath(),
+            physicsClientId=self.client_id,
+        )
 
-        self.plane_id = p.loadURDF("plane.urdf")
+        self.plane_id = p.loadURDF("plane.urdf", physicsClientId=self.client_id)
         self.wall_ids = []
 
     def add_boundary_walls(self, x_min=-5, x_max=5, y_min=-5, y_max=5, height=1.0, thickness=0.1):
@@ -47,28 +56,31 @@ class PyBulletWorld:
         for pos, half_extents in wall_specs:
             collision_shape = p.createCollisionShape(
                 p.GEOM_BOX,
-                halfExtents=half_extents
+                halfExtents=half_extents,
+                physicsClientId=self.client_id,
             )
             visual_shape = p.createVisualShape(
                 p.GEOM_BOX,
                 halfExtents=half_extents,
-                rgbaColor=[0.6, 0.6, 0.6, 1.0]
+                rgbaColor=[0.6, 0.6, 0.6, 1.0],
+                physicsClientId=self.client_id,
             )
             wall_id = p.createMultiBody(
                 baseMass=0.0,
                 baseCollisionShapeIndex=collision_shape,
                 baseVisualShapeIndex=visual_shape,
-                basePosition=pos
+                basePosition=pos,
+                physicsClientId=self.client_id,
             )
             self.wall_ids.append(wall_id)
 
     def step(self, num_steps: int = 1):
         """Advance the simulation."""
         for _ in range(num_steps):
-            p.stepSimulation()
+            p.stepSimulation(physicsClientId=self.client_id)
 
     def disconnect(self):
         """Disconnect from PyBullet."""
         if self.client_id is not None:
-            p.disconnect()
+            p.disconnect(physicsClientId=self.client_id)
             self.client_id = None

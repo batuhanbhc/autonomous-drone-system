@@ -1,20 +1,19 @@
 """
 Utilities for building the centralised global state used by the critic.
 
-The critic grid has shape ((shared_people_channels + 3) + 3 * max_agents, H, W):
-  channel  0              — shared instantaneous spatial support union
-  channel ...             — shared people channels from the actor layout
-                            (current default: count density, historic count,
-                             permanent coverage)
-                            (legacy 8/10-channel checkpoints additionally include
-                             recent count memory)
-                            (legacy 9/10-channel checkpoints additionally include
-                             recent/historic spatial-support maps)
-  channel ...             — shared FOV coverage union
-  channel ...             — shared drone map
-  channels ...            — per-drone instantaneous maps, padded to max_agents
-  channels ...            — per-drone own coverage maps, padded to max_agents
-  channels ...            — per-drone ego maps, padded to max_agents
+Current local-count layout:
+  critic grid shape = ((shared_people_channels + 5) + 5 * max_agents, H, W)
+    shared channels  — actor shared people channels, shared instant FOV
+                       footprint, shared FOV coverage, shared drone map,
+                       GT people occupancy, GT people density
+    per-drone blocks — local count density, local recent count memory,
+                       own instant footprint, own coverage, ego
+
+Legacy instant-map layout:
+  critic grid shape = ((shared_people_channels + 6) + (4 or 5) * max_agents, H, W)
+    leading shared channel — shared instantaneous spatial-support union
+    per-drone blocks       — local instant map, optional local recent count
+                             memory, own instant footprint, own coverage, ego
 
 The poses vector is (max_agents * (1 + local_dim) + 9,):
   per-agent slice: [mask, *full_local_vector]
@@ -60,10 +59,16 @@ def build_global_state(
     episode_steps: maximum steps in the episode
     """
     active_agents = len(obs)
-    local_dim = obs[0]["local"].shape[0]
+    local_key = "critic_local" if "critic_local" in obs[0] else "local"
+    local_dim = obs[0][local_key].shape[0]
     pose_slices = []
     for agent_idx in range(active_agents):
-        pose_slices.append(np.concatenate([np.array([1.0], dtype=np.float32), obs[agent_idx]["local"]], axis=0))
+        pose_slices.append(
+            np.concatenate(
+                [np.array([1.0], dtype=np.float32), obs[agent_idx][local_key]],
+                axis=0,
+            )
+        )
     for _ in range(max_agents - active_agents):
         pose_slices.append(np.zeros((1 + local_dim,), dtype=np.float32))
     poses = np.concatenate(pose_slices, axis=0).astype(np.float32)
@@ -91,32 +96,88 @@ def build_global_state(
         dtype=np.float32,
     )
 
-    # Ch0 for critic: union (max) of all per-drone instantaneous spatial-support maps.
-    # instant_maps_snapshot is padded to max_agents slots by ObservationBuilder.
-    shared_instant = obs_builder.instant_maps_snapshot.max(axis=0)
-
-    shared_people_end = 1 + obs_builder.shared_people_channels
+    own_instant_coverage_channel = getattr(
+        obs_builder,
+        "actor_own_instant_coverage_channel",
+        None,
+    )
     own_coverage_channel = obs_builder.actor_own_coverage_channel
     shared_drone_channel = obs_builder.actor_shared_drone_channel
 
-    # Shared actor channels 1..shared_people_end-1 are identical across drones.
-    shared_people = obs[0]["grid"][1:shared_people_end]
+    shared_people_parts = []
+    if getattr(obs_builder, "exposes_spatial_memory_channels", False):
+        shared_people_parts.extend(
+            [
+                np.asarray(obs_builder.people_belief_recent, dtype=np.float32)[np.newaxis, :, :],
+                np.asarray(obs_builder.people_belief_historic, dtype=np.float32)[np.newaxis, :, :],
+            ]
+        )
+    if getattr(obs_builder, "include_shared_count_density_channel", False):
+        shared_people_parts.append(
+            np.asarray(obs_builder.people_count_density, dtype=np.float32)[np.newaxis, :, :]
+        )
+    shared_people_parts.append(
+        np.asarray(obs_builder.people_count_memory_historic, dtype=np.float32)[np.newaxis, :, :]
+    )
+    if getattr(obs_builder, "include_persistent_coverage_channel", False):
+        shared_people_parts.append(
+            np.asarray(obs_builder.persistent_coverage_map, dtype=np.float32)[np.newaxis, :, :]
+        )
+    shared_people = np.concatenate(shared_people_parts, axis=0).astype(np.float32)
+    shared_instant_coverage = obs_builder.footprint_maps_snapshot.max(axis=0).astype(
+        np.float32
+    )
     shared_coverage = obs_builder.coverage_map.astype(np.float32)
     shared_drone_map = obs[0]["grid"][shared_drone_channel]
+    gt_people_binary = getattr(
+        obs_builder,
+        "gt_people_binary_snapshot",
+        np.zeros_like(shared_coverage, dtype=np.float32),
+    ).astype(np.float32)
+    gt_people_density = getattr(
+        obs_builder,
+        "gt_people_density_snapshot",
+        np.zeros_like(shared_coverage, dtype=np.float32),
+    ).astype(np.float32)
 
-    shared = np.concatenate(
-        [
-            shared_instant[np.newaxis, :, :],
-            shared_people,
-            shared_coverage[np.newaxis, :, :],
-            shared_drone_map[np.newaxis, :, :],
-        ],
-        axis=0,
-    )
+    shared_parts = [
+        shared_people,
+    ]
+    if own_instant_coverage_channel is not None:
+        shared_parts.append(shared_instant_coverage[np.newaxis, :, :])
+    shared_parts.extend([
+        shared_coverage[np.newaxis, :, :],
+        shared_drone_map[np.newaxis, :, :],
+        gt_people_binary[np.newaxis, :, :],
+        gt_people_density[np.newaxis, :, :],
+    ])
+    if getattr(obs_builder, "critic_has_shared_local_people_union", False):
+        # Legacy layout keeps a shared union of the per-drone instantaneous maps.
+        shared_local_people_union = obs_builder.local_people_maps_snapshot.max(axis=0)
+        shared_parts.insert(0, shared_local_people_union[np.newaxis, :, :])
+    shared = np.concatenate(shared_parts, axis=0)
 
-    # Per-drone instantaneous maps preserve who sees what on this step.
-    # ObservationBuilder stores one slot per max agent, so inactive slots stay zero.
-    instant_maps = obs_builder.instant_maps_snapshot[:max_agents].astype(np.float32)
+    # Per-drone local people maps preserve who observed the local density/support
+    # this step. ObservationBuilder stores one slot per max agent, so inactive
+    # slots stay zero.
+    local_people_maps = obs_builder.local_people_maps_snapshot[:max_agents].astype(np.float32)
+    local_recent_count_memory_maps = obs_builder.local_recent_count_memory_maps_snapshot[
+        :max_agents
+    ].astype(np.float32)
+
+    own_instant_coverage_maps = []
+    if own_instant_coverage_channel is not None:
+        own_instant_coverage_maps = [
+            o["grid"][own_instant_coverage_channel] for o in obs
+        ]
+        while len(own_instant_coverage_maps) < max_agents:
+            own_instant_coverage_maps.append(
+                np.zeros_like(obs[0]["grid"][own_instant_coverage_channel])
+            )
+        own_instant_coverage_maps = np.stack(
+            own_instant_coverage_maps[:max_agents],
+            axis=0,
+        )
 
     own_coverage_maps = [o["grid"][own_coverage_channel] for o in obs]
     while len(own_coverage_maps) < max_agents:
@@ -130,13 +191,17 @@ def build_global_state(
         active_ego_maps.append(np.zeros_like(obs[0]["grid"][-1]))
     ego_maps = np.stack(active_ego_maps[:max_agents], axis=0)
 
-    # Critic grid: shared channels + per-drone instantaneous + per-drone own
-    # coverage + per-drone ego.
+    # Critic grid: shared channels + per-drone local people maps + optional
+    # per-drone local recent count memory + per-drone instant footprint
+    # + per-drone own coverage + per-drone ego.
     # Inactive drone slots remain zero-filled.
-    grid = np.concatenate(
-        [shared, instant_maps, own_coverage_maps, ego_maps],
-        axis=0,
-    ).astype(np.float32)
+    grid_parts = [shared, local_people_maps]
+    if getattr(obs_builder, "critic_has_local_recent_count_memory_channel", False):
+        grid_parts.append(local_recent_count_memory_maps)
+    if own_instant_coverage_channel is not None:
+        grid_parts.append(own_instant_coverage_maps)
+    grid_parts.extend([own_coverage_maps, ego_maps])
+    grid = np.concatenate(grid_parts, axis=0).astype(np.float32)
 
     return {
         "grid":  grid,

@@ -11,6 +11,7 @@ class Drone:
         color=(0.2, 0.2, 1.0, 1.0),
         vel_tau_s: float = 0.0,
         yaw_rate_tau_s: float = 0.0,
+        client_id: int | None = None,
     ):
         self.start_pos     = start_pos
         self.size          = size
@@ -18,27 +19,32 @@ class Drone:
         self.body_id       = None
         self.vel_tau_s     = float(vel_tau_s)
         self.yaw_rate_tau_s = float(yaw_rate_tau_s)
+        self.client_id     = client_id
         self._actual_vx       = 0.0
         self._actual_vy       = 0.0
         self._actual_yaw_rate = 0.0
 
+    def _pb(self) -> dict:
+        return {"physicsClientId": self.client_id} if self.client_id is not None else {}
+
     def spawn(self):
         collision_shape = p.createCollisionShape(
-            p.GEOM_BOX, halfExtents=self.size
+            p.GEOM_BOX, halfExtents=self.size, **self._pb()
         )
         visual_shape = p.createVisualShape(
-            p.GEOM_BOX, halfExtents=self.size, rgbaColor=self.color
+            p.GEOM_BOX, halfExtents=self.size, rgbaColor=self.color, **self._pb()
         )
         self.body_id = p.createMultiBody(
             baseMass=0.0,
             baseCollisionShapeIndex=collision_shape,
             baseVisualShapeIndex=visual_shape,
             basePosition=self.start_pos,
+            **self._pb(),
         )
 
     def reset(self, pos=(0.0, 0.0, 1.0), yaw=0.0):
-        quat = p.getQuaternionFromEuler((0.0, 0.0, yaw))
-        p.resetBasePositionAndOrientation(self.body_id, pos, quat)
+        quat = p.getQuaternionFromEuler((0.0, 0.0, yaw), **self._pb())
+        p.resetBasePositionAndOrientation(self.body_id, pos, quat, **self._pb())
         self._actual_vx       = 0.0
         self._actual_vy       = 0.0
         self._actual_yaw_rate = 0.0
@@ -70,12 +76,12 @@ class Drone:
         There is no momentum model between decisions. Final position is
         clamped to world bounds and yaw is wrapped to (-pi, pi].
         """
-        if not p.isConnected() or self.body_id is None:
+        if not p.isConnected(self.client_id) or self.body_id is None:
             return
 
-        pos, quat = p.getBasePositionAndOrientation(self.body_id)
+        pos, quat = p.getBasePositionAndOrientation(self.body_id, **self._pb())
         x, y, z   = pos
-        _, _, yaw = p.getEulerFromQuaternion(quat)
+        _, _, yaw = p.getEulerFromQuaternion(quat, **self._pb())
 
         if self.vel_tau_s > 0.0:
             alpha = min(1.0, dt / self.vel_tau_s)
@@ -101,14 +107,14 @@ class Drone:
         new_y = max(y_min, min(y_max, new_y))
         new_z = max(z_min, min(z_max, new_z))
 
-        new_quat = p.getQuaternionFromEuler((0.0, 0.0, new_yaw))
+        new_quat = p.getQuaternionFromEuler((0.0, 0.0, new_yaw), **self._pb())
         p.resetBasePositionAndOrientation(
-            self.body_id, (new_x, new_y, new_z), new_quat
+            self.body_id, (new_x, new_y, new_z), new_quat, **self._pb()
         )
 
     def get_pose(self) -> Tuple[Tuple[float, float, float], float]:
-        pos, quat = p.getBasePositionAndOrientation(self.body_id)
-        _, _, yaw = p.getEulerFromQuaternion(quat)
+        pos, quat = p.getBasePositionAndOrientation(self.body_id, **self._pb())
+        _, _, yaw = p.getEulerFromQuaternion(quat, **self._pb())
         return pos, yaw
 
     def get_state_dict(self):

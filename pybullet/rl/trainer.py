@@ -1,10 +1,10 @@
 """
 MAPPO Trainer for a masked joint-move actor over ((vx, vy), yaw_rate).
 
-Actor grid: (grid_channels, H, W)               — 8 channels by default
-                                                  (legacy 7/8/9/10 layouts still load)
-Critic grid: (grid_channels - 2 + 3 * num_agents, H, W)
-            — shared + per-drone instant/coverage/ego maps
+Actor grid: (grid_channels, H, W)               — 9 channels by default
+                                                  (legacy layouts still load)
+Critic grid: layout-dependent shared channels + per-drone
+             local-people/coverage/ego maps
 """
 
 import csv
@@ -17,7 +17,15 @@ import torch
 import torch.nn as nn
 from typing import Dict, List
 
-from config import infer_checkpoint_include_persistent_coverage_channel
+from config import (
+    infer_checkpoint_hide_person_features_during_search,
+    infer_checkpoint_include_instant_fov_channels,
+    infer_checkpoint_include_local_recent_count_memory_channel,
+    infer_checkpoint_include_persistent_coverage_channel,
+    infer_checkpoint_include_shared_count_density_channel,
+    infer_checkpoint_local_people_map_mode,
+    infer_critic_grid_channels,
+)
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
 from rl.live_debug import LiveDebugConfig, LiveDebugWindow
 from rl.networks import ActorNetwork, CriticNetwork
@@ -85,9 +93,9 @@ class RunningMeanStd:
 class MAPPOTrainer:
     def __init__(
         self,
-        env,
+        envs,
         local_dim: int = 11,
-        grid_channels: int = 8,       # actor default: instant + count density + historic count + persistent coverage + own/teammate coverage + shared drone + own ego
+        grid_channels: int = 10,      # actor default: local count density + local recent count memory + historic count + persistent coverage + own/teammate instant FOV + own/teammate coverage + shared drone + own ego
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
@@ -95,7 +103,7 @@ class MAPPOTrainer:
         num_vx_bins: int = 9,
         num_vy_bins: int = 9,
         num_yaw_bins: int = 9,
-        rollout_len: int = 300,
+        n_steps: int = 300,
         num_epochs: int = 4,
         batch_size: int = 64,
         clip_eps: float = 0.1,
@@ -112,6 +120,7 @@ class MAPPOTrainer:
         device: str = "cpu",
         save_dir: str = "checkpoints",
         log_interval: int = 10,
+        save_interval: int = 10,
         use_tensorboard: bool = False,
         live_debug: bool = False,
         live_debug_every: int = 100,
@@ -119,13 +128,23 @@ class MAPPOTrainer:
         gui: bool = False,
         anneal_lr: bool = True,
     ):
-        self.env        = env
-        self.num_agents = env.max_drones
+        if not envs:
+            raise ValueError("MAPPOTrainer requires at least one environment instance.")
+        self.envs = list(envs)
+        self.env = self.envs[0]
+        self.num_envs = len(self.envs)
+        self.num_agents = self.env.max_drones
         self.device     = torch.device(device)
         self.save_dir   = save_dir
         self.log_interval = log_interval
+        self.save_interval = int(save_interval)
+        if self.save_interval <= 0:
+            raise ValueError(f"save_interval must be > 0, got {self.save_interval}")
 
-        self.rollout_len   = rollout_len
+        self.n_steps       = int(n_steps)
+        if self.n_steps <= 0:
+            raise ValueError(f"n_steps must be > 0, got {self.n_steps}")
+        self.rollout_len   = self.num_envs * self.n_steps
         self.num_epochs    = num_epochs
         self.batch_size    = batch_size
         self.clip_eps      = clip_eps
@@ -136,6 +155,8 @@ class MAPPOTrainer:
         self.lr_actor_init  = lr_actor
         self.lr_critic_init = lr_critic
         self.gui = gui
+        if self.gui and self.num_envs > 1:
+            raise ValueError("GUI training supports only n_envs=1.")
         self._pause_btn = None
         self._pause_btn_last = None
         self._paused = False
@@ -153,9 +174,29 @@ class MAPPOTrainer:
         self.move_mask_dim = int(self.vx_bins.shape[0] * self.vy_bins.shape[0])
 
         self.grid_channels = int(grid_channels)
-        if self.grid_channels < 7:
-            raise ValueError(f"grid_channels must be >= 7, got {self.grid_channels}")
-        self.critic_grid_channels = self.grid_channels - 2 + (3 * self.num_agents)
+        if self.grid_channels < 6:
+            raise ValueError(f"grid_channels must be >= 6, got {self.grid_channels}")
+        self.local_people_map_mode = str(
+            getattr(self.env.obs_builder, "local_people_map_mode", "instant")
+        )
+        self.include_shared_count_density_channel = bool(
+            getattr(self.env.obs_builder, "include_shared_count_density_channel", True)
+        )
+        self.include_local_recent_count_memory_channel = bool(
+            getattr(self.env.obs_builder, "include_local_recent_count_memory_channel", True)
+        )
+        self.include_instant_fov_channels = bool(
+            getattr(self.env.obs_builder, "include_instant_fov_channels", True)
+        )
+        self.critic_grid_channels = infer_critic_grid_channels(
+            num_drones=self.num_agents,
+            actor_grid_channels=self.grid_channels,
+            local_people_map_mode=self.local_people_map_mode,
+            include_local_recent_count_memory_channel=(
+                self.include_local_recent_count_memory_channel
+            ),
+            include_instant_fov_channels=self.include_instant_fov_channels,
+        )
         self.grid_h               = grid_h
         self.grid_w               = grid_w
 
@@ -191,7 +232,8 @@ class MAPPOTrainer:
         self.value_rms = RunningMeanStd()
 
         self.buffer = RolloutBuffer(
-            rollout_len=rollout_len,
+            rollout_steps=self.n_steps,
+            num_envs=self.num_envs,
             num_agents=self.num_agents,
             grid_shape=(self.grid_channels, grid_h, grid_w),
             critic_grid_shape=(self.critic_grid_channels, grid_h, grid_w),
@@ -206,7 +248,7 @@ class MAPPOTrainer:
 
         self.total_steps = 0
         self.current_update = 0
-        self._sticky_env_actions = None
+        self._sticky_env_actions = [None] * self.num_envs
         self._last_rollout_sticky_rate = 0.0
 
         if use_tensorboard:
@@ -231,6 +273,7 @@ class MAPPOTrainer:
                 every_steps=max(1, int(live_debug_every)),
                 num_drones=self.num_agents,
                 cmd_history_len=self.env.cmd_history_len,
+                status_history_seconds=getattr(self.env, "status_history_seconds", 0),
                 hotspot_top_k=getattr(self.env.obs_builder, "hotspot_top_k", 0),
                 actor_channel_names=getattr(self.env.obs_builder, "actor_channel_names", None),
             )
@@ -317,8 +360,8 @@ class MAPPOTrainer:
             )
 
     def _compute_critic_diagnostics(self) -> Dict[str, float]:
-        values = self.buffer.values.astype(np.float64)
-        returns = self.buffer.returns.astype(np.float64)
+        values = self.buffer.values.astype(np.float64).reshape(-1)
+        returns = self.buffer.returns.astype(np.float64).reshape(-1)
         errors = values - returns
 
         value_std = float(values.std())
@@ -423,25 +466,32 @@ class MAPPOTrainer:
         norm_value = self.critic(grid_t, poses_t)
         return self.value_rms.denormalize_tensor(norm_value)
 
-    def _compute_move_masks(self) -> np.ndarray:
+    def _compute_move_masks(self, env) -> np.ndarray:
         return compute_move_action_masks(
-            drone_states=self.env._get_drone_states(),
+            drone_states=env._get_drone_states(),
             vx_bins=self.vx_bins,
             vy_bins=self.vy_bins,
-            dt=self.env.dt,
-            x_min=self.env.move_x_min,
-            x_max=self.env.move_x_max,
-            y_min=self.env.move_y_min,
-            y_max=self.env.move_y_max,
+            dt=env.dt,
+            x_min=env.move_x_min,
+            x_max=env.move_x_max,
+            y_min=env.move_y_min,
+            y_max=env.move_y_max,
         )
 
     def _augment_obs_with_move_masks(self, obs: List[Dict], move_masks: np.ndarray) -> List[Dict]:
         base_locals = np.stack([o["local"] for o in obs], axis=0)
         aug_locals = append_move_masks_to_local(base_locals, move_masks)
+        base_critic_locals = None
+        aug_critic_locals = None
+        if obs and "critic_local" in obs[0]:
+            base_critic_locals = np.stack([o["critic_local"] for o in obs], axis=0)
+            aug_critic_locals = append_move_masks_to_local(base_critic_locals, move_masks)
         augmented_obs = []
         for idx, item in enumerate(obs):
             augmented_item = dict(item)
             augmented_item["local"] = aug_locals[idx]
+            if aug_critic_locals is not None:
+                augmented_item["critic_local"] = aug_critic_locals[idx]
             augmented_item["move_mask"] = move_masks[idx]
             augmented_obs.append(augmented_item)
         return augmented_obs
@@ -458,10 +508,13 @@ class MAPPOTrainer:
             for action in decoded
         ]
 
-    def _reset_sticky_actions(self):
-        self._sticky_env_actions = None
+    def _reset_sticky_actions(self, env_idx: int | None = None):
+        if env_idx is None:
+            self._sticky_env_actions = [None] * self.num_envs
+            return
+        self._sticky_env_actions[env_idx] = None
 
-    def _apply_sticky_actions(self, env_actions: List):
+    def _apply_sticky_actions(self, env_idx: int, env_actions: List):
         """
         Apply standard sticky-action environment noise.
 
@@ -471,11 +524,11 @@ class MAPPOTrainer:
         where the environment may reuse the previously executed action.
         """
         if not env_actions:
-            self._sticky_env_actions = None
+            self._sticky_env_actions[env_idx] = None
             return env_actions, 0, 0
 
         executed_actions = list(env_actions)
-        prev_actions = self._sticky_env_actions
+        prev_actions = self._sticky_env_actions[env_idx]
         sticky_overrides = 0
         sticky_candidates = 0
 
@@ -492,21 +545,21 @@ class MAPPOTrainer:
                 for i in range(len(env_actions))
             ]
 
-        self._sticky_env_actions = list(executed_actions)
+        self._sticky_env_actions[env_idx] = list(executed_actions)
         return executed_actions, sticky_overrides, sticky_candidates
 
-    def _build_global_state(self, obs: List[Dict]) -> Dict:
+    def _build_global_state(self, env, obs: List[Dict]) -> Dict:
         """Build critic global state using current env context."""
-        phase_context = self.env.get_observation_phase_context()
+        phase_context = env.get_observation_phase_context()
         return build_global_state(
             obs,
             self.num_agents,
-            obs_builder=self.env.obs_builder,
-            num_people=len(self.env.people),
-            ever_seen=len(self.env.ever_seen),
-            visible_count=self.env.last_visible_count,
-            current_step=self.env.current_step,
-            episode_steps=self.env.episode_steps,
+            obs_builder=env.obs_builder,
+            num_people=len(env.people),
+            ever_seen=len(env.ever_seen),
+            visible_count=env.last_visible_count,
+            current_step=env.current_step,
+            episode_steps=env.episode_steps,
             search_phase_progress=phase_context["search_phase_progress"],
             is_search_phase=phase_context["is_search_phase"],
             is_coverage_phase=phase_context["is_coverage_phase"],
@@ -548,80 +601,136 @@ class MAPPOTrainer:
             self._pause_btn = None
 
     @torch.no_grad()
-    def _collect_rollout(self, obs: List[Dict], update: int) -> List[Dict]:
+    def _collect_rollout(self, obs_per_env: List[List[Dict]], update: int) -> List[List[Dict]]:
         self.actor.eval()
         self.critic.eval()
         sticky_overrides = 0
         sticky_candidates = 0
 
-        for step_i in range(self.rollout_len):
+        for _ in range(self.n_steps):
             self._check_pause()
-            move_masks = self._compute_move_masks()
-            obs_with_masks = self._augment_obs_with_move_masks(obs, move_masks)
-            self._maybe_update_live_debug(obs_with_masks, update)
-            grids_t, locs_t = self._obs_to_tensors(obs_with_masks)
-            move_masks_t = torch.FloatTensor(move_masks).to(self.device)
-            action_indices, log_probs, _ = self.actor.get_action(
-                grids_t,
-                locs_t,
-                move_mask=move_masks_t,
+            step_grids = np.zeros(
+                (
+                    self.num_envs,
+                    self.num_agents,
+                    self.grid_channels,
+                    self.grid_h,
+                    self.grid_w,
+                ),
+                dtype=np.float32,
             )
-            active_agents = action_indices.shape[0]
-            (
-                packed_grids,
-                packed_locs,
-                packed_actions,
-                packed_log_probs,
-                packed_move_masks,
-                actor_masks,
-                critic_weights,
-            ) = self._pack_actor_inputs(grids_t, locs_t, move_masks_t)
-            packed_actions[:active_agents] = action_indices.cpu().numpy()
-            packed_log_probs[:active_agents] = log_probs.cpu().numpy()
-
-            # Value estimate BEFORE stepping
-            global_state = self._build_global_state(obs_with_masks)
-            value        = self._critic_forward(global_state).item()
-
-            proposed_actions = self._actions_to_env(action_indices)
-            executed_actions, step_overrides, step_candidates = self._apply_sticky_actions(
-                proposed_actions
+            step_locs = np.zeros(
+                (self.num_envs, self.num_agents, self.buffer.local_dim),
+                dtype=np.float32,
             )
-            sticky_overrides += step_overrides
-            sticky_candidates += step_candidates
-            next_obs, reward, done, info = self.env.step(executed_actions)
+            step_actions = np.zeros(
+                (self.num_envs, self.num_agents, self.action_dim),
+                dtype=np.int64,
+            )
+            step_log_probs = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
+            step_move_masks = np.ones(
+                (self.num_envs, self.num_agents, self.move_mask_dim),
+                dtype=np.float32,
+            )
+            step_actor_masks = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
+            step_critic_weights = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
+            step_rewards = np.zeros((self.num_envs,), dtype=np.float32)
+            step_dones = np.zeros((self.num_envs,), dtype=np.float32)
+            step_global_grids = np.zeros(
+                (
+                    self.num_envs,
+                    self.critic_grid_channels,
+                    self.grid_h,
+                    self.grid_w,
+                ),
+                dtype=np.float32,
+            )
+            step_global_poses = np.zeros((self.num_envs, self.poses_dim), dtype=np.float32)
+            step_values = np.zeros((self.num_envs,), dtype=np.float32)
+
+            for env_idx, env in enumerate(self.envs):
+                move_masks = self._compute_move_masks(env)
+                obs_with_masks = self._augment_obs_with_move_masks(obs_per_env[env_idx], move_masks)
+                if env_idx == 0:
+                    self._maybe_update_live_debug(obs_with_masks, update)
+                grids_t, locs_t = self._obs_to_tensors(obs_with_masks)
+                move_masks_t = torch.FloatTensor(move_masks).to(self.device)
+                action_indices, log_probs, _ = self.actor.get_action(
+                    grids_t,
+                    locs_t,
+                    move_mask=move_masks_t,
+                )
+                active_agents = action_indices.shape[0]
+                (
+                    packed_grids,
+                    packed_locs,
+                    packed_actions,
+                    packed_log_probs,
+                    packed_move_masks,
+                    actor_masks,
+                    critic_weights,
+                ) = self._pack_actor_inputs(grids_t, locs_t, move_masks_t)
+                packed_actions[:active_agents] = action_indices.cpu().numpy()
+                packed_log_probs[:active_agents] = log_probs.cpu().numpy()
+
+                global_state = self._build_global_state(env, obs_with_masks)
+                value = self._critic_forward(global_state).item()
+
+                proposed_actions = self._actions_to_env(action_indices)
+                executed_actions, env_overrides, env_candidates = self._apply_sticky_actions(
+                    env_idx,
+                    proposed_actions,
+                )
+                sticky_overrides += env_overrides
+                sticky_candidates += env_candidates
+                next_obs, reward, done, _ = env.step(executed_actions)
+
+                if done:
+                    next_obs = env.reset()
+                    self._reset_sticky_actions(env_idx)
+
+                step_grids[env_idx] = packed_grids
+                step_locs[env_idx] = packed_locs
+                step_actions[env_idx] = packed_actions
+                step_log_probs[env_idx] = packed_log_probs
+                step_move_masks[env_idx] = packed_move_masks
+                step_actor_masks[env_idx] = actor_masks
+                step_critic_weights[env_idx] = critic_weights
+                step_rewards[env_idx] = float(reward)
+                step_dones[env_idx] = float(done)
+                step_global_grids[env_idx] = global_state["grid"]
+                step_global_poses[env_idx] = global_state["poses"]
+                step_values[env_idx] = value
+                obs_per_env[env_idx] = next_obs
 
             self.buffer.add(
-                grids=packed_grids,
-                locals_=packed_locs,
-                actions=packed_actions,
-                log_probs=packed_log_probs,
-                move_masks=packed_move_masks,
-                actor_masks=actor_masks,
-                critic_weights=critic_weights,
-                reward=float(reward),
-                done=done,
-                global_grid=global_state["grid"],
-                global_poses=global_state["poses"],
-                value=value,
+                grids=step_grids,
+                locals_=step_locs,
+                actions=step_actions,
+                log_probs=step_log_probs,
+                move_masks=step_move_masks,
+                actor_masks=step_actor_masks,
+                critic_weights=step_critic_weights,
+                rewards=step_rewards,
+                dones=step_dones,
+                global_grids=step_global_grids,
+                global_poses=step_global_poses,
+                values=step_values,
             )
+            self.total_steps += self.num_envs
 
-            self.total_steps += 1
-            obs = next_obs
-            if done:
-                obs = self.env.reset()
-                self._reset_sticky_actions()
-
-        last_move_masks = self._compute_move_masks()
-        last_obs_with_masks = self._augment_obs_with_move_masks(obs, last_move_masks)
-        last_global_state = self._build_global_state(last_obs_with_masks)
-        last_value        = self._critic_forward(last_global_state).item()
-        self.buffer.compute_returns(last_value)
+        last_values = np.zeros((self.num_envs,), dtype=np.float32)
+        for env_idx, env in enumerate(self.envs):
+            last_move_masks = self._compute_move_masks(env)
+            last_obs_with_masks = self._augment_obs_with_move_masks(obs_per_env[env_idx], last_move_masks)
+            last_global_state = self._build_global_state(env, last_obs_with_masks)
+            last_values[env_idx] = self._critic_forward(last_global_state).item()
+        self.buffer.compute_returns(last_values)
         self._last_rollout_sticky_rate = (
             sticky_overrides / sticky_candidates if sticky_candidates > 0 else 0.0
         )
 
-        return obs
+        return obs_per_env
 
     def _update(self):
         self.actor.train()
@@ -693,19 +802,52 @@ class MAPPOTrainer:
             return int(match.group(1))
 
         total_steps = ckpt.get("total_steps")
-        rollout_len = ckpt.get("rollout_len", self.rollout_len)
+        rollout_len = ckpt.get(
+            "rollout_len",
+            int(ckpt.get("n_envs", self.num_envs)) * int(ckpt.get("n_steps", self.n_steps)),
+        )
         if total_steps is not None and rollout_len:
             return int(total_steps) // int(rollout_len)
         return 0
 
+    def _annealed_lr_fraction(self, update: int, total_updates: int) -> float:
+        if total_updates <= 1:
+            return 1.0
+        frac = 1.0 - float(update - 1) / float(total_updates - 1)
+        return max(0.0, min(1.0, frac))
+
     def train(self, total_updates: int):
-        obs       = self.env.reset()
+        if total_updates <= 0:
+            raise ValueError(f"total_updates must be > 0, got {total_updates}")
+
+        obs_per_env = [env.reset() for env in self.envs]
         self._reset_sticky_actions()
         ep_reward = 0.0
         ep_count  = 0
         start      = time.time()
         steps_at_start = self.total_steps
-        target_update = self.current_update + total_updates
+        target_update = int(total_updates)
+        remaining_updates = max(0, target_update - self.current_update)
+
+        if self.current_update >= target_update:
+            if self.anneal_lr:
+                for pg in self.actor_opt.param_groups:
+                    pg["lr"] = 0.0
+                for pg in self.critic_opt.param_groups:
+                    pg["lr"] = 0.0
+            print(
+                "[MAPPO] Checkpoint is already at or beyond the requested "
+                f"global total_updates={target_update} "
+                f"(current_update={self.current_update}). Nothing to train."
+            )
+            self.save("final.pt")
+            return
+
+        print(
+            f"[MAPPO] Training from update {self.current_update} to "
+            f"global target {target_update} "
+            f"({remaining_updates} updates remaining)."
+        )
 
         if self.gui:
             try:
@@ -715,9 +857,9 @@ class MAPPOTrainer:
             except Exception:
                 self._pause_btn = None
 
-        for _ in range(total_updates):
+        for _ in range(remaining_updates):
             update = self.current_update + 1
-            obs = self._collect_rollout(obs, update)
+            obs_per_env = self._collect_rollout(obs_per_env, update)
             ep_reward += self.buffer.rewards.sum()
             done_count = int(self.buffer.dones.sum())
             if done_count > 0:
@@ -725,7 +867,7 @@ class MAPPOTrainer:
             critic_diag = self._compute_critic_diagnostics()
 
             if self.anneal_lr:
-                frac = 1.0 - (update - 1) / target_update
+                frac = self._annealed_lr_fraction(update, target_update)
                 for pg in self.actor_opt.param_groups:
                     pg["lr"] = self.lr_actor_init * frac
                 for pg in self.critic_opt.param_groups:
@@ -801,7 +943,7 @@ class MAPPOTrainer:
                 ep_reward = 0.0
                 ep_count  = 0
 
-            if update % (self.log_interval * 10) == 0:
+            if update % self.save_interval == 0:
                 self.save(f"ckpt_update_{update}.pt")
 
         self.save("final.pt")
@@ -821,11 +963,28 @@ class MAPPOTrainer:
                 "include_persistent_coverage_channel": bool(
                     getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
                 ),
+                "include_instant_fov_channels": bool(
+                    getattr(self.env.obs_builder, "include_instant_fov_channels", False)
+                ),
+                "include_local_recent_count_memory_channel": bool(
+                    getattr(self.env.obs_builder, "include_local_recent_count_memory_channel", False)
+                ),
+                "local_people_map_mode": self.local_people_map_mode,
+                "include_shared_count_density_channel": self.include_shared_count_density_channel,
+                "hide_person_features_during_search": bool(
+                    getattr(self.env.obs_builder, "hide_person_features_during_search", False)
+                ),
                 "local_dim": self.buffer.local_dim,
+                "local_visible_delta_feature": True,
+                "local_visited_fraction_feature": True,
+                "cmd_history_len": getattr(self.env, "cmd_history_len", 0),
+                "status_history_seconds": getattr(self.env, "status_history_seconds", 0),
                 "hotspot_top_k": getattr(self.env.obs_builder, "hotspot_top_k", 0),
                 "move_mask_dim": self.move_mask_dim,
                 "total_steps": self.total_steps,
                 "update": self.current_update,
+                "n_envs": self.num_envs,
+                "n_steps": self.n_steps,
                 "rollout_len": self.rollout_len,
                 "value_rms": self.value_rms.state_dict(),
             },
@@ -844,16 +1003,51 @@ class MAPPOTrainer:
         ckpt_grid_channels = int(
             ckpt.get(
                 "grid_channels",
-                ckpt["actor"]["cnn.net.0.weight"].shape[1],
+                ckpt["actor"]["cnn.net.0.conv.weight"].shape[1],
             )
         )
         current_local_dim = int(self.actor.local_mlp[0].in_features)
-        current_grid_channels = int(self.actor.cnn.net[0].in_channels)
+        current_grid_channels = int(self.actor.cnn.net[0].conv.in_channels)
+        ckpt_critic_grid_channels = int(
+            ckpt.get(
+                "critic_grid_channels",
+                ckpt["critic"]["cnn.net.0.conv.weight"].shape[1],
+            )
+        )
+        current_critic_grid_channels = int(self.critic.cnn.net[0].conv.in_channels)
         ckpt_include_persistent_coverage_channel = (
             infer_checkpoint_include_persistent_coverage_channel(ckpt)
         )
+        ckpt_include_instant_fov_channels = (
+            infer_checkpoint_include_instant_fov_channels(ckpt)
+        )
+        ckpt_include_local_recent_count_memory_channel = (
+            infer_checkpoint_include_local_recent_count_memory_channel(ckpt)
+        )
+        ckpt_local_people_map_mode = infer_checkpoint_local_people_map_mode(ckpt)
+        ckpt_include_shared_count_density_channel = (
+            infer_checkpoint_include_shared_count_density_channel(ckpt)
+        )
+        ckpt_hide_person_features_during_search = (
+            infer_checkpoint_hide_person_features_during_search(ckpt)
+        )
         current_include_persistent_coverage_channel = bool(
             getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
+        )
+        current_include_instant_fov_channels = bool(
+            getattr(self.env.obs_builder, "include_instant_fov_channels", True)
+        )
+        current_include_local_recent_count_memory_channel = bool(
+            getattr(self.env.obs_builder, "include_local_recent_count_memory_channel", True)
+        )
+        current_local_people_map_mode = str(
+            getattr(self.env.obs_builder, "local_people_map_mode", "instant")
+        )
+        current_include_shared_count_density_channel = bool(
+            getattr(self.env.obs_builder, "include_shared_count_density_channel", True)
+        )
+        current_hide_person_features_during_search = bool(
+            getattr(self.env.obs_builder, "hide_person_features_during_search", False)
         )
         if ckpt_local_dim != current_local_dim:
             raise ValueError(
@@ -878,12 +1072,79 @@ class MAPPOTrainer:
                 f"{ckpt_include_persistent_coverage_channel}, "
                 f"current={current_include_persistent_coverage_channel}."
             )
+        if (
+            ckpt_include_instant_fov_channels
+            != current_include_instant_fov_channels
+        ):
+            raise ValueError(
+                "Checkpoint actor instant-FOV layout does not match the current "
+                "observation layout: "
+                f"checkpoint include_instant_fov_channels="
+                f"{ckpt_include_instant_fov_channels}, "
+                f"current={current_include_instant_fov_channels}."
+            )
+        if (
+            ckpt_include_local_recent_count_memory_channel
+            != current_include_local_recent_count_memory_channel
+        ):
+            raise ValueError(
+                "Checkpoint local recent-count layout does not match the current "
+                "observation layout: "
+                f"checkpoint include_local_recent_count_memory_channel="
+                f"{ckpt_include_local_recent_count_memory_channel}, "
+                f"current={current_include_local_recent_count_memory_channel}."
+            )
+        if ckpt_local_people_map_mode != current_local_people_map_mode:
+            raise ValueError(
+                "Checkpoint local_people_map_mode does not match the current "
+                "observation layout: "
+                f"checkpoint={ckpt_local_people_map_mode}, "
+                f"current={current_local_people_map_mode}."
+            )
+        if (
+            ckpt_include_shared_count_density_channel
+            != current_include_shared_count_density_channel
+        ):
+            raise ValueError(
+                "Checkpoint shared count-density layout does not match the current "
+                "observation layout: "
+                f"checkpoint include_shared_count_density_channel="
+                f"{ckpt_include_shared_count_density_channel}, "
+                f"current={current_include_shared_count_density_channel}."
+            )
+        if (
+            ckpt_hide_person_features_during_search
+            != current_hide_person_features_during_search
+        ):
+            raise ValueError(
+                "Checkpoint hide_person_features_during_search does not match the "
+                "current observation semantics: "
+                f"checkpoint={ckpt_hide_person_features_during_search}, "
+                f"current={current_hide_person_features_during_search}."
+            )
         self.actor.load_state_dict(ckpt["actor"])
-        self.critic.load_state_dict(ckpt["critic"])
         self.actor_opt.load_state_dict(ckpt["actor_opt"])
-        self.critic_opt.load_state_dict(ckpt["critic_opt"])
+        critic_loaded = False
+        if ckpt_critic_grid_channels == current_critic_grid_channels:
+            try:
+                self.critic.load_state_dict(ckpt["critic"])
+                self.critic_opt.load_state_dict(ckpt["critic_opt"])
+                critic_loaded = True
+            except RuntimeError as exc:
+                print(
+                    "[MAPPO] Warning: checkpoint critic is incompatible with the "
+                    "current critic layout; reinitializing critic and critic optimizer. "
+                    f"Details: {exc}"
+                )
+        else:
+            print(
+                "[MAPPO] Warning: checkpoint critic grid layout does not match the "
+                "current critic input. Reinitializing critic and critic optimizer. "
+                f"checkpoint={ckpt_critic_grid_channels}, "
+                f"current={current_critic_grid_channels}."
+            )
         self.total_steps = ckpt.get("total_steps", 0)
         self.current_update = self._infer_loaded_update(path, ckpt)
-        if "value_rms" in ckpt:
+        if critic_loaded and "value_rms" in ckpt:
             self.value_rms.load_state_dict(ckpt["value_rms"])
         print(f"[MAPPO] Loaded checkpoint <- {path} (update={self.current_update})")

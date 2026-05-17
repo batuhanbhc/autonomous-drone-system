@@ -32,7 +32,9 @@ from config import (
     actor_kwargs,
     build_action_space,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_cmd_history_len,
     infer_checkpoint_hotspot_top_k,
+    infer_checkpoint_status_history_seconds,
 )
 from rl.networks import ActorNetwork
 
@@ -155,16 +157,24 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
     trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
 
     action_space = build_action_space(args)
+    trained_cmd_history_len = infer_checkpoint_cmd_history_len(
+        ckpt,
+        num_drones=trained_num_drones,
+        action_space=action_space,
+    )
+    trained_status_history_seconds = infer_checkpoint_status_history_seconds(ckpt)
     trained_hotspot_top_k = infer_checkpoint_hotspot_top_k(
         ckpt,
         num_drones=trained_num_drones,
         action_space=action_space,
-        cmd_history_len=SHARED_DEFAULTS.cmd_history_len,
+        cmd_history_len=trained_cmd_history_len,
+        status_history_seconds=trained_status_history_seconds,
     )
     actor_config = actor_kwargs(
         trained_num_drones,
         action_space,
-        cmd_history_len=SHARED_DEFAULTS.cmd_history_len,
+        cmd_history_len=trained_cmd_history_len,
+        status_history_seconds=trained_status_history_seconds,
         hotspot_top_k=trained_hotspot_top_k,
         grid_channels=trained_grid_channels,
     )

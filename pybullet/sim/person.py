@@ -10,10 +10,12 @@ class Person:
         start_pos=(2.0, 2.0, 0.35),
         half_extents=(0.10, 0.10, 0.35),
         color=(1.0, 0.2, 0.2, 1.0),
+        client_id: int | None = None,
     ):
         self.start_pos = start_pos
         self.half_extents = half_extents
         self.color = color
+        self.client_id = client_id
 
         self.body_id = None
 
@@ -35,6 +37,9 @@ class Person:
         self.separation_gain = 0.65
         self.max_separation_push = 0.18
 
+    def _pb(self) -> dict:
+        return {"physicsClientId": self.client_id} if self.client_id is not None else {}
+
     def _set_new_state_duration(self):
         if self.state == "moving":
             self.state_timer = random.uniform(2.0, 6.0)
@@ -42,12 +47,12 @@ class Person:
             self.state_timer = random.uniform(1.0, 4.0)
 
     def is_valid(self):
-        if not p.isConnected():
+        if not p.isConnected(self.client_id):
             return False
         if self.body_id is None:
             return False
         try:
-            p.getBasePositionAndOrientation(self.body_id)
+            p.getBasePositionAndOrientation(self.body_id, **self._pb())
             return True
         except Exception:
             return False
@@ -55,18 +60,21 @@ class Person:
     def spawn(self):
         collision_shape = p.createCollisionShape(
             p.GEOM_BOX,
-            halfExtents=self.half_extents
+            halfExtents=self.half_extents,
+            **self._pb(),
         )
         visual_shape = p.createVisualShape(
             p.GEOM_BOX,
             halfExtents=self.half_extents,
-            rgbaColor=self.color
+            rgbaColor=self.color,
+            **self._pb(),
         )
         self.body_id = p.createMultiBody(
             baseMass=0.0,
             baseCollisionShapeIndex=collision_shape,
             baseVisualShapeIndex=visual_shape,
-            basePosition=self.start_pos
+            basePosition=self.start_pos,
+            **self._pb(),
         )
 
     def assign_group(self, group_id, group_center, group_radius=1.0):
@@ -92,8 +100,8 @@ class Person:
         if not self.is_valid():
             return
 
-        quat = p.getQuaternionFromEuler((0.0, 0.0, 0.0))
-        p.resetBasePositionAndOrientation(self.body_id, pos, quat)
+        quat = p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb())
+        p.resetBasePositionAndOrientation(self.body_id, pos, quat, **self._pb())
 
         self.speed = random.uniform(0.08, 0.22)
         self.heading = random.uniform(-math.pi, math.pi)
@@ -191,7 +199,7 @@ class Person:
         if not self.is_valid():
             return
 
-        pos, _ = p.getBasePositionAndOrientation(self.body_id)
+        pos, _ = p.getBasePositionAndOrientation(self.body_id, **self._pb())
         x, y, z = pos
 
         self._update_motion_state(dt)
@@ -200,7 +208,8 @@ class Person:
             p.resetBasePositionAndOrientation(
                 self.body_id,
                 (x, y, z),
-                p.getQuaternionFromEuler((0.0, 0.0, 0.0))
+                p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb()),
+                **self._pb(),
             )
             return
 
@@ -240,7 +249,8 @@ class Person:
         p.resetBasePositionAndOrientation(
             self.body_id,
             (new_x, new_y, z),
-            p.getQuaternionFromEuler((0.0, 0.0, 0.0))
+            p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb()),
+            **self._pb(),
         )
 
     def step_grouped_walk(
@@ -266,7 +276,7 @@ class Person:
             )
             return
 
-        pos, _ = p.getBasePositionAndOrientation(self.body_id)
+        pos, _ = p.getBasePositionAndOrientation(self.body_id, **self._pb())
         x, y, z = pos
 
         self._update_motion_state(dt)
@@ -275,7 +285,8 @@ class Person:
             p.resetBasePositionAndOrientation(
                 self.body_id,
                 (x, y, z),
-                p.getQuaternionFromEuler((0.0, 0.0, 0.0))
+                p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb()),
+                **self._pb(),
             )
             return
 
@@ -336,7 +347,8 @@ class Person:
         p.resetBasePositionAndOrientation(
             self.body_id,
             (new_x, new_y, z),
-            p.getQuaternionFromEuler((0.0, 0.0, 0.0))
+            p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb()),
+            **self._pb(),
         )
 
     def step(
@@ -370,5 +382,5 @@ class Person:
     def get_position(self):
         if not self.is_valid():
             return self.start_pos
-        pos, _ = p.getBasePositionAndOrientation(self.body_id)
+        pos, _ = p.getBasePositionAndOrientation(self.body_id, **self._pb())
         return pos
