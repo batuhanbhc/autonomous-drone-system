@@ -45,31 +45,36 @@ private:
     double horizontal_fov_deg{55.8};
     double vertical_fov_deg{43.3};
     double camera_tilt_deg{45.0};
-    double recent_half_life_seconds{20.0};
+    double recent_half_life_seconds{10.0};
     double historic_half_life_seconds{60.0};
     double coverage_half_life_seconds{20.0};
-    double recent_hit_gain{0.6};
-    double recent_miss_penalty{0.25};
-    double search_phase_seconds{15.0};
+    double search_phase_seconds{30.0};
     double blob_sigma{1.5};
-    double ego_sigma{2.5};
+    double ego_sigma{2.0};
     double people_count_normalizer{30.0};
-    double count_density_gain{0.35};
-    double count_memory_recent_alpha{0.7};
+    double count_map_compression_scale{3.0};
     double count_memory_historic_miss_penalty{0.2};
     double max_horizontal_velocity{1.0};
     double horizontal_bin_interval{1.0};
-    double max_yaw_rate{0.7};
-    double yaw_bin_interval{0.7};
+    double max_yaw_rate{0.35};
+    double yaw_bin_interval{0.35};
     int grid_h{60};
     int grid_w{60};
     int max_agents{2};
-    int cmd_history_len{4};
-    int hotspot_top_k{3};
-    double hotspot_min_density{0.3};
-    double hotspot_suppression_radius_scale{4.0};
+    int cmd_history_len{5};
+    int status_history_seconds{5};
+    int hotspot_top_k{2};
+    double hotspot_min_density{1.5};
+    double hotspot_suppression_radius_scale{5.0};
     int hotspot_suppression_radius_min_cells{2};
+    std::string local_people_map_mode{"count_density"};
+    bool include_local_recent_count_memory_channel{true};
+    bool include_shared_count_density_channel{false};
+    bool include_instant_fov_channels{true};
     bool include_persistent_coverage_channel{true};
+    bool hide_person_features_during_search{true};
+    bool save_actor_inputs{true};
+    double actor_input_snapshot_interval_seconds{1.0};
   };
 
   struct ObservationState
@@ -112,6 +117,15 @@ private:
     std::string line;
   };
 
+  struct StatusHistoryAnchor
+  {
+    bool valid{false};
+    float x{0.0f};
+    float y{0.0f};
+    float yaw{0.0f};
+    double time_s{0.0};
+  };
+
   Config loadConfig();
   std::string resolveSessionDir(const std::string & logs_path);
   void initOnnx();
@@ -119,6 +133,17 @@ private:
   void resetObservationState();
   void flushLogBuffer();
   std::vector<Hotspot> extractHotspots() const;
+  void updateStatusHistory(const drone_msgs::msg::SceneState & scene, std::size_t num_visible);
+  float compressCountValue(float value) const;
+  float visitedFraction() const;
+  bool actorHidesPersonFeatures(bool is_search_phase) const;
+  void saveActorInputSnapshot(
+    const builtin_interfaces::msg::Time & stamp,
+    const drone_msgs::msg::SceneState & scene,
+    const InferenceInputs & inputs,
+    const std::vector<float> * action);
+  std::vector<std::string> actorChannelNames() const;
+  std::vector<std::string> localFeatureNames() const;
 
   void onScene(drone_msgs::msg::SceneState::ConstSharedPtr msg);
   void onEnable(drone_msgs::msg::Toggle::ConstSharedPtr msg);
@@ -142,7 +167,10 @@ private:
   Config config_;
   ObservationState obs_state_;
   std::deque<std::array<float, 3>> cmd_history_;
+  std::deque<std::array<float, 5>> status_history_;
+  StatusHistoryAnchor status_history_anchor_;
   std::uint64_t controller_step_{0};
+  int prev_visible_count_{0};
 
   rclcpp::CallbackGroup::SharedPtr scene_cb_group_;
   rclcpp::CallbackGroup::SharedPtr enable_cb_group_;
@@ -183,11 +211,18 @@ private:
   int teammate_slots_{0};
   int hotspot_top_k_inferred_{0};
   int hotspot_suppression_radius_cells_{0};
+  int status_history_seconds_inferred_{0};
+  std::uint64_t actor_input_snapshot_interval_steps_{0};
   bool include_persistent_coverage_channel_{true};
-  bool include_recent_count_memory_channel_{false};
+  bool include_recent_count_memory_channel_{true};
+  bool include_shared_count_density_channel_{false};
+  bool include_instant_fov_channels_{true};
+  bool hide_person_features_during_search_{true};
   bool exposes_spatial_memory_channels_{false};
   double historic_half_life_steps_{1.0};
   std::uint64_t search_phase_steps_{0};
+  std::string actor_input_snapshot_dir_;
+  std::uint64_t actor_input_snapshot_count_{0};
 
   std::string session_dir_;
   std::ofstream log_file_;

@@ -27,9 +27,28 @@ T yamlOr(const YAML::Node & node, const char * key, const T & default_value)
   return node[key] ? node[key].as<T>() : default_value;
 }
 
+template<typename T>
+T yamlNestedOr(
+  const YAML::Node & parent,
+  const char * section,
+  const char * key,
+  const T & default_value)
+{
+  const YAML::Node subsection = parent[section];
+  if (subsection && subsection[key]) {
+    return subsection[key].as<T>();
+  }
+  return yamlOr<T>(parent, key, default_value);
+}
+
 double clampDouble(double value, double min_value, double max_value)
 {
   return std::max(min_value, std::min(max_value, value));
+}
+
+double angleWrap(double angle)
+{
+  return std::atan2(std::sin(angle), std::cos(angle));
 }
 
 std::vector<float> buildSymmetricBins(double max_abs, double interval)
@@ -311,51 +330,108 @@ AutonomousController::Config AutonomousController::loadConfig()
     yamlOr<double>(controller, "vertical_fov_deg", cfg.vertical_fov_deg);
   cfg.search_phase_seconds =
     yamlOr<double>(controller, "search_phase_seconds", cfg.search_phase_seconds);
-  cfg.recent_half_life_seconds =
-    yamlOr<double>(controller, "recent_half_life_seconds", cfg.recent_half_life_seconds);
-  cfg.historic_half_life_seconds =
-    yamlOr<double>(controller, "historic_half_life_seconds", cfg.historic_half_life_seconds);
-  cfg.coverage_half_life_seconds =
-    yamlOr<double>(controller, "coverage_half_life_seconds", cfg.coverage_half_life_seconds);
-  cfg.recent_hit_gain = yamlOr<double>(controller, "recent_hit_gain", cfg.recent_hit_gain);
-  cfg.recent_miss_penalty =
-    yamlOr<double>(controller, "recent_miss_penalty", cfg.recent_miss_penalty);
-  cfg.blob_sigma = yamlOr<double>(controller, "blob_sigma", cfg.blob_sigma);
-  cfg.ego_sigma = yamlOr<double>(controller, "ego_sigma", cfg.ego_sigma);
-  cfg.people_count_normalizer =
-    yamlOr<double>(controller, "people_count_normalizer", cfg.people_count_normalizer);
-  cfg.count_density_gain =
-    yamlOr<double>(controller, "count_density_gain", cfg.count_density_gain);
-  cfg.count_memory_recent_alpha =
-    yamlOr<double>(controller, "count_memory_recent_alpha", cfg.count_memory_recent_alpha);
-  cfg.count_memory_historic_miss_penalty = yamlOr<double>(
+  cfg.recent_half_life_seconds = yamlNestedOr<double>(
+    controller, "observation_update", "recent_half_life_seconds", cfg.recent_half_life_seconds);
+  cfg.historic_half_life_seconds = yamlNestedOr<double>(
+    controller, "observation_update", "historic_half_life_seconds", cfg.historic_half_life_seconds);
+  cfg.coverage_half_life_seconds = yamlNestedOr<double>(
+    controller, "observation_update", "coverage_half_life_seconds", cfg.coverage_half_life_seconds);
+  cfg.blob_sigma =
+    yamlNestedOr<double>(controller, "observation_update", "blob_sigma", cfg.blob_sigma);
+  cfg.ego_sigma =
+    yamlNestedOr<double>(controller, "observation_update", "ego_sigma", cfg.ego_sigma);
+  cfg.people_count_normalizer = yamlNestedOr<double>(
+    controller, "observation_update", "people_count_normalizer", cfg.people_count_normalizer);
+  cfg.count_map_compression_scale = yamlNestedOr<double>(
     controller,
+    "observation_update",
+    "count_map_compression_scale",
+    cfg.count_map_compression_scale);
+  cfg.count_memory_historic_miss_penalty = yamlNestedOr<double>(
+    controller,
+    "observation_update",
     "count_memory_historic_miss_penalty",
     cfg.count_memory_historic_miss_penalty);
-  cfg.max_horizontal_velocity =
-    yamlOr<double>(controller, "max_horizontal_velocity", cfg.max_horizontal_velocity);
-  cfg.horizontal_bin_interval =
-    yamlOr<double>(controller, "horizontal_bin_interval", cfg.horizontal_bin_interval);
-  cfg.max_yaw_rate = yamlOr<double>(controller, "max_yaw_rate", cfg.max_yaw_rate);
+  cfg.max_horizontal_velocity = yamlNestedOr<double>(
+    controller, "action_bins", "max_horizontal_velocity", cfg.max_horizontal_velocity);
+  cfg.horizontal_bin_interval = yamlNestedOr<double>(
+    controller, "action_bins", "horizontal_bin_interval", cfg.horizontal_bin_interval);
+  cfg.max_yaw_rate =
+    yamlNestedOr<double>(controller, "action_bins", "max_yaw_rate", cfg.max_yaw_rate);
   cfg.yaw_bin_interval =
-    yamlOr<double>(controller, "yaw_bin_interval", cfg.yaw_bin_interval);
+    yamlNestedOr<double>(controller, "action_bins", "yaw_bin_interval", cfg.yaw_bin_interval);
   cfg.max_agents = yamlOr<int>(controller, "max_agents", cfg.max_agents);
-  cfg.cmd_history_len = yamlOr<int>(controller, "cmd_history_len", cfg.cmd_history_len);
-  cfg.hotspot_top_k = yamlOr<int>(controller, "hotspot_top_k", cfg.hotspot_top_k);
-  cfg.hotspot_min_density =
-    yamlOr<double>(controller, "hotspot_min_density", cfg.hotspot_min_density);
-  cfg.hotspot_suppression_radius_scale = yamlOr<double>(
+  cfg.cmd_history_len =
+    yamlNestedOr<int>(controller, "network", "cmd_history_len", cfg.cmd_history_len);
+  cfg.status_history_seconds = yamlNestedOr<int>(
+    controller, "network", "status_history_seconds", cfg.status_history_seconds);
+  cfg.hotspot_top_k =
+    yamlNestedOr<int>(controller, "network", "hotspot_top_k", cfg.hotspot_top_k);
+  cfg.hotspot_min_density = yamlNestedOr<double>(
+    controller, "observation_update", "hotspot_min_density", cfg.hotspot_min_density);
+  cfg.hotspot_suppression_radius_scale = yamlNestedOr<double>(
     controller,
+    "observation_update",
     "hotspot_suppression_radius_scale",
     cfg.hotspot_suppression_radius_scale);
-  cfg.hotspot_suppression_radius_min_cells = yamlOr<int>(
+  cfg.hotspot_suppression_radius_min_cells = yamlNestedOr<int>(
     controller,
+    "observation_update",
     "hotspot_suppression_radius_min_cells",
     cfg.hotspot_suppression_radius_min_cells);
-  cfg.include_persistent_coverage_channel = yamlOr<bool>(
+  cfg.local_people_map_mode = yamlNestedOr<std::string>(
+    controller, "network", "local_people_map_mode", cfg.local_people_map_mode);
+  cfg.include_local_recent_count_memory_channel = yamlNestedOr<bool>(
     controller,
+    "network",
+    "include_local_recent_count_memory_channel",
+    cfg.include_local_recent_count_memory_channel);
+  cfg.include_shared_count_density_channel = yamlNestedOr<bool>(
+    controller,
+    "network",
+    "include_shared_count_density_channel",
+    cfg.include_shared_count_density_channel);
+  cfg.include_instant_fov_channels = yamlNestedOr<bool>(
+    controller,
+    "network",
+    "include_instant_fov_channels",
+    cfg.include_instant_fov_channels);
+  cfg.include_persistent_coverage_channel = yamlNestedOr<bool>(
+    controller,
+    "network",
     "include_persistent_coverage_channel",
     cfg.include_persistent_coverage_channel);
+  cfg.hide_person_features_during_search = yamlNestedOr<bool>(
+    controller,
+    "network",
+    "hide_person_features_during_search",
+    cfg.hide_person_features_during_search);
+  cfg.save_actor_inputs = yamlNestedOr<bool>(
+    controller,
+    "input_snapshot",
+    "enabled",
+    cfg.save_actor_inputs);
+  cfg.actor_input_snapshot_interval_seconds = yamlNestedOr<double>(
+    controller,
+    "input_snapshot",
+    "interval_seconds",
+    cfg.actor_input_snapshot_interval_seconds);
+
+  if (cfg.local_people_map_mode != "instant" && cfg.local_people_map_mode != "count_density") {
+    throw std::runtime_error("Unsupported local_people_map_mode in autonomous_controller config");
+  }
+  if (cfg.people_count_normalizer <= 0.0) {
+    throw std::runtime_error("people_count_normalizer must be > 0");
+  }
+  if (cfg.count_map_compression_scale <= 0.0) {
+    throw std::runtime_error("count_map_compression_scale must be > 0");
+  }
+  if (cfg.status_history_seconds < 0) {
+    throw std::runtime_error("status_history_seconds must be >= 0");
+  }
+  if (cfg.actor_input_snapshot_interval_seconds < 0.0) {
+    throw std::runtime_error("actor_input_snapshot_interval_seconds must be >= 0");
+  }
 
   return cfg;
 }
@@ -439,12 +515,22 @@ void AutonomousController::initOnnx()
   config_.grid_h = static_cast<int>(grid_shape_[2]);
   config_.grid_w = static_cast<int>(grid_shape_[3]);
   include_persistent_coverage_channel_ = config_.include_persistent_coverage_channel;
-  const int base_actor_grid_channels = include_persistent_coverage_channel_ ? 8 : 7;
-  const int actor_grid_delta = actor_grid_channels_ - base_actor_grid_channels;
-  include_recent_count_memory_channel_ = (actor_grid_delta == 1 || actor_grid_delta == 3);
-  exposes_spatial_memory_channels_ = (actor_grid_delta == 2 || actor_grid_delta == 3);
-  shared_people_channels_ = 2 + (exposes_spatial_memory_channels_ ? 2 : 0) +
+  include_recent_count_memory_channel_ = config_.include_local_recent_count_memory_channel;
+  include_shared_count_density_channel_ = config_.include_shared_count_density_channel;
+  include_instant_fov_channels_ = config_.include_instant_fov_channels;
+  hide_person_features_during_search_ = config_.hide_person_features_during_search;
+  const int base_actor_grid_channels =
+    6 +
     (include_recent_count_memory_channel_ ? 1 : 0) +
+    (include_instant_fov_channels_ ? 2 : 0) +
+    (include_persistent_coverage_channel_ ? 1 : 0) +
+    (include_shared_count_density_channel_ ? 1 : 0);
+  const int actor_grid_delta = actor_grid_channels_ - base_actor_grid_channels;
+  exposes_spatial_memory_channels_ = (actor_grid_delta == 2);
+  shared_people_channels_ =
+    1 +
+    (exposes_spatial_memory_channels_ ? 2 : 0) +
+    (include_shared_count_density_channel_ ? 1 : 0) +
     (include_persistent_coverage_channel_ ? 1 : 0);
   historic_half_life_steps_ = std::max(1.0, config_.historic_half_life_seconds * config_.control_hz);
   hotspot_suppression_radius_cells_ = std::max(
@@ -456,6 +542,12 @@ void AutonomousController::initOnnx()
   } else {
     search_phase_steps_ = 0;
   }
+  actor_input_snapshot_interval_steps_ =
+    config_.save_actor_inputs && config_.actor_input_snapshot_interval_seconds > 0.0 ?
+    static_cast<std::uint64_t>(std::max<long long>(
+      1LL,
+      std::llround(config_.actor_input_snapshot_interval_seconds * config_.control_hz))) :
+    0U;
 
   input_names_ = {
     grid_input_name_.c_str(),
@@ -468,7 +560,7 @@ void AutonomousController::initOnnx()
   vy_bins_ = vx_bins_;
   yaw_rate_bins_ = buildSymmetricBins(config_.max_yaw_rate, config_.yaw_bin_interval);
 
-  if (actor_grid_delta < 0 || actor_grid_delta > 3) {
+  if (actor_grid_delta != 0 && actor_grid_delta != 2) {
     throw std::runtime_error("Unsupported ONNX actor grid channel count");
   }
 
@@ -479,7 +571,10 @@ void AutonomousController::initOnnx()
     ++teammate_slots_candidate)
   {
     const std::size_t static_base_dim = static_cast<std::size_t>(
-      11 + 6 * teammate_slots_candidate + 3 * config_.cmd_history_len);
+      13 +
+      6 * teammate_slots_candidate +
+      5 * std::max(0, config_.status_history_seconds) +
+      3 * config_.cmd_history_len);
     if (base_local_dim < static_base_dim) {
       continue;
     }
@@ -489,11 +584,15 @@ void AutonomousController::initOnnx()
     }
     teammate_slots_ = teammate_slots_candidate;
     hotspot_top_k_inferred_ = static_cast<int>(extra_dim / 5);
+    status_history_seconds_inferred_ = std::max(0, config_.status_history_seconds);
     found_layout = true;
   }
   if (!found_layout) {
     throw std::runtime_error(
       "ONNX local_base dimension does not match the current PyBullet feature layout");
+  }
+  if (config_.hotspot_top_k != hotspot_top_k_inferred_) {
+    throw std::runtime_error("Configured hotspot_top_k does not match ONNX local_base layout");
   }
   const std::size_t expected_move_mask_dim = vx_bins_.size() * vy_bins_.size();
   if (static_cast<std::size_t>(move_mask_shape_[1]) != expected_move_mask_dim) {
@@ -505,6 +604,10 @@ void AutonomousController::initLogging()
 {
   session_dir_ = resolveSessionDir(config_.logs_path);
   const std::string log_path = session_dir_ + "/autonomous_controller.csv";
+  actor_input_snapshot_dir_ = session_dir_ + "/actor_input_snapshots";
+  if (config_.save_actor_inputs && actor_input_snapshot_interval_steps_ > 0) {
+    fs::create_directories(actor_input_snapshot_dir_);
+  }
 
   log_file_.open(log_path, std::ios::out | std::ios::app);
   if (!log_file_.is_open()) {
@@ -539,10 +642,18 @@ void AutonomousController::resetObservationState()
   obs_state_.footprint_map.assign(cell_count, 0.0f);
   obs_state_.people_count_last_observed_step.assign(cell_count, -1);
   controller_step_ = 0;
+  prev_visible_count_ = 0;
+  status_history_anchor_ = StatusHistoryAnchor{};
+  actor_input_snapshot_count_ = 0;
 
   cmd_history_.clear();
   for (int i = 0; i < config_.cmd_history_len; ++i) {
     cmd_history_.push_back({0.0f, 0.0f, 0.0f});
+  }
+
+  status_history_.clear();
+  for (int i = 0; i < config_.status_history_seconds; ++i) {
+    status_history_.push_back({0.0f, 0.0f, 0.0f, 1.0f, 0.0f});
   }
 }
 
@@ -604,6 +715,425 @@ std::vector<AutonomousController::Hotspot> AutonomousController::extractHotspots
   }
 
   return hotspots;
+}
+
+void AutonomousController::updateStatusHistory(
+  const drone_msgs::msg::SceneState & scene,
+  std::size_t num_visible)
+{
+  if (config_.status_history_seconds <= 0) {
+    return;
+  }
+
+  const double current_time_s = static_cast<double>(controller_step_) / config_.control_hz;
+  if (!status_history_anchor_.valid) {
+    status_history_anchor_.valid = true;
+    status_history_anchor_.x = static_cast<float>(scene.drone_x);
+    status_history_anchor_.y = static_cast<float>(scene.drone_y);
+    status_history_anchor_.yaw = static_cast<float>(scene.drone_yaw);
+    status_history_anchor_.time_s = current_time_s;
+    return;
+  }
+
+  const double elapsed_s = current_time_s - status_history_anchor_.time_s;
+  if (elapsed_s + 1e-9 < 1.0) {
+    return;
+  }
+
+  const double max_disp = config_.max_horizontal_velocity * std::max(elapsed_s, 1e-6);
+  const float dx_norm = max_disp <= 0.0 ? 0.0f : static_cast<float>(clampDouble(
+      (scene.drone_x - static_cast<double>(status_history_anchor_.x)) / max_disp,
+      -1.0,
+      1.0));
+  const float dy_norm = max_disp <= 0.0 ? 0.0f : static_cast<float>(clampDouble(
+      (scene.drone_y - static_cast<double>(status_history_anchor_.y)) / max_disp,
+      -1.0,
+      1.0));
+  const double delta_yaw = angleWrap(scene.drone_yaw - static_cast<double>(status_history_anchor_.yaw));
+  const float visible_norm = static_cast<float>(num_visible) /
+    static_cast<float>(config_.people_count_normalizer);
+
+  status_history_.push_back({
+    dx_norm,
+    dy_norm,
+    static_cast<float>(std::sin(delta_yaw)),
+    static_cast<float>(std::cos(delta_yaw)),
+    visible_norm,
+  });
+  while (static_cast<int>(status_history_.size()) > config_.status_history_seconds) {
+    status_history_.pop_front();
+  }
+
+  status_history_anchor_.x = static_cast<float>(scene.drone_x);
+  status_history_anchor_.y = static_cast<float>(scene.drone_y);
+  status_history_anchor_.yaw = static_cast<float>(scene.drone_yaw);
+  status_history_anchor_.time_s = current_time_s;
+}
+
+float AutonomousController::compressCountValue(float value) const
+{
+  const float scale = static_cast<float>(std::max(config_.count_map_compression_scale, 1e-6));
+  return value <= 0.0f ? 0.0f : value / (value + scale);
+}
+
+float AutonomousController::visitedFraction() const
+{
+  if (obs_state_.persistent_coverage_map.empty()) {
+    return 0.0f;
+  }
+  const auto visited = static_cast<double>(std::count_if(
+    obs_state_.persistent_coverage_map.begin(),
+    obs_state_.persistent_coverage_map.end(),
+    [](float value) { return value > 0.0f; }));
+  return static_cast<float>(visited / static_cast<double>(obs_state_.persistent_coverage_map.size()));
+}
+
+bool AutonomousController::actorHidesPersonFeatures(bool is_search_phase) const
+{
+  return hide_person_features_during_search_ && is_search_phase;
+}
+
+std::vector<std::string> AutonomousController::actorChannelNames() const
+{
+  std::vector<std::string> names;
+  names.reserve(static_cast<std::size_t>(actor_grid_channels_));
+  names.push_back(
+    config_.local_people_map_mode == "instant" ?
+    "Local instant spatial support" :
+    "Local count density");
+  if (include_recent_count_memory_channel_) {
+    names.push_back("Local recent count memory");
+  }
+  if (exposes_spatial_memory_channels_) {
+    names.push_back("Shared recent spatial support");
+    names.push_back("Shared historic spatial support");
+  }
+  if (include_shared_count_density_channel_) {
+    names.push_back("Shared count density");
+  }
+  names.push_back("Shared historic count memory");
+  if (include_persistent_coverage_channel_) {
+    names.push_back("Shared permanent coverage");
+  }
+  if (include_instant_fov_channels_) {
+    names.push_back("Own instant FOV footprint");
+    names.push_back("Teammate instant FOV footprint");
+  }
+  names.push_back("Own FOV coverage");
+  names.push_back("Teammate FOV coverage");
+  names.push_back("Shared drone map");
+  names.push_back("Own ego map");
+  return names;
+}
+
+std::vector<std::string> AutonomousController::localFeatureNames() const
+{
+  std::vector<std::string> names = {
+    "x",
+    "y",
+    "sin_yaw",
+    "cos_yaw",
+    "num_visible",
+    "delta_visible",
+    "visited_fraction",
+    "search_phase_progress",
+    "is_search_phase",
+    "is_coverage_phase",
+    "centroid_present",
+    "centroid_forward_offset",
+    "centroid_lateral_offset",
+  };
+  names.reserve(static_cast<std::size_t>(local_shape_[1]));
+  for (int idx = 0; idx < hotspot_top_k_inferred_; ++idx) {
+    const std::string prefix = "hotspot_" + std::to_string(idx) + "_";
+    names.push_back(prefix + "valid");
+    names.push_back(prefix + "forward_offset");
+    names.push_back(prefix + "lateral_offset");
+    names.push_back(prefix + "density");
+    names.push_back(prefix + "age");
+  }
+  for (int idx = 0; idx < teammate_slots_; ++idx) {
+    const std::string prefix = "teammate_" + std::to_string(idx) + "_";
+    names.push_back(prefix + "mask");
+    names.push_back(prefix + "rel_x");
+    names.push_back(prefix + "rel_y");
+    names.push_back(prefix + "rel_z");
+    names.push_back(prefix + "sin_yaw");
+    names.push_back(prefix + "cos_yaw");
+  }
+  for (int idx = 0; idx < status_history_seconds_inferred_; ++idx) {
+    const std::string prefix = "status_hist_" + std::to_string(idx) + "_";
+    names.push_back(prefix + "delta_x");
+    names.push_back(prefix + "delta_y");
+    names.push_back(prefix + "sin_delta_yaw");
+    names.push_back(prefix + "cos_delta_yaw");
+    names.push_back(prefix + "num_visible");
+  }
+  for (int idx = 0; idx < config_.cmd_history_len; ++idx) {
+    const std::string prefix = "cmd_hist_" + std::to_string(idx) + "_";
+    names.push_back(prefix + "vx");
+    names.push_back(prefix + "vy");
+    names.push_back(prefix + "yaw_rate");
+  }
+  return names;
+}
+
+void AutonomousController::saveActorInputSnapshot(
+  const builtin_interfaces::msg::Time & stamp,
+  const drone_msgs::msg::SceneState & scene,
+  const InferenceInputs & inputs,
+  const std::vector<float> * action)
+{
+  if (!config_.save_actor_inputs || actor_input_snapshot_interval_steps_ == 0 ||
+    actor_input_snapshot_dir_.empty())
+  {
+    return;
+  }
+
+  std::ostringstream filename;
+  filename << actor_input_snapshot_dir_
+           << "/snapshot_"
+           << std::setw(6) << std::setfill('0') << actor_input_snapshot_count_
+           << "_step_"
+           << std::setw(8) << std::setfill('0') << controller_step_
+           << ".json";
+  std::ofstream out(filename.str(), std::ios::out | std::ios::trunc);
+  if (!out.is_open()) {
+    RCLCPP_ERROR(get_logger(), "Failed to open actor input snapshot file: %s", filename.str().c_str());
+    return;
+  }
+
+  const auto channel_names = actorChannelNames();
+  const auto local_feature_names = localFeatureNames();
+  const std::size_t cell_count =
+    static_cast<std::size_t>(config_.grid_h) * static_cast<std::size_t>(config_.grid_w);
+  const bool is_search_phase = inputs.local_base.size() > 8 && inputs.local_base[8] > 0.5f;
+  const bool person_features_hidden = actorHidesPersonFeatures(is_search_phase);
+  double principal_x = scene.principal_x;
+  double principal_y = scene.principal_y;
+  if (!std::isfinite(principal_x) || !std::isfinite(principal_y)) {
+    const double principal_forward =
+      scene.drone_z * std::tan(0.5 * M_PI - config_.camera_tilt_deg * M_PI / 180.0);
+    principal_x = scene.drone_x + principal_forward * std::cos(scene.drone_yaw);
+    principal_y = scene.drone_y + principal_forward * std::sin(scene.drone_yaw);
+  }
+  const auto [min_forward, max_forward] =
+    footprintForwardExtents(scene.drone_z, config_.camera_tilt_deg, config_.vertical_fov_deg);
+  const auto [principal_forward, principal_lateral] =
+    worldToDroneLocal(principal_x, principal_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
+  const double max_lateral_scale = std::max({
+    lateralHalfWidthAtForwardDistance(min_forward, scene.drone_z, config_.horizontal_fov_deg),
+    lateralHalfWidthAtForwardDistance(principal_forward, scene.drone_z, config_.horizontal_fov_deg),
+    lateralHalfWidthAtForwardDistance(max_forward, scene.drone_z, config_.horizontal_fov_deg),
+    1e-6
+  });
+  const auto hotspots = person_features_hidden ? std::vector<Hotspot>{} : extractHotspots();
+
+  if (channel_names.size() != static_cast<std::size_t>(actor_grid_channels_)) {
+    RCLCPP_ERROR(
+      get_logger(),
+      "Actor input snapshot skipped because channel name count (%zu) does not match channel count (%d)",
+      channel_names.size(),
+      actor_grid_channels_);
+    return;
+  }
+
+  auto writeStringArray = [&out](const std::vector<std::string> & values) {
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (i > 0) {
+        out << ',';
+      }
+      out << '"' << values[i] << '"';
+    }
+    out << ']';
+  };
+
+  auto writeFloatVector = [&out](const std::vector<float> & values) {
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (i > 0) {
+        out << ',';
+      }
+      out << values[i];
+    }
+    out << ']';
+  };
+
+  out << std::setprecision(7);
+  out << "{\n";
+  out << "  \"snapshot_index\": " << actor_input_snapshot_count_ << ",\n";
+  out << "  \"step\": " << controller_step_ << ",\n";
+  out << "  \"timestamp\": {\"sec\": " << stamp.sec << ", \"nanosec\": " << stamp.nanosec << "},\n";
+  out << "  \"schema_version\": 1,\n";
+  out << "  \"grid_shape\": [" << actor_grid_channels_ << ',' << config_.grid_h << ',' << config_.grid_w << "],\n";
+  out << "  \"local_base_dim\": " << inputs.local_base.size() << ",\n";
+  out << "  \"move_mask_dim\": " << inputs.move_mask.size() << ",\n";
+  out << "  \"channel_names\": ";
+  writeStringArray(channel_names);
+  out << ",\n";
+  out << "  \"local_feature_names\": ";
+  writeStringArray(local_feature_names);
+  out << ",\n";
+  out << "  \"observation_context\": {\n";
+  out << "    \"camera_tilt_deg\": " << config_.camera_tilt_deg << ",\n";
+  out << "    \"horizontal_fov_deg\": " << config_.horizontal_fov_deg << ",\n";
+  out << "    \"vertical_fov_deg\": " << config_.vertical_fov_deg << ",\n";
+  out << "    \"max_range\": " << config_.max_range << ",\n";
+  out << "    \"search_phase_active\": " << (is_search_phase ? "true" : "false") << ",\n";
+  out << "    \"search_phase_progress\": " <<
+    (inputs.local_base.size() > 7 ? inputs.local_base[7] : 1.0f) << ",\n";
+  out << "    \"person_features_hidden\": " << (person_features_hidden ? "true" : "false") << ",\n";
+  out << "    \"camera_pose\": {\n";
+  out << "      \"x\": " << scene.drone_x << ",\n";
+  out << "      \"y\": " << scene.drone_y << ",\n";
+  out << "      \"z\": " << scene.drone_z << ",\n";
+  out << "      \"yaw\": " << scene.drone_yaw << ",\n";
+  out << "      \"tilt_deg\": " << config_.camera_tilt_deg << "\n";
+  out << "    },\n";
+  out << "    \"footprint_local\": {\n";
+  out << "      \"min_forward\": " << min_forward << ",\n";
+  out << "      \"max_forward\": " << max_forward << ",\n";
+  out << "      \"principal_forward\": " << principal_forward << ",\n";
+  out << "      \"principal_lateral\": " << principal_lateral << ",\n";
+  out << "      \"max_lateral_scale\": " << max_lateral_scale << "\n";
+  out << "    }\n";
+  out << "  },\n";
+  out << "  \"scene\": {\n";
+  out << "    \"odom_valid\": " << (scene.odom_valid ? "true" : "false") << ",\n";
+  out << "    \"drone_x\": " << scene.drone_x << ",\n";
+  out << "    \"drone_y\": " << scene.drone_y << ",\n";
+  out << "    \"drone_z\": " << scene.drone_z << ",\n";
+  out << "    \"drone_yaw\": " << scene.drone_yaw << ",\n";
+  out << "    \"principal_x\": " << principal_x << ",\n";
+  out << "    \"principal_y\": " << principal_y << ",\n";
+  out << "    \"tracks\": [";
+  for (std::size_t i = 0; i < scene.tracks.size(); ++i) {
+    if (i > 0) {
+      out << ',';
+    }
+    const auto & track = scene.tracks[i];
+    const auto [forward, lateral] =
+      worldToDroneLocal(track.x, track.y, scene.drone_x, scene.drone_y, scene.drone_yaw);
+    const auto [track_v, track_u] = worldToGrid(
+      track.x,
+      track.y,
+      config_.x_min,
+      config_.x_max,
+      config_.y_min,
+      config_.y_max,
+      config_.grid_h,
+      config_.grid_w);
+    out << "{"
+        << "\"track_id\": " << track.track_id << ','
+        << "\"x\": " << track.x << ','
+        << "\"y\": " << track.y << ','
+        << "\"vx\": " << track.vx << ','
+        << "\"vy\": " << track.vy << ','
+        << "\"forward\": " << forward << ','
+        << "\"lateral\": " << lateral << ','
+        << "\"grid_v\": " << track_v << ','
+        << "\"grid_u\": " << track_u
+        << "}";
+  }
+  out << "],\n";
+  out << "    \"hotspots\": [";
+  for (std::size_t i = 0; i < hotspots.size(); ++i) {
+    if (i > 0) {
+      out << ',';
+    }
+    const auto & hotspot = hotspots[i];
+    const auto [forward, lateral] =
+      worldToDroneLocal(hotspot.x, hotspot.y, scene.drone_x, scene.drone_y, scene.drone_yaw);
+    out << "{"
+        << "\"rank\": " << i << ','
+        << "\"x\": " << hotspot.x << ','
+        << "\"y\": " << hotspot.y << ','
+        << "\"forward\": " << forward << ','
+        << "\"lateral\": " << lateral << ','
+        << "\"density\": " << hotspot.density << ','
+        << "\"age\": " << hotspot.age
+        << "}";
+  }
+  out << "]\n";
+  out << "  },\n";
+  out << "  \"actor_input\": {\n";
+  out << "    \"visible_count\": " << inputs.visible_count << ",\n";
+  out << "    \"centroid_present\": " << inputs.centroid_present << ",\n";
+  out << "    \"centroid_forward_offset\": " << inputs.centroid_forward_offset << ",\n";
+  out << "    \"centroid_lateral_offset\": " << inputs.centroid_lateral_offset << ",\n";
+  out << "    \"local_base\": ";
+  writeFloatVector(inputs.local_base);
+  out << ",\n";
+  out << "    \"move_mask\": ";
+  writeFloatVector(inputs.move_mask);
+  out << ",\n";
+  out << "    \"local_base_named\": [";
+  for (std::size_t i = 0; i < inputs.local_base.size(); ++i) {
+    if (i > 0) {
+      out << ',';
+    }
+    const std::string feature_name =
+      i < local_feature_names.size() ? local_feature_names[i] : "feature_" + std::to_string(i);
+    out << "{"
+        << "\"index\": " << i << ','
+        << "\"name\": \"" << feature_name << "\","
+        << "\"value\": " << inputs.local_base[i]
+        << "}";
+  }
+  out << "],\n";
+  out << "    \"local_full\": [";
+  for (std::size_t i = 0; i < inputs.local_base.size(); ++i) {
+    if (i > 0) {
+      out << ',';
+    }
+    out << inputs.local_base[i];
+  }
+  for (std::size_t i = 0; i < inputs.move_mask.size(); ++i) {
+    out << ',' << inputs.move_mask[i];
+  }
+  out << "],\n";
+  out << "    \"grid\": [\n";
+  for (int c = 0; c < actor_grid_channels_; ++c) {
+    out << "      {\n";
+    out << "        \"channel_index\": " << c << ",\n";
+    out << "        \"name\": \"" << channel_names[static_cast<std::size_t>(c)] << "\",\n";
+    out << "        \"values\": [";
+    for (int v = 0; v < config_.grid_h; ++v) {
+      if (v > 0) {
+        out << ',';
+      }
+      out << '[';
+      for (int u = 0; u < config_.grid_w; ++u) {
+        if (u > 0) {
+          out << ',';
+        }
+        out << inputs.grid[static_cast<std::size_t>(c) * cell_count +
+          static_cast<std::size_t>(v) * static_cast<std::size_t>(config_.grid_w) +
+          static_cast<std::size_t>(u)];
+      }
+      out << ']';
+    }
+    out << "]\n";
+    out << "      }";
+    if (c + 1 < actor_grid_channels_) {
+      out << ',';
+    }
+    out << '\n';
+  }
+  out << "    ]\n";
+  out << "  }";
+  if (action != nullptr && action->size() >= 3) {
+    out << ",\n  \"predicted_action\": {"
+        << "\"vx\": " << (*action)[0] << ','
+        << "\"vy\": " << (*action)[1] << ','
+        << "\"yaw_rate\": " << (*action)[2]
+        << "}\n";
+  } else {
+    out << '\n';
+  }
+  out << "}\n";
+  ++actor_input_snapshot_count_;
 }
 
 void AutonomousController::flushLogBuffer()
@@ -733,7 +1263,11 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
 
   std::vector<float> instant_map(cell_count, 0.0f);
   std::vector<float> step_density(cell_count, 0.0f);
-  std::vector<float> count_density_obs(cell_count, 0.0f);
+  std::vector<float> shared_count_density_obs(cell_count, 0.0f);
+  std::vector<float> local_people_map_obs(cell_count, 0.0f);
+  std::vector<float> local_recent_count_memory_obs(cell_count, 0.0f);
+  std::vector<float> shared_historic_count_memory_obs(cell_count, 0.0f);
+  std::vector<float> teammate_instant_coverage_map(cell_count, 0.0f);
   std::vector<float> teammate_coverage_map(cell_count, 0.0f);
 
   const double dt = 1.0 / config_.control_hz;
@@ -853,10 +1387,10 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   }
 
   obs_state_.people_count_density = step_density;
+  const bool hide_person_features = actorHidesPersonFeatures(is_search_phase);
+
   for (std::size_t i = 0; i < cell_count; ++i) {
-    count_density_obs[i] = std::tanh(
-      static_cast<float>(config_.count_density_gain) * obs_state_.people_count_density[i]);
-    if (count_density_obs[i] >= static_cast<float>(config_.hotspot_min_density)) {
+    if (obs_state_.people_count_density[i] >= static_cast<float>(config_.hotspot_min_density)) {
       obs_state_.people_count_last_observed_step[i] = static_cast<int32_t>(controller_step_);
     }
   }
@@ -865,19 +1399,29 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     if (obs_state_.footprint_map[i] <= 0.0f) {
       continue;
     }
-    const float alpha = static_cast<float>(config_.count_memory_recent_alpha);
-    obs_state_.people_count_memory_recent[i] =
-      ((1.0f - alpha) * obs_state_.people_count_memory_recent[i]) +
-      (alpha * count_density_obs[i]);
-    if (count_density_obs[i] < static_cast<float>(config_.hotspot_min_density)) {
+    if (obs_state_.people_count_density[i] < static_cast<float>(config_.hotspot_min_density)) {
       obs_state_.people_count_memory_historic[i] *= static_cast<float>(
+        1.0 - config_.count_memory_historic_miss_penalty);
+      obs_state_.people_count_memory_recent[i] *= static_cast<float>(
         1.0 - config_.count_memory_historic_miss_penalty);
     }
   }
   for (std::size_t i = 0; i < cell_count; ++i) {
+    obs_state_.people_count_memory_recent[i] = std::max(
+      obs_state_.people_count_memory_recent[i],
+      obs_state_.people_count_density[i]);
     obs_state_.people_count_memory_historic[i] = std::max(
       obs_state_.people_count_memory_historic[i],
-      count_density_obs[i]);
+      obs_state_.people_count_density[i]);
+    shared_count_density_obs[i] = compressCountValue(obs_state_.people_count_density[i]);
+    local_recent_count_memory_obs[i] = compressCountValue(obs_state_.people_count_memory_recent[i]);
+    shared_historic_count_memory_obs[i] = compressCountValue(obs_state_.people_count_memory_historic[i]);
+  }
+
+  if (config_.local_people_map_mode == "instant") {
+    local_people_map_obs = instant_map;
+  } else {
+    local_people_map_obs = shared_count_density_obs;
   }
 
   obs_state_.shared_drone_map.assign(cell_count, 0.0f);
@@ -906,39 +1450,64 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     drone_u,
     config_.ego_sigma);
 
+  const int local_people_channel = 0;
+  int next_channel = 1;
+  const int local_recent_count_channel = include_recent_count_memory_channel_ ? next_channel++ : -1;
+  const int shared_recent_spatial_channel = exposes_spatial_memory_channels_ ? next_channel++ : -1;
+  const int shared_historic_spatial_channel = exposes_spatial_memory_channels_ ? next_channel++ : -1;
+  const int shared_count_density_channel = include_shared_count_density_channel_ ? next_channel++ : -1;
+  const int shared_historic_count_channel = next_channel++;
+  const int shared_persistent_coverage_channel = include_persistent_coverage_channel_ ? next_channel++ : -1;
+  const int own_instant_coverage_channel = include_instant_fov_channels_ ? next_channel++ : -1;
+  const int teammate_instant_coverage_channel = include_instant_fov_channels_ ? next_channel++ : -1;
+  const int own_coverage_channel = next_channel++;
+  const int teammate_coverage_channel = next_channel++;
+  const int shared_drone_channel = next_channel++;
+  const int own_ego_channel = next_channel++;
+  if (next_channel != actor_grid_channels_) {
+    throw std::runtime_error("Configured actor grid layout does not match ONNX channel count");
+  }
+
   for (int v = 0; v < config_.grid_h; ++v) {
     for (int u = 0; u < config_.grid_w; ++u) {
       const auto idx = gridIndex(config_.grid_h, config_.grid_w, v, u);
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 0, v, u)] = instant_map[idx];
+      const float actor_local_people = hide_person_features ? 0.0f : local_people_map_obs[idx];
+      const float actor_local_recent = hide_person_features ? 0.0f : local_recent_count_memory_obs[idx];
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, local_people_channel, v, u)] =
+        actor_local_people;
+      if (local_recent_count_channel >= 0) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, local_recent_count_channel, v, u)] =
+          actor_local_recent;
+      }
       if (exposes_spatial_memory_channels_) {
-        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 1, v, u)] =
-          obs_state_.people_belief_recent[idx];
-        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, 2, v, u)] =
-          obs_state_.people_belief_historic[idx];
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_recent_spatial_channel, v, u)] =
+          hide_person_features ? 0.0f : obs_state_.people_belief_recent[idx];
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_historic_spatial_channel, v, u)] =
+          hide_person_features ? 0.0f : obs_state_.people_belief_historic[idx];
       }
-      const int count_density_channel = exposes_spatial_memory_channels_ ? 3 : 1;
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, count_density_channel, v, u)] =
-        count_density_obs[idx];
-      int next_channel = count_density_channel + 1;
-      if (include_recent_count_memory_channel_) {
-        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel, v, u)] =
-          obs_state_.people_count_memory_recent[idx];
-        ++next_channel;
+      if (shared_count_density_channel >= 0) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_count_density_channel, v, u)] =
+          hide_person_features ? 0.0f : shared_count_density_obs[idx];
       }
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel, v, u)] =
-        obs_state_.people_count_memory_historic[idx];
-      if (include_persistent_coverage_channel_) {
-        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 1, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_historic_count_channel, v, u)] =
+        hide_person_features ? 0.0f : shared_historic_count_memory_obs[idx];
+      if (shared_persistent_coverage_channel >= 0) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_persistent_coverage_channel, v, u)] =
           obs_state_.persistent_coverage_map[idx];
-        ++next_channel;
       }
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 1, v, u)] =
+      if (own_instant_coverage_channel >= 0) {
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, own_instant_coverage_channel, v, u)] =
+          obs_state_.footprint_map[idx];
+        inputs.grid[channelIndex(config_.grid_h, config_.grid_w, teammate_instant_coverage_channel, v, u)] =
+          teammate_instant_coverage_map[idx];
+      }
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, own_coverage_channel, v, u)] =
         obs_state_.own_coverage_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 2, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, teammate_coverage_channel, v, u)] =
         teammate_coverage_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 3, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_drone_channel, v, u)] =
         obs_state_.shared_drone_map[idx];
-      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, next_channel + 4, v, u)] =
+      inputs.grid[channelIndex(config_.grid_h, config_.grid_w, own_ego_channel, v, u)] =
         obs_state_.own_ego_map[idx];
     }
   }
@@ -957,7 +1526,9 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     worldToDroneLocal(principal_x, principal_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
   (void)unused_principal_lateral;
 
-  if (!scene.tracks.empty() && !is_search_phase) {
+  updateStatusHistory(scene, scene.tracks.size());
+
+  if (!scene.tracks.empty() && !hide_person_features) {
     inputs.centroid_present = 1.0f;
     const auto [centroid_forward, centroid_lateral] =
       worldToDroneLocal(centroid_x, centroid_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
@@ -978,36 +1549,55 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
       centroid_lateral / max_lateral_scale, -1.0, 1.0));
   }
 
+  const float delta_visible = static_cast<float>(clampDouble(
+      static_cast<double>(static_cast<int>(scene.tracks.size()) - prev_visible_count_) /
+      config_.people_count_normalizer,
+      -1.0,
+      1.0));
+  const float visible_count_norm = hide_person_features ? 0.0f :
+    static_cast<float>(scene.tracks.size()) / static_cast<float>(config_.people_count_normalizer);
+
   inputs.local_base[0] = static_cast<float>(
     2.0 * (scene.drone_x - config_.x_min) / (config_.x_max - config_.x_min) - 1.0);
   inputs.local_base[1] = static_cast<float>(
     2.0 * (scene.drone_y - config_.y_min) / (config_.y_max - config_.y_min) - 1.0);
   inputs.local_base[2] = static_cast<float>(std::sin(scene.drone_yaw));
   inputs.local_base[3] = static_cast<float>(std::cos(scene.drone_yaw));
-  inputs.local_base[4] = static_cast<float>(scene.tracks.size()) /
-    static_cast<float>(config_.people_count_normalizer);
-  inputs.local_base[5] = static_cast<float>(clampDouble(search_phase_progress, 0.0, 1.0));
-  inputs.local_base[6] = is_search_phase ? 1.0f : 0.0f;
-  inputs.local_base[7] = is_search_phase ? 0.0f : 1.0f;
-  inputs.local_base[8] = inputs.centroid_present;
-  inputs.local_base[9] = inputs.centroid_forward_offset;
-  inputs.local_base[10] = inputs.centroid_lateral_offset;
+  inputs.local_base[4] = visible_count_norm;
+  inputs.local_base[5] = hide_person_features ? 0.0f : delta_visible;
+  inputs.local_base[6] = visitedFraction();
+  inputs.local_base[7] = static_cast<float>(clampDouble(search_phase_progress, 0.0, 1.0));
+  inputs.local_base[8] = is_search_phase ? 1.0f : 0.0f;
+  inputs.local_base[9] = is_search_phase ? 0.0f : 1.0f;
+  inputs.local_base[10] = inputs.centroid_present;
+  inputs.local_base[11] = inputs.centroid_forward_offset;
+  inputs.local_base[12] = inputs.centroid_lateral_offset;
 
-  const double area_diag = std::max(
-    std::hypot(config_.x_max - config_.x_min, config_.y_max - config_.y_min),
-    1e-6);
-  const auto hotspots = is_search_phase ? std::vector<Hotspot>{} : extractHotspots();
-  std::size_t local_idx = 11;
+  const double forward_norm_scale = std::max({
+    std::abs(min_forward - principal_forward),
+    std::abs(max_forward - principal_forward),
+    1e-6
+  });
+  const double max_lateral_scale = std::max({
+    lateralHalfWidthAtForwardDistance(min_forward, scene.drone_z, config_.horizontal_fov_deg),
+    lateralHalfWidthAtForwardDistance(principal_forward, scene.drone_z, config_.horizontal_fov_deg),
+    lateralHalfWidthAtForwardDistance(max_forward, scene.drone_z, config_.horizontal_fov_deg),
+    1e-6
+  });
+  const auto hotspots = hide_person_features ? std::vector<Hotspot>{} : extractHotspots();
+  std::size_t local_idx = 13;
   for (int hotspot_idx = 0; hotspot_idx < hotspot_top_k_inferred_; ++hotspot_idx) {
     if (hotspot_idx < static_cast<int>(hotspots.size())) {
       const auto & hotspot = hotspots[static_cast<std::size_t>(hotspot_idx)];
+      const auto [hotspot_forward, hotspot_lateral] =
+        worldToDroneLocal(hotspot.x, hotspot.y, scene.drone_x, scene.drone_y, scene.drone_yaw);
       inputs.local_base[local_idx++] = 1.0f;
       inputs.local_base[local_idx++] = static_cast<float>(clampDouble(
-        (static_cast<double>(hotspot.x) - scene.drone_x) / area_diag,
+        (hotspot_forward - principal_forward) / forward_norm_scale,
         -1.0,
         1.0));
       inputs.local_base[local_idx++] = static_cast<float>(clampDouble(
-        (static_cast<double>(hotspot.y) - scene.drone_y) / area_diag,
+        hotspot_lateral / max_lateral_scale,
         -1.0,
         1.0));
       inputs.local_base[local_idx++] = hotspot.density;
@@ -1017,18 +1607,37 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     }
   }
 
-  // Append command history (oldest → newest), normalized to [-1, 1]
+  for (int teammate_idx = 0; teammate_idx < teammate_slots_; ++teammate_idx) {
+    inputs.local_base[local_idx++] = 0.0f;
+    inputs.local_base[local_idx++] = 0.0f;
+    inputs.local_base[local_idx++] = 0.0f;
+    inputs.local_base[local_idx++] = 0.0f;
+    inputs.local_base[local_idx++] = 0.0f;
+    inputs.local_base[local_idx++] = 0.0f;
+  }
+
+  if (status_history_seconds_inferred_ > 0) {
+    for (const auto & hist : status_history_) {
+      inputs.local_base[local_idx++] = hist[0];
+      inputs.local_base[local_idx++] = hist[1];
+      inputs.local_base[local_idx++] = hist[2];
+      inputs.local_base[local_idx++] = hist[3];
+      inputs.local_base[local_idx++] = hide_person_features ? 0.0f : hist[4];
+    }
+  }
+
   if (config_.cmd_history_len > 0) {
-    std::size_t hist_idx = static_cast<std::size_t>(
-      11 + 5 * hotspot_top_k_inferred_ + 6 * teammate_slots_);
     for (const auto & cmd : cmd_history_) {
-      inputs.local_base[hist_idx++] = config_.max_horizontal_velocity > 0.0
+      inputs.local_base[local_idx++] = config_.max_horizontal_velocity > 0.0
         ? cmd[0] / static_cast<float>(config_.max_horizontal_velocity) : 0.0f;
-      inputs.local_base[hist_idx++] = config_.max_horizontal_velocity > 0.0
+      inputs.local_base[local_idx++] = config_.max_horizontal_velocity > 0.0
         ? cmd[1] / static_cast<float>(config_.max_horizontal_velocity) : 0.0f;
-      inputs.local_base[hist_idx++] = config_.max_yaw_rate > 0.0
+      inputs.local_base[local_idx++] = config_.max_yaw_rate > 0.0
         ? cmd[2] / static_cast<float>(config_.max_yaw_rate) : 0.0f;
     }
+  }
+  if (local_idx != inputs.local_base.size()) {
+    throw std::runtime_error("Configured local_base layout does not match ONNX local dimension");
   }
 
   std::size_t mask_idx = 0;
@@ -1048,6 +1657,7 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     inputs.move_mask[zero_vel_idx] = 1.0f;
   }
 
+  prev_visible_count_ = static_cast<int>(scene.tracks.size());
   return inputs;
 }
 
@@ -1193,8 +1803,22 @@ void AutonomousController::onControlTimer()
   try {
     ++controller_step_;
     InferenceInputs inputs = buildInferenceInputs(scene);
+    const bool should_save_actor_inputs =
+      actor_input_snapshot_interval_steps_ > 0 &&
+      (controller_step_ % actor_input_snapshot_interval_steps_ == 0);
     double inference_ms = 0.0;
-    const auto action = runInference(inputs, inference_ms);
+    std::vector<float> action;
+    try {
+      action = runInference(inputs, inference_ms);
+      if (should_save_actor_inputs) {
+        saveActorInputSnapshot(scene.stamp, scene, inputs, &action);
+      }
+    } catch (...) {
+      if (should_save_actor_inputs) {
+        saveActorInputSnapshot(scene.stamp, scene, inputs, nullptr);
+      }
+      throw;
+    }
     publishCommand(scene.stamp, action[0], action[1], action[2]);
     logEvent(scene.stamp, "inference", &scene, &inputs, &action, inference_ms);
     if (config_.cmd_history_len > 0) {

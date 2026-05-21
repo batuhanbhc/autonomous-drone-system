@@ -101,7 +101,6 @@ autonomous_controller:
   hz: 4.0
   model_path: /marl_agent.onnx
   max_agents: 2  # match the trained model architecture; teammate slots are zero-filled in single-drone deployment
-  cmd_history_len: 4
 
   # PyBullet eval arena / observation defaults
   x_min: -15.0
@@ -111,31 +110,41 @@ autonomous_controller:
   max_range: 15.0
   horizontal_fov_deg: 55.8
   vertical_fov_deg: 43.3
-  search_phase_seconds: 15.0
+  search_phase_seconds: 30.0
 
-  # Observation-state decay and belief update parameters
-  recent_half_life_seconds: 20.0
-  historic_half_life_seconds: 60.0
-  coverage_half_life_seconds: 20.0
-  recent_hit_gain: 0.6
-  recent_miss_penalty: 0.25
-  blob_sigma: 1.5
-  ego_sigma: 2.5
-  people_count_normalizer: 30.0
-  count_density_gain: 0.35
-  count_memory_recent_alpha: 0.7
-  count_memory_historic_miss_penalty: 0.2
-  hotspot_top_k: 3
-  hotspot_min_density: 0.3
-  hotspot_suppression_radius_scale: 4.0
-  hotspot_suppression_radius_min_cells: 2
-  include_persistent_coverage_channel: true
+  network:
+    local_people_map_mode: count_density
+    include_local_recent_count_memory_channel: true
+    include_shared_count_density_channel: false
+    include_instant_fov_channels: true
+    include_persistent_coverage_channel: true
+    hide_person_features_during_search: true
+    cmd_history_len: 5
+    status_history_seconds: 5
+    hotspot_top_k: 2
 
-  # Discrete action bins used by the exported ONNX actor
-  max_horizontal_velocity: 1.0
-  horizontal_bin_interval: 1.0
-  max_yaw_rate: 0.7
-  yaw_bin_interval: 0.7
+  observation_update:
+    recent_half_life_seconds: 10.0
+    historic_half_life_seconds: 60.0
+    coverage_half_life_seconds: 20.0
+    blob_sigma: 1.5
+    ego_sigma: 2.0
+    people_count_normalizer: 30.0
+    count_map_compression_scale: 3.0
+    count_memory_historic_miss_penalty: 0.2
+    hotspot_min_density: 1.5
+    hotspot_suppression_radius_scale: 5.0
+    hotspot_suppression_radius_min_cells: 2
+
+  action_bins:
+    max_horizontal_velocity: 1.0
+    horizontal_bin_interval: 1.0
+    max_yaw_rate: 0.35
+    yaw_bin_interval: 0.35
+
+  input_snapshot:
+    enabled: true
+    interval_seconds: 1.0
 
 mavros_topics:
     state: "/mavros/state"
