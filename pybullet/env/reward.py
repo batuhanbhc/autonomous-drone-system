@@ -35,8 +35,8 @@ class RewardCalculator:
         wfov: float = 0.5,    # FOV boundary penalty — penalise looking outside area
         wcompletion: float = 0.0,  # search-phase completion-progress bonus
         coverage_edge_quality: float = 0.2,  # quality floor for worst visible framing
-        reward_quality_mode: str = "principal_linear",
-        reward_quality_gamma: float = 1.0,
+        reward_quality_mode: str = "principal_top_corner_linear",
+        reward_quality_gamma: float = 1.5,
         reward_completion_power: float = 1.0,
         boundary_margin: float = 0.2,
         drone_closeness_margin: float = 1.0,
@@ -102,10 +102,12 @@ class RewardCalculator:
             "principal_linear",
             "principal_squared",
             "principal_power",
+            "principal_top_corner_linear",
         }:
             raise ValueError(
                 "reward_quality_mode must be one of "
-                "{'legacy', 'principal_linear', 'principal_squared', 'principal_power'}, got "
+                "{'legacy', 'principal_linear', 'principal_squared', "
+                "'principal_power', 'principal_top_corner_linear'}, got "
                 f"{self.reward_quality_mode}"
             )
         if self.reward_quality_gamma <= 0.0:
@@ -140,17 +142,25 @@ class RewardCalculator:
         eps: float = 1e-6,
     ) -> float:
         if self.reward_quality_mode != "legacy":
-            radial_norm = self._principal_radial_norm_for_point(
-                drone_state=drone_state,
-                point=point,
-                eps=eps,
-            )
-            if self.reward_quality_mode == "principal_squared":
-                base_quality = 1.0 - radial_norm ** 2
-            elif self.reward_quality_mode == "principal_power":
+            if self.reward_quality_mode == "principal_top_corner_linear":
+                radial_norm = self._principal_top_corner_radial_norm_for_point(
+                    drone_state=drone_state,
+                    point=point,
+                    eps=eps,
+                )
                 base_quality = (1.0 - radial_norm) ** self.reward_quality_gamma
             else:
-                base_quality = 1.0 - radial_norm
+                radial_norm = self._principal_radial_norm_for_point(
+                    drone_state=drone_state,
+                    point=point,
+                    eps=eps,
+                )
+                if self.reward_quality_mode == "principal_squared":
+                    base_quality = 1.0 - radial_norm ** 2
+                elif self.reward_quality_mode == "principal_power":
+                    base_quality = (1.0 - radial_norm) ** self.reward_quality_gamma
+                else:
+                    base_quality = 1.0 - radial_norm
             return self.coverage_edge_quality + (
                 1.0 - self.coverage_edge_quality
             ) * base_quality
@@ -213,6 +223,44 @@ class RewardCalculator:
             return 1.0
         return min(max(radial_distance / radius, 0.0), 1.0)
 
+    def _principal_top_corner_radial_norm_for_point(
+        self,
+        drone_state: Dict,
+        point: Tuple[float, float],
+        eps: float = 1e-6,
+    ) -> float:
+        x, y, z = drone_state["position"]
+        yaw = drone_state["yaw"]
+        px, py = point
+        principal_x, principal_y = principal_point_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=self.tilt_deg,
+        )
+        radial_distance = math.hypot(px - principal_x, py - principal_y)
+        if radial_distance <= eps:
+            return 0.0
+
+        polygon = footprint_corners_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=self.tilt_deg,
+            horizontal_fov_deg=self.horizontal_fov_deg,
+            vertical_fov_deg=self.vertical_fov_deg,
+        )
+        top_corners = sorted(polygon, key=lambda corner: corner[1], reverse=True)[:2]
+        max_radius = max(
+            math.hypot(corner_x - principal_x, corner_y - principal_y)
+            for corner_x, corner_y in top_corners
+        )
+        if max_radius <= eps:
+            return 1.0
+        return min(max(radial_distance / max_radius, 0.0), 1.0)
+
     def point_in_footprint_world_for_reward(
         self,
         drone_state: Dict,
@@ -259,13 +307,13 @@ class RewardCalculator:
         num_people: int,
         person_weights: Optional[List[float]] = None,
         eps: float = 1e-6,
-    ) -> Tuple[float, int, set, float, int, float]:
+    ) -> Tuple[float, float, int, set, float, int, float]:
         visible_union = set()
         for ids in visible_ids_per_drone:
             visible_union.update(ids)
         c_t = len(visible_union)
         if num_people <= 0:
-            return 0.0, c_t, visible_union, 0.0, 0, 0.0
+            return 0.0, 0.0, c_t, visible_union, 0.0, 0, 0.0
         if person_weights is None:
             visible_weight = float(c_t)
             total_weight = float(num_people)
@@ -288,7 +336,15 @@ class RewardCalculator:
             )
         coverage_ratio = (visible_weight / (total_weight + eps))
         r_cov = coverage_ratio ** self.coverage_exponent
-        return r_cov, c_t, visible_union, visible_weight, contributing_visible_count, total_weight
+        return (
+            r_cov,
+            coverage_ratio,
+            c_t,
+            visible_union,
+            visible_weight,
+            contributing_visible_count,
+            total_weight,
+        )
 
     def compute_fov_quality_reward(
         self,
@@ -612,6 +668,7 @@ class RewardCalculator:
 
         (
             r_cov,
+            coverage_ratio,
             c_t,
             visible_union,
             visible_weight,
@@ -628,7 +685,7 @@ class RewardCalculator:
             people_positions,
             num_people,
         )
-        r_fovq = r_cov * mean_visible_quality
+        r_fovq = coverage_ratio * mean_visible_quality
 
         r_disc, new_discoveries = self.compute_discovery_reward(
             visible_union,
@@ -674,6 +731,7 @@ class RewardCalculator:
 
         reward_info = {
             "r_cov":          r_cov,
+            "coverage_ratio": coverage_ratio,
             "r_fovq":         r_fovq,
             "mean_visible_quality": mean_visible_quality,
             "r_disc":         r_disc,

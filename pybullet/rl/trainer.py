@@ -18,6 +18,7 @@ import torch.nn as nn
 from typing import Dict, List
 
 from config import (
+    infer_actor_state_grid_channels,
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
@@ -127,6 +128,9 @@ class MAPPOTrainer:
         sticky_action_prob: float = 0.0,
         gui: bool = False,
         anneal_lr: bool = True,
+        include_local_recent_count_memory_channel: bool = True,
+        include_instant_fov_channels: bool = True,
+        include_persistent_coverage_channel: bool = False,
     ):
         if not envs:
             raise ValueError("MAPPOTrainer requires at least one environment instance.")
@@ -216,6 +220,13 @@ class MAPPOTrainer:
             num_vx_bins=num_vx_bins,
             num_vy_bins=num_vy_bins,
             num_yaw_bins=num_yaw_bins,
+            include_local_recent_count_memory_channel=(
+                self.include_local_recent_count_memory_channel
+            ),
+            include_instant_fov_channels=self.include_instant_fov_channels,
+            include_persistent_coverage_channel=bool(
+                getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
+            ),
         ).to(self.device)
 
         self.critic = CriticNetwork(
@@ -1003,18 +1014,18 @@ class MAPPOTrainer:
         ckpt_grid_channels = int(
             ckpt.get(
                 "grid_channels",
-                ckpt["actor"]["cnn.net.0.conv.weight"].shape[1],
+                infer_actor_state_grid_channels(ckpt["actor"]),
             )
         )
         current_local_dim = int(self.actor.local_mlp[0].in_features)
-        current_grid_channels = int(self.actor.cnn.net[0].conv.in_channels)
+        current_grid_channels = int(self.actor.grid_channels)
         ckpt_critic_grid_channels = int(
             ckpt.get(
                 "critic_grid_channels",
                 ckpt["critic"]["cnn.net.0.conv.weight"].shape[1],
             )
         )
-        current_critic_grid_channels = int(self.critic.cnn.net[0].conv.in_channels)
+        current_critic_grid_channels = int(self.critic.grid_channels)
         ckpt_include_persistent_coverage_channel = (
             infer_checkpoint_include_persistent_coverage_channel(ckpt)
         )

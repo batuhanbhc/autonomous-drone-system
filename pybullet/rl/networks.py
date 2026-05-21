@@ -33,57 +33,84 @@ def _orthogonal_init(module: nn.Module, gain: float = 1.0):
 # ------------------------------------------------------------------ #
 
 
-class ResidualConvStage(nn.Module):
+class ConvStem(nn.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        stride: int = 1,
-        kernel_size: int = 3,
-        padding: int = 1,
-        skip_kernel_size: int = 1,
-        skip_padding: int = 0,
     ):
         super().__init__()
         self.conv = nn.Conv2d(
             in_channels,
             out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
+            kernel_size=3,
+            stride=1,
+            padding=1,
         )
-        self.skip = None
-        if stride != 1 or in_channels != out_channels:
-            self.skip = nn.Conv2d(
-                in_channels,
-                out_channels,
-                kernel_size=skip_kernel_size,
-                stride=stride,
-                padding=skip_padding,
-            )
         self.act = nn.SiLU()
-        _orthogonal_init(self)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x if self.skip is None else self.skip(x)
-        return self.act(self.conv(x) + residual)
+        return self.act(self.conv(x))
+
+
+class IdentityResidualBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.act = nn.SiLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = self.act(self.conv1(x))
+        x = self.conv2(x)
+        return self.act(x + residual)
+
+
+class DownsampleResidualBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+        self.skip = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+            stride=2,
+            padding=0,
+        )
+        self.act = nn.SiLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.skip(x)
+        x = self.act(self.conv1(x))
+        x = self.conv2(x)
+        return self.act(x + residual)
 
 class CNNEncoder(nn.Module):
     def __init__(self, in_channels: int = 2, grid_h: int = 32, grid_w: int = 32, out_dim: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            ResidualConvStage(in_channels, 16, stride=1),
-            ResidualConvStage(16, 32, stride=2),
-            ResidualConvStage(32, 64, stride=2),
-            ResidualConvStage(
-                64,
-                128,
-                stride=2,
-                kernel_size=2,
-                padding=0,
-                skip_kernel_size=2,
-                skip_padding=0,
-            ),
+            ConvStem(in_channels, 16),
+            IdentityResidualBlock(16),
+            DownsampleResidualBlock(16, 32),
+            IdentityResidualBlock(32),
+            DownsampleResidualBlock(32, 64),
+            IdentityResidualBlock(64),
+            DownsampleResidualBlock(64, 128),
+            IdentityResidualBlock(128),
         )
         conv_c, conv_h, conv_w = self._infer_conv_output_shape(grid_h, grid_w)
         self.proj = nn.Sequential(
@@ -99,9 +126,99 @@ class CNNEncoder(nn.Module):
         return int(out.shape[-3]), int(out.shape[-2]), int(out.shape[-1])
 
     def forward(self, grid: torch.Tensor) -> torch.Tensor:
-        feat = self.net(grid)                          # (B, 64, H', W')
-        flattened = feat.flatten(start_dim=1)         # (B, 64 * H' * W')
+        feat = self.net(grid)                          # (B, C', H', W')
+        flattened = feat.flatten(start_dim=1)         # (B, C' * H' * W')
         return self.proj(flattened)                   # (B, out_dim)
+
+
+def _infer_actor_branch_indices(
+    grid_channels: int,
+    include_local_recent_count_memory_channel: bool,
+    include_instant_fov_channels: bool,
+    include_persistent_coverage_channel: bool,
+) -> tuple[list[int], list[int]]:
+    fixed_non_shared_channels = (
+        7 + int(bool(include_local_recent_count_memory_channel))
+        if bool(include_instant_fov_channels)
+        else 5 + int(bool(include_local_recent_count_memory_channel))
+    )
+    shared_people_channels = int(grid_channels) - fixed_non_shared_channels
+    if shared_people_channels not in {1, 2, 3, 4, 5}:
+        raise ValueError(
+            "Unsupported actor grid layout: expected shared people channels in [1, 5], "
+            f"got grid_channels={grid_channels}, shared_people_channels={shared_people_channels}"
+        )
+
+    local_recent_offset = 1 + int(bool(include_local_recent_count_memory_channel))
+    shared_start = local_recent_offset
+    shared_end = shared_start + shared_people_channels
+
+    people_branch_indices = [0]
+    if include_local_recent_count_memory_channel:
+        people_branch_indices.append(1)
+
+    if include_persistent_coverage_channel:
+        people_branch_indices.extend(range(shared_start, shared_end - 1))
+        context_branch_indices = [shared_end - 1]
+    else:
+        people_branch_indices.extend(range(shared_start, shared_end))
+        context_branch_indices = []
+
+    context_branch_indices.extend(range(shared_end, int(grid_channels)))
+    return people_branch_indices, context_branch_indices
+
+
+class BranchedActorEncoder(nn.Module):
+    def __init__(
+        self,
+        grid_channels: int,
+        grid_h: int,
+        grid_w: int,
+        out_dim: int,
+        include_local_recent_count_memory_channel: bool = True,
+        include_instant_fov_channels: bool = True,
+        include_persistent_coverage_channel: bool = False,
+    ):
+        super().__init__()
+        people_branch_indices, context_branch_indices = _infer_actor_branch_indices(
+            grid_channels=grid_channels,
+            include_local_recent_count_memory_channel=include_local_recent_count_memory_channel,
+            include_instant_fov_channels=include_instant_fov_channels,
+            include_persistent_coverage_channel=include_persistent_coverage_channel,
+        )
+        self.grid_channels = int(grid_channels)
+        self.register_buffer(
+            "people_branch_indices",
+            torch.tensor(people_branch_indices, dtype=torch.long),
+            persistent=False,
+        )
+        self.register_buffer(
+            "context_branch_indices",
+            torch.tensor(context_branch_indices, dtype=torch.long),
+            persistent=False,
+        )
+        self.people_branch = CNNEncoder(
+            len(people_branch_indices),
+            grid_h,
+            grid_w,
+            out_dim,
+        )
+        self.context_branch = CNNEncoder(
+            len(context_branch_indices),
+            grid_h,
+            grid_w,
+            out_dim,
+        )
+        self.proj = nn.Sequential(
+            nn.Linear(out_dim * 2, out_dim),
+            nn.SiLU(),
+        )
+        _orthogonal_init(self.proj, gain=1.0)
+
+    def forward(self, grid: torch.Tensor) -> torch.Tensor:
+        people_feat = self.people_branch(grid.index_select(1, self.people_branch_indices))
+        context_feat = self.context_branch(grid.index_select(1, self.context_branch_indices))
+        return self.proj(torch.cat([people_feat, context_feat], dim=-1))
 
 
 # ------------------------------------------------------------------ #
@@ -120,19 +237,31 @@ class ActorNetwork(nn.Module):
         num_vx_bins: int = 9,
         num_vy_bins: int = 9,
         num_yaw_bins: int = 9,
+        include_local_recent_count_memory_channel: bool = True,
+        include_instant_fov_channels: bool = True,
+        include_persistent_coverage_channel: bool = False,
     ):
         super().__init__()
+        self.grid_channels = int(grid_channels)
         self.num_vx_bins = int(num_vx_bins)
         self.num_vy_bins = int(num_vy_bins)
         self.num_move_bins = self.num_vx_bins * self.num_vy_bins
-        self.cnn = CNNEncoder(grid_channels, grid_h, grid_w, cnn_out_dim)
+        self.cnn = BranchedActorEncoder(
+            grid_channels=grid_channels,
+            grid_h=grid_h,
+            grid_w=grid_w,
+            out_dim=cnn_out_dim,
+            include_local_recent_count_memory_channel=include_local_recent_count_memory_channel,
+            include_instant_fov_channels=include_instant_fov_channels,
+            include_persistent_coverage_channel=include_persistent_coverage_channel,
+        )
 
         self.local_mlp = nn.Sequential(
-            nn.Linear(local_dim, 64),
+            nn.Linear(local_dim, 128),
             nn.SiLU(),
         )
 
-        fused_dim = cnn_out_dim + 64
+        fused_dim = cnn_out_dim + 128
         self.shared = nn.Sequential(
             nn.Linear(fused_dim, hidden_dim),
             nn.SiLU(),
@@ -243,6 +372,7 @@ class CriticNetwork(nn.Module):
         hidden_dim: int = 256,
     ):
         super().__init__()
+        self.grid_channels = int(grid_channels)
 
         # Spatial branch — same CNN architecture as the actor
         self.cnn = CNNEncoder(grid_channels, grid_h, grid_w, cnn_out_dim)
@@ -250,12 +380,12 @@ class CriticNetwork(nn.Module):
         # Pose branch — LayerNorm then small MLP
         self.pose_mlp = nn.Sequential(
             nn.LayerNorm(poses_dim),
-            nn.Linear(poses_dim, 64),
+            nn.Linear(poses_dim, 128),
             nn.SiLU(),
         )
 
         # Shared head
-        fused_dim = cnn_out_dim + 64
+        fused_dim = cnn_out_dim + 128
         self.shared = nn.Sequential(
             nn.Linear(fused_dim, hidden_dim),
             nn.SiLU(),

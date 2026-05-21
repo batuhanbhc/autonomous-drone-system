@@ -6,4 +6,4 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
-exec "${PYTHON_BIN}" "${ROOT_DIR}/hotspot_debug_eval.py" "$@"
+exec "${PYTHON_BIN}" "${ROOT_DIR}/eval_metrics.py" "$@"

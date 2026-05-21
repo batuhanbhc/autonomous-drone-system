@@ -79,8 +79,8 @@ class MultiUAVEnv:
         reward_wfov: float = 0.0,
         reward_wcompletion: float = 0.0,
         reward_coverage_edge_quality: float = 0.0,
-        reward_quality_mode: str = "principal_linear",
-        reward_quality_gamma: float = 1.0,
+        reward_quality_mode: str = "principal_top_corner_linear",
+        reward_quality_gamma: float = 1.5,
         reward_completion_power: float = 1.0,
         reward_boundary_margin: float = 5.0,
         reward_drone_closeness_margin: float = 5.0,
@@ -91,6 +91,7 @@ class MultiUAVEnv:
         status_history_seconds: int = 4,
         hotspot_top_k: int = 3,
         hotspot_min_density: float = 1.5,
+        count_map_compression_scale: float = 1.5,
         hotspot_suppression_radius_scale: float = 4.0,
         hotspot_suppression_radius_min_cells: int = 2,
         reward_top_k_groups: int = 2,
@@ -234,6 +235,7 @@ class MultiUAVEnv:
             status_history_seconds=self.status_history_seconds,
             hotspot_top_k=hotspot_top_k,
             hotspot_min_density=hotspot_min_density,
+            count_map_compression_scale=count_map_compression_scale,
             hotspot_suppression_radius_scale=hotspot_suppression_radius_scale,
             hotspot_suppression_radius_min_cells=hotspot_suppression_radius_min_cells,
             people_count_normalizer=people_count_normalizer,
@@ -345,34 +347,83 @@ class MultiUAVEnv:
             raise ValueError(
                 f"reward_top_k_groups must be >= 0, got {self.reward_top_k_groups}"
             )
+        self._episode_seed: int | None = None
+        self._drone_rng = random.Random()
+        self._scenario_rng = random.Random()
+        self._group_motion_seed_base: int | None = None
+        self._person_seed_base: int | None = None
+        self._detection_seed_base: int | None = None
+
+    def set_episode_seed(self, episode_seed: int | None) -> None:
+        self._episode_seed = None if episode_seed is None else int(episode_seed)
+
+    def _stream_seed(self, offset: int) -> int:
+        base_seed = 0 if self._episode_seed is None else int(self._episode_seed)
+        return base_seed * 1000003 + int(offset)
+
+    def _prepare_episode_rngs(self) -> None:
+        if self._episode_seed is None:
+            self._drone_rng = random.Random()
+            self._scenario_rng = random.Random()
+            self._group_motion_seed_base = None
+            self._person_seed_base = None
+            self._detection_seed_base = None
+            self.obs_builder.set_detection_rngs(None)
+            return
+
+        self._drone_rng = random.Random(self._stream_seed(11))
+        self._scenario_rng = random.Random(self._stream_seed(23))
+        self._group_motion_seed_base = self._stream_seed(31)
+        self._person_seed_base = self._stream_seed(41)
+        self._detection_seed_base = self._stream_seed(53)
+        self.obs_builder.set_detection_rngs(
+            [
+                random.Random(self._detection_seed_base + drone_idx)
+                for drone_idx in range(self.max_drones)
+            ]
+        )
+
+    def _person_rng(self, person_idx: int) -> random.Random:
+        if self._person_seed_base is None:
+            return random.Random()
+        return random.Random(self._person_seed_base + person_idx)
+
+    def _group_motion_rng(self, group_id: int) -> random.Random:
+        if self._group_motion_seed_base is None:
+            return random.Random()
+        return random.Random(self._group_motion_seed_base + group_id)
 
     # ------------------------------------------------------------------ #
     #  Spawn helpers
     # ------------------------------------------------------------------ #
 
     def _random_drone_pos(self):
-        x = random.uniform(self.random_spawn_x_min, self.random_spawn_x_max)
-        y = random.uniform(self.random_spawn_y_min, self.random_spawn_y_max)
+        x = self._drone_rng.uniform(self.random_spawn_x_min, self.random_spawn_x_max)
+        y = self._drone_rng.uniform(self.random_spawn_y_min, self.random_spawn_y_max)
         return (x, y, self.drone_height)
 
     def _center_circle_drone_pos(self):
-        theta = random.uniform(0.0, 2.0 * math.pi)
-        radius = self.drone_spawn_radius * math.sqrt(random.random())
+        theta = self._drone_rng.uniform(0.0, 2.0 * math.pi)
+        radius = self.drone_spawn_radius * math.sqrt(self._drone_rng.random())
         x = self.center_x + radius * math.cos(theta)
         y = self.center_y + radius * math.sin(theta)
         return (x, y, self.drone_height)
 
     def _random_person_pos(self):
-        x = random.uniform(self.x_min + self.person_spawn_margin,
-                           self.x_max - self.person_spawn_margin)
-        y = random.uniform(self.y_min + self.person_spawn_margin,
-                           self.y_max - self.person_spawn_margin)
+        x = self._scenario_rng.uniform(
+            self.x_min + self.person_spawn_margin,
+            self.x_max - self.person_spawn_margin,
+        )
+        y = self._scenario_rng.uniform(
+            self.y_min + self.person_spawn_margin,
+            self.y_max - self.person_spawn_margin,
+        )
         return (x, y, 0.35)
 
     def _sample_num_people(self):
         if self.min_people == self.max_people:
             return self.min_people
-        return random.randint(self.min_people, self.max_people)
+        return self._scenario_rng.randint(self.min_people, self.max_people)
 
     def _build_candidate_regions(self):
         if self.num_group_regions == 4:
@@ -393,8 +444,8 @@ class MultiUAVEnv:
 
     def _sample_point_in_region(self, region, margin=0.8, z=0.35):
         rx0, rx1, ry0, ry1 = region
-        x = random.uniform(rx0 + margin, rx1 - margin)
-        y = random.uniform(ry0 + margin, ry1 - margin)
+        x = self._scenario_rng.uniform(rx0 + margin, rx1 - margin)
+        y = self._scenario_rng.uniform(ry0 + margin, ry1 - margin)
         return (x, y, z)
 
     def _is_far_enough_from_existing(self, candidate_xy, existing_positions, min_dist):
@@ -425,8 +476,8 @@ class MultiUAVEnv:
             min_dist = self.min_person_spawn_dist
         gcx, gcy = group_center
         for _ in range(max_tries):
-            angle = random.uniform(-math.pi, math.pi)
-            r     = random.uniform(0.0, group_radius)
+            angle = self._scenario_rng.uniform(-math.pi, math.pi)
+            r     = self._scenario_rng.uniform(0.0, group_radius)
             px    = gcx + r * math.cos(angle)
             py    = gcy + r * math.sin(angle)
             px    = max(self.x_min + self.group_spawn_margin,
@@ -443,27 +494,27 @@ class MultiUAVEnv:
         if max_possible_groups <= 0:
             num_groups = 0
         else:
-            num_groups = random.randint(1, max_possible_groups)
+            num_groups = self._scenario_rng.randint(1, max_possible_groups)
         group_centers   = []
         group_sizes     = {}
         assignments     = [None] * num_people
 
         if num_groups > 0:
             regions          = self._build_candidate_regions()
-            selected_regions = random.sample(regions, num_groups)
+            selected_regions = self._scenario_rng.sample(regions, num_groups)
 
             for g_id, region in enumerate(selected_regions):
-                center = self._sample_point_in_region(region, margin=0.8)
+                center = self._sample_point_in_region(region, margin=2.0)
                 group_centers.append((center[0], center[1]))
 
             people_indices = list(range(num_people))
-            random.shuffle(people_indices)
+            self._scenario_rng.shuffle(people_indices)
 
             min_group_size = max(2, num_people // (num_groups * 3))
             max_group_size = max(min_group_size + 1, num_people // num_groups + 2)
 
             for g_id in range(num_groups):
-                size = random.randint(min_group_size, max_group_size)
+                size = self._scenario_rng.randint(min_group_size, max_group_size)
                 group_sizes[g_id] = size
 
             assigned = 0
@@ -492,7 +543,7 @@ class MultiUAVEnv:
         if self.fixed_active_num_drones is not None:
             self.active_num_drones = self.fixed_active_num_drones
         else:
-            self.active_num_drones = random.randint(1, self.max_drones)
+            self.active_num_drones = self._drone_rng.randint(1, self.max_drones)
 
         for drone_idx in range(self.active_num_drones):
             if self.random_spawn:
@@ -507,7 +558,7 @@ class MultiUAVEnv:
                 client_id=self.world.client_id,
             )
             drone.spawn()
-            yaw = random.uniform(-math.pi, math.pi)
+            yaw = self._drone_rng.uniform(-math.pi, math.pi)
             drone.reset(pos=pos, yaw=yaw)
             self.drones.append(drone)
 
@@ -522,12 +573,13 @@ class MultiUAVEnv:
             person   = Person(
                 start_pos=self._random_person_pos(),
                 client_id=self.world.client_id,
+                rng=self._person_rng(person_idx),
             )
             person.spawn()
             group_id = assignments[person_idx]
             if group_id is not None:
                 gcx, gcy     = group_centers[group_id]
-                group_radius = random.uniform(0.4, 0.9)
+                group_radius = self._scenario_rng.uniform(0.4, 0.9)
                 pos = self._sample_group_member_pos(
                     group_center=(gcx, gcy),
                     group_radius=group_radius,
@@ -555,14 +607,16 @@ class MultiUAVEnv:
         self.group_motion_state = {}
         for group_id, center in enumerate(group_centers):
             cx, cy = center
+            rng = self._group_motion_rng(group_id)
             self.group_motion_state[group_id] = {
                 "center_x": float(cx),
                 "center_y": float(cy),
-                "heading": random.uniform(-math.pi, math.pi),
-                "speed": random.uniform(
+                "heading": rng.uniform(-math.pi, math.pi),
+                "speed": rng.uniform(
                     self.group_center_speed_min,
                     self.group_center_speed_max,
                 ),
+                "rng": rng,
             }
         self._update_group_centers_snapshot()
 
@@ -603,14 +657,15 @@ class MultiUAVEnv:
 
         turn_prob_this_step = self.group_center_turn_prob * self.dt
         for motion in self.group_motion_state.values():
-            if self.group_center_turn_std > 0.0 and random.random() < turn_prob_this_step:
-                motion["heading"] += random.gauss(0.0, self.group_center_turn_std)
+            rng = motion["rng"]
+            if self.group_center_turn_std > 0.0 and rng.random() < turn_prob_this_step:
+                motion["heading"] += rng.gauss(0.0, self.group_center_turn_std)
             if self.group_center_speed_max > 0.0:
                 motion["speed"] = min(
                     self.group_center_speed_max,
                     max(
                         self.group_center_speed_min,
-                        motion["speed"] + random.gauss(0.0, 0.01),
+                        motion["speed"] + rng.gauss(0.0, 0.01),
                     ),
                 )
 
@@ -874,6 +929,7 @@ class MultiUAVEnv:
             y_min=self.y_min, y_max=self.y_max,
         )
 
+        self._prepare_episode_rngs()
         self.obs_builder.reset()
         self.current_step = 0
         self.ever_seen    = set()

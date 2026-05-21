@@ -18,10 +18,10 @@ from rl.action_masking import num_move_actions
 @dataclass(frozen=True)
 class SharedConfig:
     gui: bool = False
-    x_min: float = -15.0
-    x_max: float = 15.0
-    y_min: float = -15.0
-    y_max: float = 15.0
+    x_min: float = -10.0
+    x_max: float = 10.0
+    y_min: float = -10.0
+    y_max: float = 10.0
     z_min: float = 0.3
     z_max: float = 8.0
     drone_height: float = 6.0
@@ -32,16 +32,16 @@ class SharedConfig:
     min_people: int = 5
     max_people: int = 30
     episode_steps: int = 512
-    search_phase_seconds: float = 16.0
+    search_phase_seconds: float = 30.0
     max_groups: int = 4
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
     person_spawn_margin: float = 0.5
     group_spawn_margin: float = 0.7
     min_person_spawn_dist: float = 0.4
-    group_center_speed_min: float = 0.2
-    group_center_speed_max: float = 1.5
-    group_center_turn_prob: float = 0.25
+    group_center_speed_min: float = 1.0
+    group_center_speed_max: float = 2.0
+    group_center_turn_prob: float = 0.15
     group_center_turn_std: float = 0.8
     rl_hz: float = 4.0
     max_range: float = 15.0
@@ -49,53 +49,54 @@ class SharedConfig:
     vertical_fov_deg: float = 43.3  
     detection_prob: float = 1.0
     position_noise_std: float = 0.1
-    detection_forward_decay_start_norm: float = 0.85
+    detection_forward_decay_start_norm: float = 1.0
     camera_tilt_deg: float = 55.0
     recent_half_life_seconds: float = 10.0
     historic_half_life_seconds: float = 60.0
     coverage_half_life_seconds: float = 20.0
-    blob_sigma: float = 1.0
-    ego_sigma: float = 1.5
+    blob_sigma: float = 1.5
+    ego_sigma: float = 2.0
     people_count_normalizer: float = 30.0
     local_people_map_mode: str = "count_density"
     include_local_recent_count_memory_channel: bool = True
     include_shared_count_density_channel: bool = False
     include_instant_fov_channels: bool = True
     hide_person_features_during_search: bool = True
-    count_memory_historic_miss_penalty: float = 0.35
+    count_memory_historic_miss_penalty: float = 0.2
     max_horizontal_velocity: float = 1.0
     horizontal_bin_interval: float = 1.0
     max_yaw_rate: float = 0.35
     yaw_bin_interval: float = 0.35
     vel_tau_s: float = 0.5
     yaw_rate_tau_s: float = 0.5
-    cmd_history_len: int = 4
-    status_history_seconds: int = 10
+    cmd_history_len: int = 5
+    status_history_seconds: int = 5
     hotspot_top_k: int = 2
     hotspot_min_density: float = 1.5
+    count_map_compression_scale: float = 3.0
     hotspot_suppression_radius_scale: float = 5.0
     hotspot_suppression_radius_min_cells: int = 2
-    reward_top_k_groups: int = 3
+    reward_top_k_groups: int = 4
     reward_wc: float = 1.0
-    reward_coverage_exponent: float = 2.0
+    reward_coverage_exponent: float = 1.0
     reward_wqual: float = 1.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
-    reward_wx: float = 1.0
+    reward_wx: float = 5.0
     reward_ws: float = 5.0
-    reward_wclose: float = 1.0
+    reward_wclose: float = 5.0
     reward_wfov_overlap: float = 0.0
     reward_wcoll: float = 0.0
-    reward_we: float = 0.0
+    reward_we: float = 0.1
     reward_wi: float = 0.0
     reward_wfov: float = 0.0
     reward_coverage_edge_quality: float = 0.0
-    reward_quality_mode: str = "principal_linear"
-    reward_quality_gamma: float = 1.5
-    reward_wcompletion: float = 1.0
+    reward_quality_mode: str = "principal_top_corner_linear"
+    reward_quality_gamma: float = 1.0
+    reward_wcompletion: float = 0.0
     reward_completion_power: float = 2.0
-    reward_boundary_margin: float = 5.0
-    reward_drone_closeness_margin: float = 5.0
+    reward_boundary_margin: float = 4.0
+    reward_drone_closeness_margin: float = 1.0
     reward_fov_margin: float = 1.0
     debug_observation_plots: bool = False
     debug_observation_plot_every: int = 25
@@ -111,11 +112,11 @@ class TrainConfig:
     num_epochs: int = 2
     batch_size: int = 512
     clip_eps: float = 0.15
-    gamma: float = 0.995
+    gamma: float = 0.98
     gae_lambda: float = 0.95
     lr_actor: float = 1.0e-4
     lr_critic: float = 1.0e-4
-    entropy_coef: float = 0.005
+    entropy_coef: float = 0.0025
     value_coef: float = 0.5
     anneal_lr: bool = True
     save_dir: str = "checkpoints"
@@ -143,8 +144,8 @@ class EvalConfig:
 @dataclass(frozen=True)
 class ModelConfig:
     grid_channels: int = 10
-    grid_h: int = 60
-    grid_w: int = 60
+    grid_h: int = 40
+    grid_w: int = 40
     cnn_out_dim: int = 128
     hidden_dim: int = 256
 
@@ -182,11 +183,22 @@ EVAL_DEFAULTS = EvalConfig()
 MODEL_DEFAULTS = ModelConfig()
 
 
+def infer_actor_state_grid_channels(actor_state: dict) -> int:
+    legacy_key = "cnn.net.0.conv.weight"
+    if legacy_key in actor_state:
+        return int(actor_state[legacy_key].shape[1])
+    people_key = "cnn.people_branch.net.0.conv.weight"
+    context_key = "cnn.context_branch.net.0.conv.weight"
+    if people_key in actor_state and context_key in actor_state:
+        return int(actor_state[people_key].shape[1] + actor_state[context_key].shape[1])
+    raise KeyError("Could not infer actor grid channels from checkpoint state dict.")
+
+
 def infer_checkpoint_actor_grid_channels(ckpt: dict) -> int:
     if "grid_channels" in ckpt:
         return int(ckpt["grid_channels"])
     actor_state = ckpt["actor"]
-    return int(actor_state["cnn.net.0.conv.weight"].shape[1])
+    return infer_actor_state_grid_channels(actor_state)
 
 
 def infer_checkpoint_include_persistent_coverage_channel(ckpt: dict) -> bool:
@@ -592,6 +604,12 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         help="Minimum raw historic count-density value required for a hotspot to be emitted into the local vector.",
     )
     parser.add_argument(
+        "--count_map_compression_scale",
+        type=float,
+        default=SHARED_DEFAULTS.count_map_compression_scale,
+        help="Compression scale c used for count maps via x / (x + c). Larger values compress more aggressively.",
+    )
+    parser.add_argument(
         "--hotspot_suppression_radius_scale",
         type=float,
         default=SHARED_DEFAULTS.hotspot_suppression_radius_scale,
@@ -651,17 +669,24 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--reward_quality_mode",
         type=str,
-        choices=("legacy", "principal_linear", "principal_squared", "principal_power"),
+        choices=(
+            "legacy",
+            "principal_linear",
+            "principal_squared",
+            "principal_power",
+            "principal_top_corner_linear",
+        ),
         default=SHARED_DEFAULTS.reward_quality_mode,
-        help="Framing-quality field used by the FOV quality reward. Principal modes use a circular drop around the principal point.",
+        help="Framing-quality field used by the FOV quality reward. Top-corner mode uses principal-point distance normalized by the farther top-corner radius.",
     )
     parser.add_argument(
         "--reward_quality_gamma",
         type=float,
         default=SHARED_DEFAULTS.reward_quality_gamma,
         help=(
-            "Exponent for principal_power reward quality. gamma=1 matches "
-            "principal_linear; higher values penalize off-center framing sooner."
+            "Exponent for gamma-based principal reward quality modes. gamma=1 "
+            "matches their linear variant; higher values penalize off-center "
+            "framing sooner."
         ),
     )
     parser.add_argument(
@@ -906,6 +931,7 @@ def build_env_kwargs(
         "status_history_seconds": args.status_history_seconds,
         "hotspot_top_k": args.hotspot_top_k,
         "hotspot_min_density": args.hotspot_min_density,
+        "count_map_compression_scale": args.count_map_compression_scale,
         "hotspot_suppression_radius_scale": args.hotspot_suppression_radius_scale,
         "hotspot_suppression_radius_min_cells": args.hotspot_suppression_radius_min_cells,
         "reward_top_k_groups": args.reward_top_k_groups,
@@ -941,7 +967,8 @@ def local_dim(
     #                         delta_visible, visited_fraction)
     #   3 phase scalars (search progress, is_search_phase, is_coverage_phase)
     #   3 explicit detection-centroid vs principal-point alignment scalars
-    #   5 scalars per hotspot slot: [valid, rel_dx_world, rel_dy_world, density, age]
+    #   5 scalars per hotspot slot: [valid, hotspot_forward_offset_from_principal,
+    #                                hotspot_lateral_offset_from_principal, density, age]
     #   6 scalars per teammate slot
     #   5 scalars per 1 Hz status-history entry
     #   3 scalars per legacy command-history entry (vx, vy, yaw_rate)
@@ -1003,6 +1030,9 @@ def actor_kwargs(
     status_history_seconds: int = 0,
     hotspot_top_k: int = 0,
     grid_channels: int | None = None,
+    include_local_recent_count_memory_channel: bool = SHARED_DEFAULTS.include_local_recent_count_memory_channel,
+    include_instant_fov_channels: bool = SHARED_DEFAULTS.include_instant_fov_channels,
+    include_persistent_coverage_channel: bool = False,
 ) -> Dict[str, Any]:
     return {
         "local_dim": local_dim(
@@ -1020,6 +1050,13 @@ def actor_kwargs(
         "num_vx_bins": int(action_space.vx_bins.shape[0]),
         "num_vy_bins": int(action_space.vy_bins.shape[0]),
         "num_yaw_bins": action_space.num_yaw_bins,
+        "include_local_recent_count_memory_channel": bool(
+            include_local_recent_count_memory_channel
+        ),
+        "include_instant_fov_channels": bool(include_instant_fov_channels),
+        "include_persistent_coverage_channel": bool(
+            include_persistent_coverage_channel
+        ),
     }
 
 
@@ -1034,6 +1071,21 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
         getattr(args, "status_history_seconds", 0),
         getattr(args, "hotspot_top_k", 0),
         grid_channels=actor_grid_channels,
+        include_local_recent_count_memory_channel=getattr(
+            args,
+            "include_local_recent_count_memory_channel",
+            SHARED_DEFAULTS.include_local_recent_count_memory_channel,
+        ),
+        include_instant_fov_channels=getattr(
+            args,
+            "include_instant_fov_channels",
+            SHARED_DEFAULTS.include_instant_fov_channels,
+        ),
+        include_persistent_coverage_channel=getattr(
+            args,
+            "include_persistent_coverage_channel",
+            False,
+        ),
     )
     kwargs.update(
         {

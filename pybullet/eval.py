@@ -34,6 +34,7 @@ from config import (
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
 from rl.live_debug import LiveDebugConfig, LiveDebugWindow
 from rl.networks import ActorNetwork
+from sim.camera_geometry import principal_point_world
 
 
 def parse_args():
@@ -110,6 +111,77 @@ def infer_checkpoint_local_dim(ckpt: dict) -> int:
     return int(local_weight.shape[1])
 
 
+def current_eval_phase_name(env) -> str:
+    phase_context = env.get_observation_phase_context()
+    return "SEARCH" if phase_context.get("is_search_phase", 0.0) > 0.5 else "COVERAGE"
+
+
+def sync_phase_gui_param(param_id: int | None, phase_name: str) -> int | None:
+    if param_id is not None:
+        try:
+            p.removeUserDebugItem(param_id)
+        except Exception:
+            pass
+
+    try:
+        return p.addUserDebugParameter(f"Phase: {phase_name}", 1, 0, 1)
+    except Exception:
+        return None
+
+
+def draw_actor_geometric_median_rays(env) -> None:
+    if not env.gui or not env.world.is_connected():
+        return
+
+    centroids = getattr(env.obs_builder, "actor_centroid_world_points_snapshot", None)
+    if not centroids:
+        return
+
+    drone_states = env._get_drone_states()
+    for drone_idx, drone_state in enumerate(drone_states):
+        if drone_idx >= len(centroids):
+            break
+        centroid = centroids[drone_idx]
+        if centroid is None:
+            continue
+
+        x, y, z = drone_state["position"]
+        yaw = drone_state["yaw"]
+        centroid_x, centroid_y = centroid
+        principal_x, principal_y = principal_point_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=env.debug_drawer.tilt_deg,
+        )
+        pb = {"physicsClientId": env.world.client_id}
+        p.addUserDebugLine(
+            [x, y, z],
+            [centroid_x, centroid_y, 0.05],
+            [1.0, 0.55, 0.0],
+            lineWidth=2,
+            lifeTime=0,
+            **pb,
+        )
+        p.addUserDebugLine(
+            [principal_x, principal_y, 0.06],
+            [centroid_x, centroid_y, 0.06],
+            [1.0, 0.0, 1.0],
+            lineWidth=1,
+            lifeTime=0,
+            **pb,
+        )
+        p.addUserDebugText(
+            text=f"GM{drone_idx}",
+            textPosition=[centroid_x, centroid_y, 0.08],
+            textColorRGB=[1.0, 0.55, 0.0],
+            textSize=1.0,
+            lifeTime=0,
+            **pb,
+        )
+
+
 def run_episode(env, actor, action_space, device, args, live_debug=None):
     obs       = env.reset()
     ep_reward = 0.0
@@ -120,12 +192,18 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
     # Add "New Episode" button after reset (resetSimulation clears debug params).
     new_ep_btn = None
     btn_val = None
+    phase_param = None
+    phase_name = None
     if args.gui:
         try:
+            phase_name = current_eval_phase_name(env)
+            phase_param = sync_phase_gui_param(None, phase_name)
             new_ep_btn = p.addUserDebugParameter("New Episode", 1, 0, 1)
             btn_val = p.readUserDebugParameter(new_ep_btn)
         except Exception:
             new_ep_btn = None
+            phase_param = None
+    draw_actor_geometric_median_rays(env)
 
     while not done:
         step += 1
@@ -170,6 +248,13 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
 
         obs, reward, done, info = env.step(env_actions)
         ep_reward += reward
+
+        if args.gui:
+            updated_phase_name = current_eval_phase_name(env)
+            if updated_phase_name != phase_name:
+                phase_param = sync_phase_gui_param(phase_param, updated_phase_name)
+                phase_name = updated_phase_name
+            draw_actor_geometric_median_rays(env)
 
         if new_ep_btn is not None and btn_val is not None:
             try:
@@ -250,6 +335,11 @@ def main():
         status_history_seconds=args.status_history_seconds,
         hotspot_top_k=trained_hotspot_top_k,
         grid_channels=trained_grid_channels,
+        include_local_recent_count_memory_channel=(
+            trained_include_local_recent_count_memory_channel
+        ),
+        include_instant_fov_channels=trained_include_instant_fov_channels,
+        include_persistent_coverage_channel=trained_include_persistent_coverage,
     )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)

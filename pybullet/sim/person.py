@@ -11,16 +11,18 @@ class Person:
         half_extents=(0.10, 0.10, 0.35),
         color=(1.0, 0.2, 0.2, 1.0),
         client_id: int | None = None,
+        rng: random.Random | None = None,
     ):
         self.start_pos = start_pos
         self.half_extents = half_extents
         self.color = color
         self.client_id = client_id
+        self.rng = rng or random.Random()
 
         self.body_id = None
 
-        self.speed = random.uniform(0.08, 0.22)
-        self.heading = random.uniform(-math.pi, math.pi)
+        self.speed = self.rng.uniform(0.08, 0.22)
+        self.heading = self.rng.uniform(-math.pi, math.pi)
 
         self.state = "moving"
         self.state_timer = 0.0
@@ -42,9 +44,9 @@ class Person:
 
     def _set_new_state_duration(self):
         if self.state == "moving":
-            self.state_timer = random.uniform(2.0, 6.0)
+            self.state_timer = self.rng.uniform(2.0, 6.0)
         else:
-            self.state_timer = random.uniform(1.0, 4.0)
+            self.state_timer = self.rng.uniform(1.0, 4.0)
 
     def is_valid(self):
         if not p.isConnected(self.client_id):
@@ -103,9 +105,9 @@ class Person:
         quat = p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb())
         p.resetBasePositionAndOrientation(self.body_id, pos, quat, **self._pb())
 
-        self.speed = random.uniform(0.08, 0.22)
-        self.heading = random.uniform(-math.pi, math.pi)
-        self.state = random.choice(["moving", "stopped"])
+        self.speed = self.rng.uniform(0.08, 0.22)
+        self.heading = self.rng.uniform(-math.pi, math.pi)
+        self.state = self.rng.choice(["moving", "stopped"])
         self._set_new_state_duration()
 
         if grouped and group_center is not None:
@@ -124,8 +126,8 @@ class Person:
                 self.state = "stopped"
             else:
                 self.state = "moving"
-                self.heading = random.uniform(-math.pi, math.pi)
-                self.speed = random.uniform(0.08, 0.22)
+                self.heading = self.rng.uniform(-math.pi, math.pi)
+                self.speed = self.rng.uniform(0.08, 0.22)
             self._set_new_state_duration()
 
     def _compute_separation_offset(self, x, y, other_people_positions, min_dist=None):
@@ -175,7 +177,7 @@ class Person:
             dist = math.hypot(dx, dy)
 
             if dist < 1e-8:
-                angle = random.uniform(-math.pi, math.pi)
+                angle = self.rng.uniform(-math.pi, math.pi)
                 corrected_x += min_dist * math.cos(angle)
                 corrected_y += min_dist * math.sin(angle)
                 continue
@@ -213,8 +215,8 @@ class Person:
             )
             return
 
-        if random.random() < 0.01:
-            self.heading += random.uniform(-0.4, 0.4)
+        if self.rng.random() < 0.01:
+            self.heading += self.rng.uniform(-0.4, 0.4)
 
         vx = self.speed * math.cos(self.heading)
         vy = self.speed * math.sin(self.heading)
@@ -295,21 +297,21 @@ class Person:
         dy = gcy - y
         dist_to_center = math.hypot(dx, dy)
 
-        if random.random() < 0.03:
-            self.heading += random.uniform(-0.5, 0.5)
+        if self.rng.random() < 0.03:
+            self.heading += self.rng.uniform(-0.5, 0.5)
 
         if dist_to_center > self.group_radius:
             desired_heading = math.atan2(dy, dx)
-            heading_mix = random.uniform(0.6, 0.9)
+            heading_mix = self.rng.uniform(0.6, 0.9)
             self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
         else:
             if dist_to_center > 0.55 * self.group_radius:
                 desired_heading = math.atan2(dy, dx)
-                heading_mix = random.uniform(0.2, 0.4)
+                heading_mix = self.rng.uniform(0.2, 0.4)
                 self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
-            elif dist_to_center > 1e-6 and random.random() < 0.18:
+            elif dist_to_center > 1e-6 and self.rng.random() < 0.18:
                 desired_heading = math.atan2(dy, dx)
-                heading_mix = random.uniform(0.08, 0.18)
+                heading_mix = self.rng.uniform(0.08, 0.18)
                 self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
 
         move_speed = min(self.speed, 0.18)

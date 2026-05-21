@@ -114,10 +114,16 @@ def build_global_state(
         )
     if getattr(obs_builder, "include_shared_count_density_channel", False):
         shared_people_parts.append(
-            np.asarray(obs_builder.people_count_density, dtype=np.float32)[np.newaxis, :, :]
+            np.asarray(
+                obs_builder.compress_count_map(obs_builder.people_count_density),
+                dtype=np.float32,
+            )[np.newaxis, :, :]
         )
     shared_people_parts.append(
-        np.asarray(obs_builder.people_count_memory_historic, dtype=np.float32)[np.newaxis, :, :]
+        np.asarray(
+            obs_builder.compress_count_map(obs_builder.people_count_memory_historic),
+            dtype=np.float32,
+        )[np.newaxis, :, :]
     )
     if getattr(obs_builder, "include_persistent_coverage_channel", False):
         shared_people_parts.append(

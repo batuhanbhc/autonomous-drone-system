@@ -34,6 +34,9 @@ from config import (
     infer_checkpoint_actor_grid_channels,
     infer_checkpoint_cmd_history_len,
     infer_checkpoint_hotspot_top_k,
+    infer_checkpoint_include_instant_fov_channels,
+    infer_checkpoint_include_local_recent_count_memory_channel,
+    infer_checkpoint_include_persistent_coverage_channel,
     infer_checkpoint_status_history_seconds,
 )
 from rl.networks import ActorNetwork
@@ -155,6 +158,15 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
     ckpt = torch.load(args.checkpoint, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
     trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
+    trained_include_persistent_coverage = (
+        infer_checkpoint_include_persistent_coverage_channel(ckpt)
+    )
+    trained_include_instant_fov_channels = (
+        infer_checkpoint_include_instant_fov_channels(ckpt)
+    )
+    trained_include_local_recent_count_memory_channel = (
+        infer_checkpoint_include_local_recent_count_memory_channel(ckpt)
+    )
 
     action_space = build_action_space(args)
     trained_cmd_history_len = infer_checkpoint_cmd_history_len(
@@ -177,6 +189,11 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
         status_history_seconds=trained_status_history_seconds,
         hotspot_top_k=trained_hotspot_top_k,
         grid_channels=trained_grid_channels,
+        include_local_recent_count_memory_channel=(
+            trained_include_local_recent_count_memory_channel
+        ),
+        include_instant_fov_channels=trained_include_instant_fov_channels,
+        include_persistent_coverage_channel=trained_include_persistent_coverage,
     )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)

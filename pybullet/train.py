@@ -39,18 +39,20 @@ def parse_args():
 
 
 def build_run_save_dir(base_save_dir: str, load_path: str | None) -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_prefix = "run"
     if load_path:
-        source_name = os.path.splitext(os.path.basename(load_path))[0]
-        run_prefix = f"resume_{source_name}"
+        # Resume in-place: keep appending checkpoints and CSV rows to the
+        # directory that already contains the provided checkpoint.
+        return os.path.dirname(os.path.abspath(load_path)) or os.getcwd()
 
-    candidate = os.path.join(base_save_dir, f"{run_prefix}_{timestamp}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = os.path.join(base_save_dir, f"run_{timestamp}")
     suffix = 1
     while os.path.exists(candidate):
-        candidate = os.path.join(base_save_dir, f"{run_prefix}_{timestamp}_{suffix:02d}")
+        candidate = os.path.join(base_save_dir, f"run_{timestamp}_{suffix:02d}")
         suffix += 1
     return candidate
+
+
 def main():
     args = parse_args()
     if args.n_envs <= 0:

@@ -4,6 +4,7 @@ Plot smoothed training curves from MAPPO CSV logs.
 
 Examples:
     python plot_training_logs.py
+    python plot_training_logs.py --base-dir checkpoints
     python plot_training_logs.py --run-dir checkpoints/run_20260506_223802
     python plot_training_logs.py --window 50 --x-axis steps
 """
@@ -52,17 +53,19 @@ METRIC_LABELS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot smoothed training metrics from a run directory.")
+    parser = argparse.ArgumentParser(
+        description="Plot smoothed training metrics from one run or from every run under a base directory."
+    )
     parser.add_argument(
         "--run-dir",
         type=Path,
-        help="Path to a run directory containing train_metrics.csv.",
+        help="Path to a run directory containing train_metrics.csv. If omitted, all runs under --base-dir are plotted.",
     )
     parser.add_argument(
         "--base-dir",
         type=Path,
         default=Path("checkpoints"),
-        help="Base directory used to auto-select the latest run when --run-dir is omitted.",
+        help="Base directory searched for run folders when --run-dir is omitted.",
     )
     parser.add_argument(
         "--output",
@@ -101,11 +104,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def find_latest_run_dir(base_dir: Path) -> Path:
+def find_run_dirs(base_dir: Path) -> list[Path]:
     candidates = sorted(base_dir.rglob("train_metrics.csv"), key=lambda path: path.stat().st_mtime)
     if not candidates:
         raise FileNotFoundError(f"No train_metrics.csv files found under {base_dir}")
-    return candidates[-1].parent
+    return [path.parent for path in candidates]
 
 
 def load_csv_rows(path: Path) -> list[dict[str, float]]:
@@ -211,6 +214,9 @@ def plot_metrics(
         if show_raw:
             axis.plot(x_values, y_values, color="tab:blue", alpha=0.22, linewidth=1.0, label="raw")
         axis.plot(x_values, y_smoothed, color="tab:blue", linewidth=2.2, label=f"moving avg ({window})")
+        if metric == "avg_ep_reward":
+            lower, upper = axis.get_ylim()
+            axis.set_ylim(bottom=max(lower, -200.0), top=upper)
         axis.set_title(METRIC_LABELS.get(metric, metric.replace("_", " ").title()))
         axis.set_xlabel(METRIC_LABELS.get(x_axis, x_axis))
         axis.grid(True, alpha=0.25)
@@ -230,29 +236,36 @@ def plot_metrics(
 def main() -> None:
     args = parse_args()
 
-    run_dir = args.run_dir or find_latest_run_dir(args.base_dir)
-    metrics_path = run_dir / "train_metrics.csv"
-    critic_path = run_dir / "critic_diagnostics.csv"
-    output_path = args.output or (run_dir / "training_metrics_smoothed.png")
+    if args.run_dir is not None:
+        run_dirs = [args.run_dir]
+    else:
+        run_dirs = find_run_dirs(args.base_dir)
+        if args.output is not None:
+            raise ValueError("--output can only be used together with --run-dir.")
 
-    if not metrics_path.exists():
-        raise FileNotFoundError(f"Missing metrics CSV: {metrics_path}")
+    for run_dir in run_dirs:
+        metrics_path = run_dir / "train_metrics.csv"
+        critic_path = run_dir / "critic_diagnostics.csv"
+        output_path = args.output or (run_dir / "training_metrics_smoothed.png")
 
-    data = merge_logs(metrics_path, critic_path if critic_path.exists() else None)
-    used_metrics = plot_metrics(
-        data=data,
-        run_dir=run_dir,
-        output_path=output_path,
-        metrics=args.metrics,
-        x_axis=args.x_axis,
-        window=max(1, args.window),
-        show_raw=not args.no_raw,
-        dpi=args.dpi,
-    )
+        if not metrics_path.exists():
+            raise FileNotFoundError(f"Missing metrics CSV: {metrics_path}")
 
-    print(f"Run directory: {run_dir}")
-    print(f"Saved plot to: {output_path}")
-    print(f"Metrics plotted: {', '.join(used_metrics)}")
+        data = merge_logs(metrics_path, critic_path if critic_path.exists() else None)
+        used_metrics = plot_metrics(
+            data=data,
+            run_dir=run_dir,
+            output_path=output_path,
+            metrics=args.metrics,
+            x_axis=args.x_axis,
+            window=max(1, args.window),
+            show_raw=not args.no_raw,
+            dpi=args.dpi,
+        )
+
+        print(f"Run directory: {run_dir}")
+        print(f"Saved plot to: {output_path}")
+        print(f"Metrics plotted: {', '.join(used_metrics)}")
 
 
 if __name__ == "__main__":

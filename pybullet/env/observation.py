@@ -52,8 +52,9 @@ class ObservationBuilder:
                   drone's current-step detections.
 
       Shared count density
-                  Raw summed Gaussian blobs from all detections on the current
-                  step. This is kept only for legacy layouts.
+                  Per-cell max over the per-drone raw Gaussian count-density
+                  estimates on the current step. This is kept only for legacy
+                  layouts.
 
       Shared historic count memory
                   A slower decayed peak-memory over observed raw count density.
@@ -153,6 +154,7 @@ class ObservationBuilder:
         status_history_seconds: int = 4,
         hotspot_top_k: int = 3,
         hotspot_min_density: float = 1.5,
+        count_map_compression_scale: float = 1.5,
         hotspot_suppression_radius_scale: float = 4.0,
         hotspot_suppression_radius_min_cells: int = 2,
         people_count_normalizer: float = 30.0,
@@ -214,6 +216,7 @@ class ObservationBuilder:
         self.status_history_seconds = int(status_history_seconds)
         self.hotspot_top_k = max(0, int(hotspot_top_k))
         self.hotspot_min_density = float(hotspot_min_density)
+        self.count_map_compression_scale = float(count_map_compression_scale)
         self.hotspot_suppression_radius_scale = float(hotspot_suppression_radius_scale)
         self.hotspot_suppression_radius_min_cells = int(hotspot_suppression_radius_min_cells)
         self.hotspot_suppression_radius_cells = max(
@@ -226,6 +229,8 @@ class ObservationBuilder:
         self.include_persistent_coverage_channel = bool(
             include_persistent_coverage_channel
         )
+        self.detection_rngs = [random.Random() for _ in range(self.num_drones)]
+        self.actor_centroid_world_points_snapshot = [None for _ in range(self.num_drones)]
         if not (0.0 <= self.detection_forward_decay_start_norm <= 1.0):
             raise ValueError(
                 "detection_forward_decay_start_norm must be within [0, 1], got "
@@ -385,6 +390,11 @@ class ObservationBuilder:
             raise ValueError(
                 f"hotspot_min_density must be >= 0, got {self.hotspot_min_density}"
             )
+        if self.count_map_compression_scale <= 0.0:
+            raise ValueError(
+                "count_map_compression_scale must be > 0, got "
+                f"{self.count_map_compression_scale}"
+            )
         if self.hotspot_suppression_radius_scale <= 0.0:
             raise ValueError(
                 "hotspot_suppression_radius_scale must be > 0, got "
@@ -494,6 +504,28 @@ class ObservationBuilder:
         for drone_idx in range(self.num_drones):
             self._status_history_anchor_states[drone_idx] = None
         self._prev_visible_counts = [0 for _ in range(self.num_drones)]
+        self.actor_centroid_world_points_snapshot = [None for _ in range(self.num_drones)]
+
+    def set_detection_rngs(self, detection_rngs: Optional[List[random.Random]]) -> None:
+        if detection_rngs is None:
+            self.detection_rngs = [random.Random() for _ in range(self.num_drones)]
+            return
+        self.detection_rngs = list(detection_rngs[:self.num_drones])
+        while len(self.detection_rngs) < self.num_drones:
+            self.detection_rngs.append(random.Random())
+
+    def compute_actor_centroid_world_point(
+        self,
+        detections,
+        hide_person_features: bool,
+    ) -> Optional[Tuple[float, float]]:
+        centroid_detections = [] if hide_person_features else (detections or [])
+        if not centroid_detections:
+            return None
+        centroid_x, centroid_y = geometric_median(
+            [(det[0], det[1]) for det in centroid_detections]
+        )
+        return (float(centroid_x), float(centroid_y))
 
     def update_cmd_history(self, drone_idx: int, vx: float, vy: float, yaw_rate: float) -> None:
         if self.cmd_history_len == 0:
@@ -630,6 +662,14 @@ class ObservationBuilder:
     def _gaussian_blob(self, v: int, u: int, sigma: float) -> np.ndarray:
         return np.exp(-((self._vv - v) ** 2 + (self._uu - u) ** 2) / (2.0 * sigma ** 2))
 
+    def _count_density_scale(self) -> float:
+        return max(float(self.count_map_compression_scale), 1e-6)
+
+    def compress_count_map(self, values: np.ndarray) -> np.ndarray:
+        values_arr = np.asarray(values, dtype=np.float32)
+        scale = self._count_density_scale()
+        return values_arr / (values_arr + scale)
+
     def _make_ego_map(self, drone_state: Dict) -> np.ndarray:
         """
         Return a (H, W) float32 array with a Gaussian blob at the drone's
@@ -657,7 +697,7 @@ class ObservationBuilder:
             binary[v, u] = 1.0
             density += self._gaussian_blob(v, u, self.blob_sigma)
         self.gt_people_binary_snapshot[...] = binary
-        self.gt_people_density_snapshot[...] = density.astype(np.float32)
+        self.gt_people_density_snapshot[...] = self.compress_count_map(density)
 
     def _forward_norm_for_person(self, drone_state: Dict, person_position) -> float:
         drone_x, drone_y, drone_z = drone_state["position"]
@@ -684,25 +724,30 @@ class ObservationBuilder:
             return 1.0
         return max(0.0, (1.0 - forward_norm) / max(1.0 - cutoff, 1e-6))
 
-    def get_noisy_detection(self, person_position, forward_norm: float):
+    def get_noisy_detection(self, person_position, forward_norm: float, drone_idx: int = 0):
+        rng = self.detection_rngs[drone_idx % len(self.detection_rngs)]
         effective_detection_prob = self.detection_prob * self._forward_detection_scale(
             forward_norm
         )
-        if random.random() > effective_detection_prob:
+        if rng.random() > effective_detection_prob:
             return None
         px, py, pz = person_position
         noise_std = self.position_noise_std * (1.0 + 2.0 * forward_norm)
-        noisy_x = px + random.gauss(0.0, noise_std)
-        noisy_y = py + random.gauss(0.0, noise_std)
+        noisy_x = px + rng.gauss(0.0, noise_std)
+        noisy_y = py + rng.gauss(0.0, noise_std)
         return (noisy_x, noisy_y, pz)
 
-    def get_visible_people(self, drone_state, people_positions):
+    def get_visible_people(self, drone_idx, drone_state, people_positions):
         visible_ids = []
         detections = []
         for idx, pos in enumerate(people_positions):
             if self.is_in_camera_footprint(drone_state, pos):
                 forward_norm = self._forward_norm_for_person(drone_state, pos)
-                noisy_det = self.get_noisy_detection(pos, forward_norm)
+                noisy_det = self.get_noisy_detection(
+                    pos,
+                    forward_norm,
+                    drone_idx=drone_idx,
+                )
                 if noisy_det is not None:
                     visible_ids.append(idx)
                     detections.append(noisy_det)
@@ -809,10 +854,11 @@ class ObservationBuilder:
         Legacy Ch1-Ch2 (recent/historic shared spatial support) are updated only
         when the 10-channel legacy layout is requested.
 
-        Count-density channels are raw densities:
+        Count-density channels are maintained internally as raw densities:
           - current-step count density
           - recent count memory (always computed, optionally exposed)
           - historic count memory
+        Exposed count-density maps are compressed to [0, 1) for network input.
 
         Historic count memory also gets weak negative evidence: if a cell is
         currently inside any drone's footprint but its current observed density
@@ -823,7 +869,6 @@ class ObservationBuilder:
         if self.exposes_spatial_memory_channels:
             self.people_belief_recent *= self.decay_recent
             self.people_belief_historic *= self.decay_historic
-        step_density = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
         per_drone_step_density = np.zeros((self.num_drones, self.grid_h, self.grid_w), dtype=np.float32)
 
         for drone_idx, detections in enumerate(detections_per_drone):
@@ -836,10 +881,10 @@ class ObservationBuilder:
                 if self.exposes_spatial_memory_channels:
                     np.maximum(self.people_belief_recent, blob, out=self.people_belief_recent)
                     np.maximum(self.people_belief_historic, blob, out=self.people_belief_historic)
-                step_density += blob
                 per_drone_step_density[drone_idx] += blob
 
-        self.people_count_density[...] = step_density
+        shared_step_density = per_drone_step_density.max(axis=0)
+        self.people_count_density[...] = shared_step_density
         count_density_obs = self.people_count_density.astype(np.float32)
         per_drone_count_density_obs = per_drone_step_density.astype(np.float32)
         observed_density_mask = count_density_obs >= self.hotspot_min_density
@@ -873,8 +918,16 @@ class ObservationBuilder:
             count_density_obs,
             out=self.people_count_memory_historic,
         )
-        recent_count_memory_obs = self.people_count_memory_recent.copy()
-        historic_count_memory_obs = self.people_count_memory_historic.copy()
+        count_density_obs = self.compress_count_map(count_density_obs)
+        per_drone_count_density_obs = self.compress_count_map(
+            per_drone_count_density_obs
+        )
+        recent_count_memory_obs = self.compress_count_map(
+            self.people_count_memory_recent
+        )
+        historic_count_memory_obs = self.compress_count_map(
+            self.people_count_memory_historic
+        )
 
         return (
             self.people_detect_instant.copy(),
@@ -1002,7 +1055,9 @@ class ObservationBuilder:
           [10] detection_centroid_present
           [11] centroid_forward_offset_from_principal — normalised to [-1, 1]
           [12] centroid_lateral_offset_from_principal — normalised to [-1, 1]
-          [13...] hotspot slots: [valid, rel_dx_world, rel_dy_world, density, age] * hotspot_top_k
+          [13...] hotspot slots: [valid, hotspot_forward_offset_from_principal,
+                                  hotspot_lateral_offset_from_principal, density, age]
+                                  * hotspot_top_k
           [...] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
           [...] status history (oldest→newest): [delta_x, delta_y, sin(delta_yaw),
                                                   cos(delta_yaw), num_visible_norm]
@@ -1015,10 +1070,52 @@ class ObservationBuilder:
         """
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
+        principal_x, principal_y = principal_point_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=self.camera_tilt_deg,
+        )
 
         x_min, x_max = self.x_min, self.x_max
         y_min, y_max = self.y_min, self.y_max
         area_diag = math.hypot(x_max - x_min, y_max - y_min)
+        min_forward, max_forward = footprint_forward_extents(
+            z=z,
+            camera_tilt_deg=self.camera_tilt_deg,
+            vertical_fov_deg=self.vertical_fov_deg,
+        )
+        principal_forward, _ = world_to_drone_local(
+            principal_x,
+            principal_y,
+            x,
+            y,
+            yaw,
+        )
+        forward_norm_scale = max(
+            abs(min_forward - principal_forward),
+            abs(max_forward - principal_forward),
+            1e-6,
+        )
+        max_lateral_scale = max(
+            lateral_half_width_at_forward_distance(
+                forward=min_forward,
+                z=z,
+                horizontal_fov_deg=self.horizontal_fov_deg,
+            ),
+            lateral_half_width_at_forward_distance(
+                forward=principal_forward,
+                z=z,
+                horizontal_fov_deg=self.horizontal_fov_deg,
+            ),
+            lateral_half_width_at_forward_distance(
+                forward=max_forward,
+                z=z,
+                horizontal_fov_deg=self.horizontal_fov_deg,
+            ),
+            1e-6,
+        )
 
         centroid_present = 0.0
         centroid_forward_offset = 0.0
@@ -1031,54 +1128,12 @@ class ObservationBuilder:
             centroid_x, centroid_y = geometric_median(
                 [(det[0], det[1]) for det in centroid_detections]
             )
-            principal_x, principal_y = principal_point_world(
-                x=x,
-                y=y,
-                z=z,
-                yaw=yaw,
-                camera_tilt_deg=self.camera_tilt_deg,
-            )
-            min_forward, max_forward = footprint_forward_extents(
-                z=z,
-                camera_tilt_deg=self.camera_tilt_deg,
-                vertical_fov_deg=self.vertical_fov_deg,
-            )
-            principal_forward, _ = world_to_drone_local(
-                principal_x,
-                principal_y,
-                x,
-                y,
-                yaw,
-            )
             centroid_forward, centroid_lateral = world_to_drone_local(
                 centroid_x,
                 centroid_y,
                 x,
                 y,
                 yaw,
-            )
-            forward_norm_scale = max(
-                abs(min_forward - principal_forward),
-                abs(max_forward - principal_forward),
-                1e-6,
-            )
-            max_lateral_scale = max(
-                lateral_half_width_at_forward_distance(
-                    forward=min_forward,
-                    z=z,
-                    horizontal_fov_deg=self.horizontal_fov_deg,
-                ),
-                lateral_half_width_at_forward_distance(
-                    forward=principal_forward,
-                    z=z,
-                    horizontal_fov_deg=self.horizontal_fov_deg,
-                ),
-                lateral_half_width_at_forward_distance(
-                    forward=max_forward,
-                    z=z,
-                    horizontal_fov_deg=self.horizontal_fov_deg,
-                ),
-                1e-6,
             )
             centroid_forward_offset = max(
                 -1.0,
@@ -1109,12 +1164,20 @@ class ObservationBuilder:
         for idx in range(self.hotspot_top_k):
             if idx < len(hotspot_items):
                 hx, hy, hdensity, hage = hotspot_items[idx]
-                rel_dx = hx - x
-                rel_dy = hy - y
+                hotspot_forward, hotspot_lateral = world_to_drone_local(
+                    hx,
+                    hy,
+                    x,
+                    y,
+                    yaw,
+                )
                 vec += [
                     1.0,
-                    max(-1.0, min(1.0, rel_dx / area_diag)),
-                    max(-1.0, min(1.0, rel_dy / area_diag)),
+                    max(
+                        -1.0,
+                        min(1.0, (hotspot_forward - principal_forward) / forward_norm_scale),
+                    ),
+                    max(-1.0, min(1.0, hotspot_lateral / max_lateral_scale)),
                     float(hdensity),
                     float(hage),
                 ]
@@ -1174,8 +1237,12 @@ class ObservationBuilder:
         }
         self._build_gt_people_maps(people_positions)
 
-        for drone_state in drone_states:
-            visible_ids, detections = self.get_visible_people(drone_state, people_positions)
+        for drone_idx, drone_state in enumerate(drone_states):
+            visible_ids, detections = self.get_visible_people(
+                drone_idx,
+                drone_state,
+                people_positions,
+            )
             visible_ids_per_drone.append(visible_ids)
             detections_per_drone.append(detections)
 
@@ -1270,6 +1337,10 @@ class ObservationBuilder:
                 cmd_history=self._cmd_histories[i] if self.cmd_history_len > 0 else None,
                 hide_person_features=hide_person_features,
             )
+            self.actor_centroid_world_points_snapshot[i] = self.compute_actor_centroid_world_point(
+                detections=detections_per_drone[i],
+                hide_person_features=hide_person_features,
+            )
 
             # Critic keeps one ego map per drone, but the actor sees a shared
             # drone-position map containing all active drones.
@@ -1338,6 +1409,7 @@ class ObservationBuilder:
             self._prev_visible_counts[i] = len(visible_ids_per_drone[i])
         for i in range(len(drone_states), self.num_drones):
             self._prev_visible_counts[i] = 0
+            self.actor_centroid_world_points_snapshot[i] = None
 
         return observations, visible_ids_per_drone, detections_per_drone
 
