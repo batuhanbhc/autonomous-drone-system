@@ -32,17 +32,17 @@ class SharedConfig:
     min_people: int = 5
     max_people: int = 30
     episode_steps: int = 512
-    search_phase_seconds: float = 30.0
-    max_groups: int = 4
+    search_phase_seconds: float = 20.0
+    max_groups: int = 2
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
     person_spawn_margin: float = 0.5
     group_spawn_margin: float = 0.7
     min_person_spawn_dist: float = 0.4
-    group_center_speed_min: float = 1.0
-    group_center_speed_max: float = 2.0
-    group_center_turn_prob: float = 0.15
-    group_center_turn_std: float = 0.8
+    group_center_speed_min: float = 0.05
+    group_center_speed_max: float = 0.3
+    group_center_turn_prob: float = 0.2
+    group_center_turn_std: float = 0.4
     rl_hz: float = 4.0
     max_range: float = 15.0
     horizontal_fov_deg: float = 55.8  
@@ -51,18 +51,21 @@ class SharedConfig:
     position_noise_std: float = 0.1
     detection_forward_decay_start_norm: float = 1.0
     camera_tilt_deg: float = 55.0
-    recent_half_life_seconds: float = 10.0
+    recent_half_life_seconds: float = 5.0
     historic_half_life_seconds: float = 60.0
     coverage_half_life_seconds: float = 20.0
-    blob_sigma: float = 1.5
+    blob_sigma: float = 0.75
     ego_sigma: float = 2.0
     people_count_normalizer: float = 30.0
     local_people_map_mode: str = "count_density"
     include_local_recent_count_memory_channel: bool = True
     include_shared_count_density_channel: bool = False
+    include_shared_count_memory_staleness_channel: bool = True
     include_instant_fov_channels: bool = True
+    include_persistent_coverage_channel: bool = True
     hide_person_features_during_search: bool = True
-    count_memory_historic_miss_penalty: float = 0.2
+    count_memory_historic_miss_penalty: float = 0.15
+    count_memory_decay_grace_period_seconds: float = 10.0
     max_horizontal_velocity: float = 1.0
     horizontal_bin_interval: float = 1.0
     max_yaw_rate: float = 0.35
@@ -73,29 +76,29 @@ class SharedConfig:
     status_history_seconds: int = 5
     hotspot_top_k: int = 2
     hotspot_min_density: float = 1.5
-    count_map_compression_scale: float = 3.0
+    count_map_compression_scale: float = 3
     hotspot_suppression_radius_scale: float = 5.0
-    hotspot_suppression_radius_min_cells: int = 2
-    reward_top_k_groups: int = 4
+    hotspot_suppression_radius_min_cells: int = 4
+    reward_top_k_groups: int = 2
     reward_wc: float = 1.0
     reward_coverage_exponent: float = 1.0
-    reward_wqual: float = 1.0
+    reward_wqual: float = 2.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
-    reward_wx: float = 5.0
-    reward_ws: float = 5.0
-    reward_wclose: float = 5.0
+    reward_wx: float = 10.0
+    reward_ws: float = 10.0
+    reward_wclose: float = 10.0
     reward_wfov_overlap: float = 0.0
     reward_wcoll: float = 0.0
-    reward_we: float = 0.1
+    reward_we: float = 0.0
     reward_wi: float = 0.0
     reward_wfov: float = 0.0
     reward_coverage_edge_quality: float = 0.0
     reward_quality_mode: str = "principal_top_corner_linear"
-    reward_quality_gamma: float = 1.0
+    reward_quality_gamma: float = 1.5
     reward_wcompletion: float = 0.0
     reward_completion_power: float = 2.0
-    reward_boundary_margin: float = 4.0
+    reward_boundary_margin: float = 2.0
     reward_drone_closeness_margin: float = 1.0
     reward_fov_margin: float = 1.0
     debug_observation_plots: bool = False
@@ -112,11 +115,11 @@ class TrainConfig:
     num_epochs: int = 2
     batch_size: int = 512
     clip_eps: float = 0.15
-    gamma: float = 0.98
+    gamma: float = 0.95
     gae_lambda: float = 0.95
     lr_actor: float = 1.0e-4
     lr_critic: float = 1.0e-4
-    entropy_coef: float = 0.0025
+    entropy_coef: float = 0.004
     value_coef: float = 0.5
     anneal_lr: bool = True
     save_dir: str = "checkpoints"
@@ -143,7 +146,7 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    grid_channels: int = 10
+    grid_channels: int = 11
     grid_h: int = 40
     grid_w: int = 40
     cnn_out_dim: int = 128
@@ -216,6 +219,10 @@ def infer_checkpoint_include_shared_count_density_channel(ckpt: dict) -> bool:
     return bool(ckpt.get("include_shared_count_density_channel", True))
 
 
+def infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt: dict) -> bool:
+    return bool(ckpt.get("include_shared_count_memory_staleness_channel", False))
+
+
 def infer_checkpoint_include_instant_fov_channels(ckpt: dict) -> bool:
     return bool(ckpt.get("include_instant_fov_channels", False))
 
@@ -232,6 +239,7 @@ def infer_base_actor_grid_channels(
     include_local_recent_count_memory_channel: bool,
     include_persistent_coverage_channel: bool,
     include_shared_count_density_channel: bool,
+    include_shared_count_memory_staleness_channel: bool,
     include_instant_fov_channels: bool = True,
 ) -> int:
     return (
@@ -240,6 +248,7 @@ def infer_base_actor_grid_channels(
         + (2 if bool(include_instant_fov_channels) else 0)
         + int(bool(include_persistent_coverage_channel))
         + int(bool(include_shared_count_density_channel))
+        + int(bool(include_shared_count_memory_staleness_channel))
     )
 
 
@@ -255,10 +264,10 @@ def infer_shared_people_channels(
         else 5 + int(bool(include_local_recent_count_memory_channel))
     )
     shared_people_channels = int(actor_grid_channels) - fixed_non_shared_channels
-    if shared_people_channels not in {1, 2, 3, 4, 5}:
+    if shared_people_channels not in {1, 2, 3, 4, 5, 6}:
         raise ValueError(
             "Unsupported actor grid layout: expected "
-            f"{fixed_non_shared_channels + 1}-{fixed_non_shared_channels + 5} "
+            f"{fixed_non_shared_channels + 1}-{fixed_non_shared_channels + 6} "
             f"actor channels, got {actor_grid_channels}"
         )
     return shared_people_channels
@@ -282,7 +291,7 @@ def infer_critic_grid_channels(
         include_instant_fov_channels=include_instant_fov_channels,
     )
     shared_local_union_channels = 1 if local_people_map_mode == "instant" else 0
-    critic_only_gt_channels = 2
+    critic_only_gt_channels = 3
     shared_fov_channels = 3 if bool(include_instant_fov_channels) else 2
     per_drone_channels = (
         4 + int(bool(include_local_recent_count_memory_channel))
@@ -530,6 +539,12 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         help="Expose the team-shared count-density map in the actor/critic shared stack. Disable for the current local-count layout.",
     )
     parser.add_argument(
+        "--include_shared_count_memory_staleness_channel",
+        action=argparse.BooleanOptionalAction,
+        default=SHARED_DEFAULTS.include_shared_count_memory_staleness_channel,
+        help="Expose a shared staleness/confidence channel for historic count memory in actor and critic inputs.",
+    )
+    parser.add_argument(
         "--include_instant_fov_channels",
         action=argparse.BooleanOptionalAction,
         default=SHARED_DEFAULTS.include_instant_fov_channels,
@@ -546,6 +561,12 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=SHARED_DEFAULTS.count_memory_historic_miss_penalty,
         help="Extra attenuation applied to raw historic count memory when a visible cell has no strong current density.",
+    )
+    parser.add_argument(
+        "--count_memory_decay_grace_period_seconds",
+        type=float,
+        default=SHARED_DEFAULTS.count_memory_decay_grace_period_seconds,
+        help="Grace period before passive count-memory decay starts for cells that are no longer visible.",
     )
     parser.add_argument(
         "--max_horizontal_velocity",
@@ -827,12 +848,10 @@ def build_env_kwargs(
     overrides: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     actor_grid_channels = getattr(args, "actor_grid_channels", None)
-    if actor_grid_channels is None:
-        actor_grid_channels = MODEL_DEFAULTS.grid_channels
     include_persistent_coverage_channel = getattr(
         args,
         "include_persistent_coverage_channel",
-        True,
+        SHARED_DEFAULTS.include_persistent_coverage_channel,
     )
     local_people_map_mode = getattr(
         args,
@@ -844,6 +863,11 @@ def build_env_kwargs(
         "include_shared_count_density_channel",
         SHARED_DEFAULTS.include_shared_count_density_channel,
     )
+    include_shared_count_memory_staleness_channel = getattr(
+        args,
+        "include_shared_count_memory_staleness_channel",
+        SHARED_DEFAULTS.include_shared_count_memory_staleness_channel,
+    )
     include_local_recent_count_memory_channel = getattr(
         args,
         "include_local_recent_count_memory_channel",
@@ -854,6 +878,18 @@ def build_env_kwargs(
         "include_instant_fov_channels",
         SHARED_DEFAULTS.include_instant_fov_channels,
     )
+    if actor_grid_channels is None:
+        actor_grid_channels = infer_base_actor_grid_channels(
+            include_local_recent_count_memory_channel=(
+                include_local_recent_count_memory_channel
+            ),
+            include_persistent_coverage_channel=include_persistent_coverage_channel,
+            include_shared_count_density_channel=include_shared_count_density_channel,
+            include_shared_count_memory_staleness_channel=(
+                include_shared_count_memory_staleness_channel
+            ),
+            include_instant_fov_channels=include_instant_fov_channels,
+        )
     kwargs = {
         "gui": args.gui,
         "x_min": args.x_min,
@@ -901,9 +937,13 @@ def build_env_kwargs(
         "local_people_map_mode": local_people_map_mode,
         "include_local_recent_count_memory_channel": include_local_recent_count_memory_channel,
         "include_shared_count_density_channel": include_shared_count_density_channel,
+        "include_shared_count_memory_staleness_channel": (
+            include_shared_count_memory_staleness_channel
+        ),
         "include_instant_fov_channels": include_instant_fov_channels,
         "hide_person_features_during_search": args.hide_person_features_during_search,
         "count_memory_historic_miss_penalty": args.count_memory_historic_miss_penalty,
+        "count_memory_decay_grace_period_seconds": args.count_memory_decay_grace_period_seconds,
         "reward_wc": args.reward_wc,
         "reward_coverage_exponent": args.reward_coverage_exponent,
         "reward_wqual": args.reward_wqual,
@@ -1032,7 +1072,7 @@ def actor_kwargs(
     grid_channels: int | None = None,
     include_local_recent_count_memory_channel: bool = SHARED_DEFAULTS.include_local_recent_count_memory_channel,
     include_instant_fov_channels: bool = SHARED_DEFAULTS.include_instant_fov_channels,
-    include_persistent_coverage_channel: bool = False,
+    include_persistent_coverage_channel: bool = SHARED_DEFAULTS.include_persistent_coverage_channel,
 ) -> Dict[str, Any]:
     return {
         "local_dim": local_dim(
@@ -1063,7 +1103,33 @@ def actor_kwargs(
 def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) -> Dict[str, Any]:
     actor_grid_channels = getattr(args, "actor_grid_channels", None)
     if actor_grid_channels is None:
-        actor_grid_channels = MODEL_DEFAULTS.grid_channels
+        actor_grid_channels = infer_base_actor_grid_channels(
+            include_local_recent_count_memory_channel=getattr(
+                args,
+                "include_local_recent_count_memory_channel",
+                SHARED_DEFAULTS.include_local_recent_count_memory_channel,
+            ),
+            include_persistent_coverage_channel=getattr(
+                args,
+                "include_persistent_coverage_channel",
+                SHARED_DEFAULTS.include_persistent_coverage_channel,
+            ),
+            include_shared_count_density_channel=getattr(
+                args,
+                "include_shared_count_density_channel",
+                SHARED_DEFAULTS.include_shared_count_density_channel,
+            ),
+            include_shared_count_memory_staleness_channel=getattr(
+                args,
+                "include_shared_count_memory_staleness_channel",
+                SHARED_DEFAULTS.include_shared_count_memory_staleness_channel,
+            ),
+            include_instant_fov_channels=getattr(
+                args,
+                "include_instant_fov_channels",
+                SHARED_DEFAULTS.include_instant_fov_channels,
+            ),
+        )
     kwargs = actor_kwargs(
         args.num_drones,
         action_space,
@@ -1084,7 +1150,7 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
         include_persistent_coverage_channel=getattr(
             args,
             "include_persistent_coverage_channel",
-            False,
+            SHARED_DEFAULTS.include_persistent_coverage_channel,
         ),
     )
     kwargs.update(

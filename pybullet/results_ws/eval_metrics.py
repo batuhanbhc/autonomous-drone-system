@@ -11,6 +11,11 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import torch
@@ -28,6 +33,7 @@ from config import (
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_persistent_coverage_channel,
+    infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_local_people_map_mode,
     infer_checkpoint_status_history_seconds,
@@ -43,6 +49,7 @@ from rl.networks import ActorNetwork
 DEFAULT_DRONE_COUNTS = (1, 2)
 TRACK_LOSS_THRESHOLD_STEPS = 10
 DENSEST_GROUP_HOLD_THRESHOLD = 0.5
+DEFAULT_REPORT_DIR = Path(__file__).resolve().parent / "eval_metrics_reports"
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=str,
-        default="eval_metrics_report.txt",
+        default=str(DEFAULT_REPORT_DIR / "eval_metrics_report.txt"),
         help="Path to the human-readable metrics report.",
     )
     parser.add_argument(
@@ -169,6 +176,9 @@ def build_actor_and_env(
     trained_include_shared_count_density = (
         infer_checkpoint_include_shared_count_density_channel(ckpt)
     )
+    trained_include_shared_count_memory_staleness = (
+        infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
+    )
 
     action_space = build_action_space(args)
     args.cmd_history_len = infer_checkpoint_cmd_history_len(
@@ -200,6 +210,9 @@ def build_actor_and_env(
             ),
             "local_people_map_mode": trained_local_people_map_mode,
             "include_shared_count_density_channel": trained_include_shared_count_density,
+            "include_shared_count_memory_staleness_channel": (
+                trained_include_shared_count_memory_staleness
+            ),
             "hotspot_top_k": trained_hotspot_top_k,
         },
     )
@@ -277,6 +290,7 @@ def compute_episode_metrics(
     search_steps = 0
     search_new_discoveries = 0
     search_end_seen_ratio = 0.0
+    search_end_visited_fraction = 0.0
     search_time_to_50: int | None = None
     search_time_to_80: int | None = None
     search_densest_seen_ratio = float("nan")
@@ -328,6 +342,14 @@ def compute_episode_metrics(
             search_steps += 1
             search_new_discoveries += len(new_discoveries)
             search_end_seen_ratio = safe_fraction(len(ever_seen), num_people)
+            search_end_visited_fraction = float(
+                np.mean(
+                    np.asarray(
+                        env.obs_builder.persistent_coverage_map,
+                        dtype=np.float32,
+                    ) > 0.0
+                )
+            )
             if search_time_to_50 is None and search_end_seen_ratio >= 0.5:
                 search_time_to_50 = search_steps
             if search_time_to_80 is None and search_end_seen_ratio >= 0.8:
@@ -408,6 +430,7 @@ def compute_episode_metrics(
         "search_steps": float(search_steps),
         "coverage_steps": float(coverage_steps),
         "search_end_seen_ratio": search_end_seen_ratio,
+        "search_end_visited_fraction": search_end_visited_fraction,
         "search_mean_new_seen_ratio_per_step": safe_fraction(
             search_new_discoveries,
             max(num_people * search_steps, 1),
@@ -529,16 +552,15 @@ def compute_paired_deltas(
 
     paired_metric_names = (
         "search_end_seen_ratio",
+        "search_end_visited_fraction",
         "coverage_mean_ratio",
-        "coverage_peak_ratio",
+        "coverage_mean_visible_quality",
+        "search_densest_group_seen_ratio",
         "densest_group_mean_coverage",
-        "person_visibility_ratio_mean",
     )
     paired: dict[str, float] = {}
     for metric_name in paired_metric_names:
         deltas = []
-        wins = 0
-        losses = 0
         for episode_metrics_1, episode_metrics_2 in zip(metrics_1, metrics_2):
             value_1 = float(episode_metrics_1.get(metric_name, float("nan")))
             value_2 = float(episode_metrics_2.get(metric_name, float("nan")))
@@ -546,12 +568,7 @@ def compute_paired_deltas(
                 continue
             delta = value_2 - value_1
             deltas.append(delta)
-            if delta > 0.0:
-                wins += 1
-            elif delta < 0.0:
-                losses += 1
         paired[f"delta_{metric_name}"] = safe_mean(deltas)
-        paired[f"win_rate_{metric_name}"] = safe_fraction(wins, wins + losses)
     return paired
 
 
@@ -578,60 +595,26 @@ def render_report(
         "",
         "Metric notes:",
         "- 1-drone and 2-drone runs use the same per-episode crowd/layout/motion seeds",
-        f"- search_mean_new_seen_ratio_per_step = newly discovered people / (num_people * search_steps)",
-        f"- lost_track_rate_10 uses {TRACK_LOSS_THRESHOLD_STEPS} coverage steps as the loss threshold",
-        f"- densest_group_* metrics use the largest ground-truth group in each episode",
-        f"- densest_group_tracking_time_above_50 uses threshold {DENSEST_GROUP_HOLD_THRESHOLD:.2f}",
+        "- search_* metrics measure discovery by the end of the search phase",
+        "- coverage_* metrics are averaged over coverage-phase steps only",
+        "- densest_group_* metrics use the largest ground-truth group in each episode",
         "",
     ]
 
-    ordered_metrics = [
-        "episodes_run",
-        "episode_reward",
-        "episode_steps",
-        "num_people",
-        "search_steps",
-        "coverage_steps",
+    headline_metrics = [
         "search_end_seen_ratio",
-        "search_mean_new_seen_ratio_per_step",
-        "search_reach_50_rate",
-        "search_time_to_50_steps",
-        "search_reach_80_rate",
-        "search_time_to_80_steps",
-        "densest_group_found_by_search_end_rate",
+        "search_end_visited_fraction",
         "search_densest_group_seen_ratio",
         "coverage_mean_ratio",
-        "coverage_peak_ratio",
-        "coverage_p95_ratio",
-        "coverage_time_above_70",
-        "coverage_time_above_90",
         "coverage_mean_visible_quality",
-        "coverage_stability_std",
-        "person_visibility_ratio_mean",
-        "person_visibility_ratio_p10",
-        "track_fragmentation_mean",
-        "reacquisition_latency_steps_mean",
-        "lost_track_rate_10",
         "densest_group_mean_coverage",
-        "densest_group_peak_coverage",
-        "densest_group_tracking_time_above_50",
-        "densest_group_longest_hold_above_50_steps",
-        "coverage_overlap_ratio_mean",
-        "coverage_dual_idle_rate",
-        "coverage_single_idle_rate",
     ]
 
     for active_num_drones in sorted(per_drone_results):
         metrics = per_drone_results[active_num_drones]
         lines.append(f"{active_num_drones} Active Drone(s)")
-        for metric_name in ordered_metrics:
+        for metric_name in headline_metrics:
             if metric_name not in metrics:
-                continue
-            if active_num_drones == 1 and metric_name in {
-                "coverage_overlap_ratio_mean",
-                "coverage_dual_idle_rate",
-                "coverage_single_idle_rate",
-            }:
                 continue
             lines.append(f"- {metric_name}: {format_metric_value(metrics[metric_name])}")
         lines.append("")
@@ -640,15 +623,11 @@ def render_report(
         lines.append("2 Drone Gain Over 1 Drone")
         for metric_name in (
             "delta_search_end_seen_ratio",
-            "win_rate_search_end_seen_ratio",
+            "delta_search_end_visited_fraction",
+            "delta_search_densest_group_seen_ratio",
             "delta_coverage_mean_ratio",
-            "win_rate_coverage_mean_ratio",
-            "delta_coverage_peak_ratio",
-            "win_rate_coverage_peak_ratio",
+            "delta_coverage_mean_visible_quality",
             "delta_densest_group_mean_coverage",
-            "win_rate_densest_group_mean_coverage",
-            "delta_person_visibility_ratio_mean",
-            "win_rate_person_visibility_ratio_mean",
         ):
             if metric_name not in paired_deltas:
                 continue

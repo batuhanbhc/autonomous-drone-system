@@ -61,9 +61,11 @@ class MultiUAVEnv:
         local_people_map_mode: str = "count_density",
         include_local_recent_count_memory_channel: bool = True,
         include_shared_count_density_channel: bool = False,
+        include_shared_count_memory_staleness_channel: bool = True,
         include_instant_fov_channels: bool = True,
         hide_person_features_during_search: bool = False,
         count_memory_historic_miss_penalty: float = 0.35,
+        count_memory_decay_grace_period_seconds: float = 3.0,
         reward_wc: float = 1.0,
         reward_coverage_exponent: float = 1.5,
         reward_wqual: float = 2.0,
@@ -97,7 +99,7 @@ class MultiUAVEnv:
         reward_top_k_groups: int = 2,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
-        actor_grid_channels: int = 10,
+        actor_grid_channels: int = 11,
         include_persistent_coverage_channel: bool = True,
         debug_observation_plots: bool = False,
         debug_observation_plot_every: int = 25,
@@ -242,9 +244,13 @@ class MultiUAVEnv:
             local_people_map_mode=local_people_map_mode,
             include_local_recent_count_memory_channel=include_local_recent_count_memory_channel,
             include_shared_count_density_channel=include_shared_count_density_channel,
+            include_shared_count_memory_staleness_channel=(
+                include_shared_count_memory_staleness_channel
+            ),
             include_instant_fov_channels=include_instant_fov_channels,
             hide_person_features_during_search=hide_person_features_during_search,
             count_memory_historic_miss_penalty=count_memory_historic_miss_penalty,
+            count_memory_decay_grace_period_seconds=count_memory_decay_grace_period_seconds,
             max_horizontal_velocity=self.max_horizontal_velocity,
             max_yaw_rate=self.max_yaw_rate,
             actor_grid_channels=actor_grid_channels,
@@ -641,6 +647,10 @@ class MultiUAVEnv:
             if motion is None:
                 continue
             person.group_center = (motion["center_x"], motion["center_y"])
+            person.group_velocity = (
+                motion["speed"] * math.cos(motion["heading"]),
+                motion["speed"] * math.sin(motion["heading"]),
+            )
 
     def _step_group_centers(self):
         if not self.group_motion_state:
@@ -692,10 +702,22 @@ class MultiUAVEnv:
     def _get_people_positions(self):
         return [person.get_position() for person in self.people if person is not None]
 
-    def _build_person_reward_weights(self, num_people: int) -> tuple[list[float], list[int]]:
+    def _effective_reward_top_k_groups(self, active_num_drones: int | None = None) -> int:
+        configured_top_k = int(self.reward_top_k_groups)
+        if configured_top_k <= 0:
+            return 0
+        active_drones = int(
+            self.active_num_drones if active_num_drones is None else active_num_drones
+        )
+        return max(0, min(active_drones, configured_top_k))
+
+    def _build_person_reward_weights(
+        self,
+        num_people: int,
+    ) -> tuple[list[float], list[int], int]:
         assignments = list(self.episode_group_info.get("group_assignments", []))
         if num_people <= 0:
-            return [], []
+            return [], [], 0
         if len(assignments) < num_people:
             assignments.extend([None] * (num_people - len(assignments)))
         assignments = assignments[:num_people]
@@ -706,30 +728,31 @@ class MultiUAVEnv:
                 continue
             group_counts[int(group_id)] = group_counts.get(int(group_id), 0) + 1
 
+        effective_top_k_groups = self._effective_reward_top_k_groups()
         target_group_ids: list[int] = []
-        if self.reward_top_k_groups > 0 and group_counts:
+        if effective_top_k_groups > 0 and group_counts:
             ranked_groups = sorted(
                 group_counts.items(),
                 key=lambda item: (-item[1], item[0]),
             )
             target_group_ids = [
                 int(group_id)
-                for group_id, _ in ranked_groups[:self.reward_top_k_groups]
+                for group_id, _ in ranked_groups[:effective_top_k_groups]
             ]
         target_group_id_set = set(target_group_ids)
 
         weights: list[float] = []
         for group_id in assignments:
-            if self.reward_top_k_groups > 0:
+            if effective_top_k_groups > 0:
                 if group_id is None or int(group_id) not in target_group_id_set:
                     weights.append(0.0)
                 else:
-                    weights.append(float(group_counts.get(int(group_id), 1)))
+                    weights.append(math.sqrt(float(group_counts.get(int(group_id), 1))))
             elif group_id is None:
                 weights.append(1.0)
             else:
-                weights.append(float(group_counts.get(int(group_id), 1)))
-        return weights, target_group_ids
+                weights.append(math.sqrt(float(group_counts.get(int(group_id), 1))))
+        return weights, target_group_ids, effective_top_k_groups
 
     def _phase_context_for_decision_step(self, decision_step: int) -> dict[str, float]:
         if self.search_phase_steps <= 0:
@@ -848,6 +871,7 @@ class MultiUAVEnv:
             num_people=len(people_positions),
             ever_seen=len(self.ever_seen),
             visible_count=self.last_visible_count,
+            effective_reward_top_k_groups=self._effective_reward_top_k_groups(),
             current_step=self.current_step,
             episode_steps=self.episode_steps,
             search_phase_progress=phase_context["search_phase_progress"],
@@ -939,10 +963,12 @@ class MultiUAVEnv:
 
         drone_states     = self._get_drone_states()
         people_positions = self._get_people_positions()
+        person_reward_weights, _, _ = self._build_person_reward_weights(len(people_positions))
 
         observations, visible_ids_per_drone, _ = self.obs_builder.build_observations(
             drone_states,
             people_positions,
+            person_reward_weights=person_reward_weights,
             phase_context=self.get_observation_phase_context(),
             current_step=self.current_step,
         )
@@ -996,6 +1022,9 @@ class MultiUAVEnv:
 
             drone_states     = self._get_drone_states()
             people_positions = self._get_people_positions()
+            person_reward_weights, target_group_ids, effective_top_k_groups = self._build_person_reward_weights(
+                len(people_positions)
+            )
             # Binary per-episode visited map for exploration reward.
             # Old decaying behavior:
             # coverage_map_before_step = self.obs_builder.coverage_map.copy()
@@ -1005,6 +1034,7 @@ class MultiUAVEnv:
                 self.obs_builder.build_observations(
                     drone_states,
                     people_positions,
+                    person_reward_weights=person_reward_weights,
                     phase_context=self.get_observation_phase_context(),
                     current_step=self.current_step,
                 )
@@ -1016,9 +1046,6 @@ class MultiUAVEnv:
             self._update_debug_draw(drone_states=drone_states,
                                     visible_ids_per_drone=visible_ids_per_drone)
 
-            person_reward_weights, target_group_ids = self._build_person_reward_weights(
-                len(people_positions)
-            )
             reward, reward_info, new_discoveries = self.reward_calc.compute_reward(
                 visible_ids_per_drone=visible_ids_per_drone,
                 drone_states=drone_states,
@@ -1034,6 +1061,7 @@ class MultiUAVEnv:
                 person_weights=person_reward_weights,
             )
             reward_info["coverage_target_group_ids"] = target_group_ids
+            reward_info["effective_reward_top_k_groups"] = effective_top_k_groups
             self.ever_seen.update(new_discoveries)
             visible_union = set()
             for ids in visible_ids_per_drone:
@@ -1058,9 +1086,14 @@ class MultiUAVEnv:
             return observations, reward, done, info
 
         except Exception as e:
+            fallback_people_positions = self._get_people_positions()
+            fallback_person_reward_weights, _, _ = self._build_person_reward_weights(
+                len(fallback_people_positions)
+            )
             fallback_obs, _, _ = self.obs_builder.build_observations(
                 self._get_drone_states(),
-                self._get_people_positions(),
+                fallback_people_positions,
+                person_reward_weights=fallback_person_reward_weights,
                 phase_context=self.get_observation_phase_context(),
                 current_step=self.current_step,
             )

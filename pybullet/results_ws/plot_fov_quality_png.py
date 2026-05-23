@@ -11,7 +11,13 @@ import argparse
 import math
 import os
 import struct
+import sys
 import zlib
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from sim.camera_geometry import (
     footprint_corners_world,
@@ -21,6 +27,16 @@ from sim.camera_geometry import (
     ray_polygon_intersection_distance,
     world_to_drone_local,
 )
+
+
+# Keep this script stdlib-only. These defaults mirror the current shared config.
+DEFAULT_DRONE_Z = 6.0
+DEFAULT_TILT_DEG = 55.0
+DEFAULT_HORIZONTAL_FOV_DEG = 55.8
+DEFAULT_VERTICAL_FOV_DEG = 43.3
+DEFAULT_REWARD_QUALITY_MODE = "principal_top_corner_linear"
+DEFAULT_REWARD_QUALITY_GAMMA = 1.5
+DEFAULT_COVERAGE_EDGE_QUALITY = 0.0
 
 
 FONT_3X5 = {
@@ -44,16 +60,31 @@ FONT_3X5 = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="fov_quality_reward.png")
+    parser.add_argument(
+        "--output",
+        default=str(
+            Path(__file__).resolve().parent
+            / "fov_quality_plots"
+            / "fov_quality_reward.png"
+        ),
+    )
     parser.add_argument("--width", type=int, default=1200)
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--drone_x", type=float, default=0.0)
     parser.add_argument("--drone_y", type=float, default=0.0)
-    parser.add_argument("--drone_z", type=float, default=6.0)
+    parser.add_argument("--drone_z", type=float, default=DEFAULT_DRONE_Z)
     parser.add_argument("--yaw_deg", type=float, default=0.0)
-    parser.add_argument("--tilt_deg", type=float, default=55.0)
-    parser.add_argument("--horizontal_fov_deg", type=float, default=55.8)
-    parser.add_argument("--vertical_fov_deg", type=float, default=43.3)
+    parser.add_argument("--tilt_deg", type=float, default=DEFAULT_TILT_DEG)
+    parser.add_argument(
+        "--horizontal_fov_deg",
+        type=float,
+        default=DEFAULT_HORIZONTAL_FOV_DEG,
+    )
+    parser.add_argument(
+        "--vertical_fov_deg",
+        type=float,
+        default=DEFAULT_VERTICAL_FOV_DEG,
+    )
     parser.add_argument(
         "--reward_quality_mode",
         choices=(
@@ -65,10 +96,18 @@ def parse_args() -> argparse.Namespace:
             "principal_top_corner_linear",
             "trapezoid_inset_linear",
         ),
-        default="principal_linear",
+        default=DEFAULT_REWARD_QUALITY_MODE,
     )
-    parser.add_argument("--reward_quality_gamma", type=float, default=1.0)
-    parser.add_argument("--coverage_edge_quality", type=float, default=0.0)
+    parser.add_argument(
+        "--reward_quality_gamma",
+        type=float,
+        default=DEFAULT_REWARD_QUALITY_GAMMA,
+    )
+    parser.add_argument(
+        "--coverage_edge_quality",
+        type=float,
+        default=DEFAULT_COVERAGE_EDGE_QUALITY,
+    )
     return parser.parse_args()
 
 

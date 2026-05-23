@@ -33,6 +33,18 @@ class Person:
         self.group_id = None
         self.group_center = None   # (x, y)
         self.group_radius = 1.0
+        self.group_velocity = (0.0, 0.0)
+        self.group_anchor_offset = (0.0, 0.0)
+        self.group_follow_gain = 1.8
+        self.group_center_pull_gain = 1.1
+        self.group_max_correction = 0.35
+        self.group_speed_scale = 1.0
+        self.group_forward_jitter = 0.0
+        self.group_lateral_jitter = 0.0
+        self.group_jitter_decay = 0.9
+        self.group_forward_jitter_std = 0.06
+        self.group_lateral_jitter_std = 0.1
+        self.group_jitter_max_speed = 0.12
 
         # Personal-space / separation settings
         self.personal_space = 0.28
@@ -79,17 +91,34 @@ class Person:
             **self._pb(),
         )
 
-    def assign_group(self, group_id, group_center, group_radius=1.0):
+    def assign_group(
+        self,
+        group_id,
+        group_center,
+        group_radius=1.0,
+        group_velocity=(0.0, 0.0),
+        group_anchor_offset=(0.0, 0.0),
+    ):
         self.is_grouped = True
         self.group_id = group_id
         self.group_center = group_center
         self.group_radius = group_radius
+        self.group_velocity = group_velocity
+        self.group_anchor_offset = group_anchor_offset
+        self.group_speed_scale = self.rng.uniform(0.92, 1.08)
+        self.group_forward_jitter = 0.0
+        self.group_lateral_jitter = 0.0
 
     def clear_group(self):
         self.is_grouped = False
         self.group_id = None
         self.group_center = None
         self.group_radius = 1.0
+        self.group_velocity = (0.0, 0.0)
+        self.group_anchor_offset = (0.0, 0.0)
+        self.group_speed_scale = 1.0
+        self.group_forward_jitter = 0.0
+        self.group_lateral_jitter = 0.0
 
     def reset(
         self,
@@ -111,10 +140,15 @@ class Person:
         self._set_new_state_duration()
 
         if grouped and group_center is not None:
+            anchor_offset = (
+                float(pos[0] - group_center[0]),
+                float(pos[1] - group_center[1]),
+            )
             self.assign_group(
                 group_id=group_id,
                 group_center=group_center,
-                group_radius=group_radius
+                group_radius=group_radius,
+                group_anchor_offset=anchor_offset,
             )
         else:
             self.clear_group()
@@ -281,43 +315,71 @@ class Person:
         pos, _ = p.getBasePositionAndOrientation(self.body_id, **self._pb())
         x, y, z = pos
 
-        self._update_motion_state(dt)
-
-        if self.state == "stopped":
-            p.resetBasePositionAndOrientation(
-                self.body_id,
-                (x, y, z),
-                p.getQuaternionFromEuler((0.0, 0.0, 0.0), **self._pb()),
-                **self._pb(),
-            )
-            return
-
         gcx, gcy = self.group_center
+        gvx, gvy = self.group_velocity
+        target_x = gcx + self.group_anchor_offset[0]
+        target_y = gcy + self.group_anchor_offset[1]
+        anchor_dx = target_x - x
+        anchor_dy = target_y - y
         dx = gcx - x
         dy = gcy - y
         dist_to_center = math.hypot(dx, dy)
+        correction_x = self.group_follow_gain * anchor_dx
+        correction_y = self.group_follow_gain * anchor_dy
+        correction_mag = math.hypot(correction_x, correction_y)
+        if correction_mag > self.group_max_correction and correction_mag > 1e-8:
+            scale = self.group_max_correction / correction_mag
+            correction_x *= scale
+            correction_y *= scale
 
-        if self.rng.random() < 0.03:
-            self.heading += self.rng.uniform(-0.5, 0.5)
+        if dist_to_center > self.group_radius and dist_to_center > 1e-8:
+            overflow = dist_to_center - self.group_radius
+            correction_x += self.group_center_pull_gain * overflow * (dx / dist_to_center)
+            correction_y += self.group_center_pull_gain * overflow * (dy / dist_to_center)
 
-        if dist_to_center > self.group_radius:
-            desired_heading = math.atan2(dy, dx)
-            heading_mix = self.rng.uniform(0.6, 0.9)
-            self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
+        group_speed = math.hypot(gvx, gvy)
+        if group_speed > 1e-8:
+            forward_x = gvx / group_speed
+            forward_y = gvy / group_speed
         else:
-            if dist_to_center > 0.55 * self.group_radius:
-                desired_heading = math.atan2(dy, dx)
-                heading_mix = self.rng.uniform(0.2, 0.4)
-                self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
-            elif dist_to_center > 1e-6 and self.rng.random() < 0.18:
-                desired_heading = math.atan2(dy, dx)
-                heading_mix = self.rng.uniform(0.08, 0.18)
-                self.heading = heading_mix * desired_heading + (1.0 - heading_mix) * self.heading
+            forward_x = math.cos(self.heading)
+            forward_y = math.sin(self.heading)
+            group_speed = 0.0
+        lateral_x = -forward_y
+        lateral_y = forward_x
 
-        move_speed = min(self.speed, 0.18)
+        self.group_speed_scale = min(
+            1.12,
+            max(
+                0.88,
+                self.group_speed_scale + self.rng.gauss(0.0, 0.08) * dt,
+            ),
+        )
+        self.group_forward_jitter = (
+            self.group_jitter_decay * self.group_forward_jitter
+            + self.rng.gauss(0.0, self.group_forward_jitter_std) * dt
+        )
+        self.group_lateral_jitter = (
+            self.group_jitter_decay * self.group_lateral_jitter
+            + self.rng.gauss(0.0, self.group_lateral_jitter_std) * dt
+        )
+        jitter_mag = math.hypot(self.group_forward_jitter, self.group_lateral_jitter)
+        if jitter_mag > self.group_jitter_max_speed and jitter_mag > 1e-8:
+            scale = self.group_jitter_max_speed / jitter_mag
+            self.group_forward_jitter *= scale
+            self.group_lateral_jitter *= scale
 
-        vx = move_speed * math.cos(self.heading)
-        vy = move_speed * math.sin(self.heading)
+        jitter_vx = (
+            self.group_forward_jitter * forward_x
+            + self.group_lateral_jitter * lateral_x
+        )
+        jitter_vy = (
+            self.group_forward_jitter * forward_y
+            + self.group_lateral_jitter * lateral_y
+        )
+
+        vx = self.group_speed_scale * gvx + jitter_vx + correction_x
+        vy = self.group_speed_scale * gvy + jitter_vy + correction_y
 
         sep_x, sep_y = self._compute_separation_offset(
             x, y, other_people_positions
@@ -325,16 +387,19 @@ class Person:
         vx += sep_x
         vy += sep_y
 
-        next_x = x + vx * dt
-        next_y = y + vy * dt
+        move_speed = math.hypot(vx, vy)
+        max_speed = max(
+            0.34,
+            group_speed + self.group_jitter_max_speed + self.group_max_correction + self.max_separation_push,
+        )
+        if move_speed > max_speed and move_speed > 1e-8:
+            scale = max_speed / move_speed
+            vx *= scale
+            vy *= scale
+            move_speed = max_speed
 
-        if next_x < x_min or next_x > x_max:
-            self.heading = math.pi - self.heading
-        if next_y < y_min or next_y > y_max:
-            self.heading = -self.heading
-
-        vx = move_speed * math.cos(self.heading) + sep_x
-        vy = move_speed * math.sin(self.heading) + sep_y
+        if move_speed > 1e-8:
+            self.heading = math.atan2(vy, vx)
 
         new_x = x + vx * dt
         new_y = y + vy * dt

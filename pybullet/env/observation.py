@@ -58,12 +58,20 @@ class ObservationBuilder:
 
       Shared historic count memory
                   A slower decayed peak-memory over observed raw count density.
-                  Preserves "the strongest crowd density seen here recently."
+                  Passive decay starts only after a configurable no-visibility
+                  grace period. Preserves "the strongest crowd density seen
+                  here recently."
+
+      Shared count-memory staleness
+                  Derived from time since last visibility for each cell after
+                  the grace period. 0 means fresh/in-grace; values approach 1
+                  as the historic count memory becomes stale.
 
       Local recent count memory
                   Per-drone recent raw-density memory updated with the same
                   miss-penalty and max-hit rule as historic count memory, but
-                  with a faster natural decay.
+                  with a faster natural decay that also waits for the same
+                  no-visibility grace period.
 
       Shared permanent coverage
                   Shared across all drones. If any drone ever visits a cell
@@ -90,9 +98,9 @@ class ObservationBuilder:
                   Gaussian blob at this drone's own position.
                   Lets the actor distinguish "me" from the shared drone layer.
 
-    The current/default actor layout uses 10 channels total:
+    The current/default actor layout uses 11 channels total:
       [local count density, local recent count memory]
-      + [historic count, permanent coverage]
+      + [historic count, count-memory staleness, permanent coverage]
       + [own instant footprint, teammate instant footprint,
          own coverage, teammate coverage, shared drone, ego].
 
@@ -161,12 +169,14 @@ class ObservationBuilder:
         local_people_map_mode: str = "count_density",
         include_local_recent_count_memory_channel: bool = True,
         include_shared_count_density_channel: bool = False,
+        include_shared_count_memory_staleness_channel: bool = True,
         include_instant_fov_channels: bool = True,
         hide_person_features_during_search: bool = False,
         count_memory_historic_miss_penalty: float = 0.35,
+        count_memory_decay_grace_period_seconds: float = 3.0,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
-        actor_grid_channels: int = 10,
+        actor_grid_channels: int = 11,
         include_persistent_coverage_channel: bool = True,
     ):
         self.x_min = x_min
@@ -207,11 +217,17 @@ class ObservationBuilder:
         self.include_shared_count_density_channel = bool(
             include_shared_count_density_channel
         )
+        self.include_shared_count_memory_staleness_channel = bool(
+            include_shared_count_memory_staleness_channel
+        )
         self.include_instant_fov_channels = bool(include_instant_fov_channels)
         self.hide_person_features_during_search = bool(
             hide_person_features_during_search
         )
         self.count_memory_historic_miss_penalty = float(count_memory_historic_miss_penalty)
+        self.count_memory_decay_grace_period_seconds = float(
+            count_memory_decay_grace_period_seconds
+        )
         self.cmd_history_len = int(cmd_history_len)
         self.status_history_seconds = int(status_history_seconds)
         self.hotspot_top_k = max(0, int(hotspot_top_k))
@@ -242,6 +258,7 @@ class ObservationBuilder:
             + (2 if self.include_instant_fov_channels else 0)
             + int(self.include_persistent_coverage_channel)
             + int(self.include_shared_count_density_channel)
+            + int(self.include_shared_count_memory_staleness_channel)
         )
         actor_grid_delta = self.actor_grid_channels - base_actor_grid_channels
         if actor_grid_delta not in {0, 2}:
@@ -251,6 +268,8 @@ class ObservationBuilder:
                 f"{self.include_local_recent_count_memory_channel}, "
                 f"include_persistent_coverage_channel={self.include_persistent_coverage_channel}, "
                 f"include_shared_count_density_channel={self.include_shared_count_density_channel}, "
+                f"include_shared_count_memory_staleness_channel="
+                f"{self.include_shared_count_memory_staleness_channel}, "
                 f"include_instant_fov_channels={self.include_instant_fov_channels}, "
                 f"got actor_grid_channels={self.actor_grid_channels}"
             )
@@ -259,6 +278,7 @@ class ObservationBuilder:
             1
             + (2 if self.exposes_spatial_memory_channels else 0)
             + (1 if self.include_shared_count_density_channel else 0)
+            + (1 if self.include_shared_count_memory_staleness_channel else 0)
             + (1 if self.include_persistent_coverage_channel else 0)
         )
         shared_idx = 0
@@ -272,6 +292,12 @@ class ObservationBuilder:
         self.actor_shared_historic_count_memory_channel = shared_idx
         self.actor_shared_person_channel_indices.append(shared_idx)
         shared_idx += 1
+        self.actor_shared_count_memory_staleness_channel = (
+            shared_idx if self.include_shared_count_memory_staleness_channel else None
+        )
+        if self.actor_shared_count_memory_staleness_channel is not None:
+            self.actor_shared_person_channel_indices.append(shared_idx)
+            shared_idx += 1
         self.actor_shared_persistent_coverage_channel = (
             shared_idx if self.include_persistent_coverage_channel else None
         )
@@ -314,6 +340,8 @@ class ObservationBuilder:
         if self.include_shared_count_density_channel:
             self.actor_channel_names.append("Shared count density")
         self.actor_channel_names.append("Shared historic count memory")
+        if self.include_shared_count_memory_staleness_channel:
+            self.actor_channel_names.append("Shared count-memory staleness")
         if self.include_persistent_coverage_channel:
             self.actor_channel_names.append("Shared permanent coverage")
         if self.include_instant_fov_channels:
@@ -347,6 +375,8 @@ class ObservationBuilder:
         if self.include_shared_count_density_channel:
             self.critic_shared_channel_names.append("Shared count density")
         self.critic_shared_channel_names.append("Shared historic count memory")
+        if self.include_shared_count_memory_staleness_channel:
+            self.critic_shared_channel_names.append("Shared count-memory staleness")
         if self.include_persistent_coverage_channel:
             self.critic_shared_channel_names.append("Shared permanent coverage")
         if self.include_instant_fov_channels:
@@ -356,6 +386,7 @@ class ObservationBuilder:
             "Shared drone map",
             "GT people occupancy",
             "GT people density",
+            "GT reward-weighted people density",
         ]
         self._cmd_histories: List[deque] = [
             deque([(0.0, 0.0, 0.0)] * self.cmd_history_len, maxlen=self.cmd_history_len)
@@ -390,6 +421,11 @@ class ObservationBuilder:
             raise ValueError(
                 f"hotspot_min_density must be >= 0, got {self.hotspot_min_density}"
             )
+        if self.count_memory_decay_grace_period_seconds < 0.0:
+            raise ValueError(
+                "count_memory_decay_grace_period_seconds must be >= 0, got "
+                f"{self.count_memory_decay_grace_period_seconds}"
+            )
         if self.count_map_compression_scale <= 0.0:
             raise ValueError(
                 "count_map_compression_scale must be > 0, got "
@@ -412,6 +448,9 @@ class ObservationBuilder:
 
         dt = self.dt
         self.historic_half_life_steps = max(1.0, historic_half_life_seconds * sim_hz)
+        self.count_memory_decay_grace_steps = max(
+            0, int(math.ceil(self.count_memory_decay_grace_period_seconds * sim_hz))
+        )
 
         # All three decay constants are derived from simulation-time half-lives.
         # decay_per_step = 0.5 ^ (dt / half_life_seconds)
@@ -439,10 +478,14 @@ class ObservationBuilder:
             f"  Local recent count memory channel: "
             f"{'enabled' if self.include_local_recent_count_memory_channel else 'disabled'}\n"
             f"  Shared count density channel: {'enabled' if self.include_shared_count_density_channel else 'disabled'}\n"
+            f"  Shared count-memory staleness channel: "
+            f"{'enabled' if self.include_shared_count_memory_staleness_channel else 'disabled'}\n"
             f"  Instant FOV channels: {'enabled' if self.include_instant_fov_channels else 'disabled'}\n"
             f"  Exposed spatial-memory channels: {'enabled' if self.exposes_spatial_memory_channels else 'disabled'}\n"
             f"  Persistent coverage channel: {'enabled' if self.include_persistent_coverage_channel else 'disabled'}\n"
             f"  Historic count memory channel: enabled\n"
+            f"  Count-memory decay grace: {self.count_memory_decay_grace_period_seconds}s "
+            f"= {self.count_memory_decay_grace_steps} steps\n"
             f"  Critic shared channels: {', '.join(self.critic_shared_channel_names)}"
         )
 
@@ -457,6 +500,13 @@ class ObservationBuilder:
         self.people_count_memory_recent = np.zeros((num_drones, grid_h, grid_w), dtype=np.float32)
         self.people_count_memory_historic = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.people_count_last_observed_step = np.full((grid_h, grid_w), -1, dtype=np.int32)
+        self.people_count_last_visible_step = np.full((grid_h, grid_w), -1, dtype=np.int32)
+        self.people_count_recent_last_visible_step = np.full(
+            (num_drones, grid_h, grid_w), -1, dtype=np.int32
+        )
+        self.shared_count_memory_staleness_snapshot = np.zeros(
+            (grid_h, grid_w), dtype=np.float32
+        )
         # Shared recent FOV coverage — "camera was aimed here recently".
         self.coverage_map = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.coverage_maps_per_drone = np.zeros((num_drones, grid_h, grid_w), dtype=np.float32)
@@ -469,6 +519,9 @@ class ObservationBuilder:
         )
         self.gt_people_binary_snapshot = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.gt_people_density_snapshot = np.zeros((grid_h, grid_w), dtype=np.float32)
+        self.gt_reward_weighted_people_density_snapshot = np.zeros(
+            (grid_h, grid_w), dtype=np.float32
+        )
 
         # Precompute meshgrid for fast Gaussian splatting
         vs = np.arange(grid_h, dtype=np.float32)
@@ -485,6 +538,9 @@ class ObservationBuilder:
         self.people_count_memory_recent.fill(0.0)
         self.people_count_memory_historic.fill(0.0)
         self.people_count_last_observed_step.fill(-1)
+        self.people_count_last_visible_step.fill(-1)
+        self.people_count_recent_last_visible_step.fill(-1)
+        self.shared_count_memory_staleness_snapshot.fill(0.0)
         self.coverage_map.fill(0.0)
         self.coverage_maps_per_drone.fill(0.0)
         self.persistent_coverage_map.fill(0.0)
@@ -494,6 +550,7 @@ class ObservationBuilder:
         self.local_recent_count_memory_maps_snapshot.fill(0.0)
         self.gt_people_binary_snapshot.fill(0.0)
         self.gt_people_density_snapshot.fill(0.0)
+        self.gt_reward_weighted_people_density_snapshot.fill(0.0)
         self.prev_drone_positions = {}
         for h in self._cmd_histories:
             h.clear()
@@ -670,6 +727,20 @@ class ObservationBuilder:
         scale = self._count_density_scale()
         return values_arr / (values_arr + scale)
 
+    def _compute_shared_count_memory_staleness_map(
+        self,
+        current_step: int,
+    ) -> np.ndarray:
+        age_steps = current_step - self.people_count_last_visible_step
+        post_grace_age = np.maximum(age_steps - self.count_memory_decay_grace_steps, 0)
+        staleness = 1.0 - np.power(
+            0.5,
+            post_grace_age.astype(np.float32) / float(self.historic_half_life_steps),
+        )
+        staleness[self.people_count_last_visible_step < 0] = 0.0
+        staleness[self.people_count_memory_historic <= 1e-6] = 0.0
+        return np.clip(staleness, 0.0, 1.0).astype(np.float32)
+
     def _make_ego_map(self, drone_state: Dict) -> np.ndarray:
         """
         Return a (H, W) float32 array with a Gaussian blob at the drone's
@@ -689,15 +760,29 @@ class ObservationBuilder:
             self._splat_gaussian(shared, v, u, self.ego_sigma)
         return shared
 
-    def _build_gt_people_maps(self, people_positions) -> None:
+    def _build_gt_people_maps(
+        self,
+        people_positions,
+        person_reward_weights: Optional[List[float]] = None,
+    ) -> None:
         binary = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
         density = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
-        for x, y, _ in people_positions:
+        reward_weighted_density = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+        for person_idx, (x, y, _) in enumerate(people_positions):
             v, u = self.world_to_grid(x, y)
             binary[v, u] = 1.0
-            density += self._gaussian_blob(v, u, self.blob_sigma)
+            blob = self._gaussian_blob(v, u, self.blob_sigma)
+            density += blob
+            if person_reward_weights is None or person_idx >= len(person_reward_weights):
+                reward_weight = 1.0
+            else:
+                reward_weight = float(person_reward_weights[person_idx])
+            reward_weighted_density += reward_weight * blob
         self.gt_people_binary_snapshot[...] = binary
         self.gt_people_density_snapshot[...] = self.compress_count_map(density)
+        self.gt_reward_weighted_people_density_snapshot[...] = self.compress_count_map(
+            reward_weighted_density
+        )
 
     def _forward_norm_for_person(self, drone_state: Dict, person_position) -> float:
         drone_x, drone_y, drone_z = drone_state["position"]
@@ -732,7 +817,7 @@ class ObservationBuilder:
         if rng.random() > effective_detection_prob:
             return None
         px, py, pz = person_position
-        noise_std = self.position_noise_std * (1.0 + 2.0 * forward_norm)
+        noise_std = self.position_noise_std
         noisy_x = px + rng.gauss(0.0, noise_std)
         noisy_y = py + rng.gauss(0.0, noise_std)
         return (noisy_x, noisy_y, pz)
@@ -889,17 +974,31 @@ class ObservationBuilder:
         per_drone_count_density_obs = per_drone_step_density.astype(np.float32)
         observed_density_mask = count_density_obs >= self.hotspot_min_density
         self.people_count_last_observed_step[observed_density_mask] = int(current_step)
-        self.people_count_memory_recent *= self.decay_recent
-        self.people_count_memory_historic *= self.decay_historic
 
         if current_footprint_maps.size > 0:
             team_visible_mask = current_footprint_maps.max(axis=0) > 0.0
+            self.people_count_last_visible_step[team_visible_mask] = int(current_step)
+        else:
+            team_visible_mask = np.zeros((self.grid_h, self.grid_w), dtype=bool)
+
+        historic_decay_mask = (
+            self.people_count_last_visible_step >= 0
+        ) & (
+            (current_step - self.people_count_last_visible_step)
+            > self.count_memory_decay_grace_steps
+        )
+        self.people_count_memory_historic[historic_decay_mask] *= self.decay_historic
+
+        if current_footprint_maps.size > 0:
             historic_miss_mask = team_visible_mask & (~observed_density_mask)
             self.people_count_memory_historic[historic_miss_mask] *= (
                 1.0 - self.count_memory_historic_miss_penalty
             )
             for drone_idx in range(min(current_footprint_maps.shape[0], self.num_drones)):
                 local_visible_mask = current_footprint_maps[drone_idx] > 0.0
+                self.people_count_recent_last_visible_step[drone_idx][
+                    local_visible_mask
+                ] = int(current_step)
                 local_observed_density_mask = (
                     per_drone_count_density_obs[drone_idx] >= self.hotspot_min_density
                 )
@@ -907,6 +1006,14 @@ class ObservationBuilder:
                 self.people_count_memory_recent[drone_idx][local_miss_mask] *= (
                     1.0 - self.count_memory_historic_miss_penalty
                 )
+
+        recent_decay_mask = (
+            self.people_count_recent_last_visible_step >= 0
+        ) & (
+            (current_step - self.people_count_recent_last_visible_step)
+            > self.count_memory_decay_grace_steps
+        )
+        self.people_count_memory_recent[recent_decay_mask] *= self.decay_recent
 
         np.maximum(
             self.people_count_memory_recent,
@@ -981,6 +1088,10 @@ class ObservationBuilder:
             current_footprint_maps,
             current_step,
         )
+        shared_count_memory_staleness = self._compute_shared_count_memory_staleness_map(
+            current_step
+        )
+        self.shared_count_memory_staleness_snapshot[...] = shared_count_memory_staleness
         own_instant_coverage_maps = current_footprint_maps[:active_drones].copy()
         teammate_instant_coverage_maps = np.zeros_like(own_instant_coverage_maps)
         for drone_idx in range(active_drones):
@@ -1003,6 +1114,8 @@ class ObservationBuilder:
         if self.include_shared_count_density_channel:
             shared_people.append(count_density)
         shared_people.append(historic_count_memory)
+        if self.include_shared_count_memory_staleness_channel:
+            shared_people.append(shared_count_memory_staleness)
         if self.include_persistent_coverage_channel:
             shared_people.append(self.persistent_coverage_map.copy())
         local_people_maps = (
@@ -1225,6 +1338,7 @@ class ObservationBuilder:
         self,
         drone_states,
         people_positions,
+        person_reward_weights: Optional[List[float]] = None,
         phase_context: Optional[Dict[str, float]] = None,
         current_step: int = 0,
     ):
@@ -1235,7 +1349,10 @@ class ObservationBuilder:
             "is_search_phase": 0.0,
             "is_coverage_phase": 1.0,
         }
-        self._build_gt_people_maps(people_positions)
+        self._build_gt_people_maps(
+            people_positions,
+            person_reward_weights=person_reward_weights,
+        )
 
         for drone_idx, drone_state in enumerate(drone_states):
             visible_ids, detections = self.get_visible_people(

@@ -25,6 +25,7 @@ from config import (
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_instant_fov_channels,
+    infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_include_persistent_coverage_channel,
     infer_checkpoint_hotspot_top_k,
@@ -34,7 +35,6 @@ from config import (
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
 from rl.live_debug import LiveDebugConfig, LiveDebugWindow
 from rl.networks import ActorNetwork
-from sim.camera_geometry import principal_point_world
 
 
 def parse_args():
@@ -129,59 +129,6 @@ def sync_phase_gui_param(param_id: int | None, phase_name: str) -> int | None:
         return None
 
 
-def draw_actor_geometric_median_rays(env) -> None:
-    if not env.gui or not env.world.is_connected():
-        return
-
-    centroids = getattr(env.obs_builder, "actor_centroid_world_points_snapshot", None)
-    if not centroids:
-        return
-
-    drone_states = env._get_drone_states()
-    for drone_idx, drone_state in enumerate(drone_states):
-        if drone_idx >= len(centroids):
-            break
-        centroid = centroids[drone_idx]
-        if centroid is None:
-            continue
-
-        x, y, z = drone_state["position"]
-        yaw = drone_state["yaw"]
-        centroid_x, centroid_y = centroid
-        principal_x, principal_y = principal_point_world(
-            x=x,
-            y=y,
-            z=z,
-            yaw=yaw,
-            camera_tilt_deg=env.debug_drawer.tilt_deg,
-        )
-        pb = {"physicsClientId": env.world.client_id}
-        p.addUserDebugLine(
-            [x, y, z],
-            [centroid_x, centroid_y, 0.05],
-            [1.0, 0.55, 0.0],
-            lineWidth=2,
-            lifeTime=0,
-            **pb,
-        )
-        p.addUserDebugLine(
-            [principal_x, principal_y, 0.06],
-            [centroid_x, centroid_y, 0.06],
-            [1.0, 0.0, 1.0],
-            lineWidth=1,
-            lifeTime=0,
-            **pb,
-        )
-        p.addUserDebugText(
-            text=f"GM{drone_idx}",
-            textPosition=[centroid_x, centroid_y, 0.08],
-            textColorRGB=[1.0, 0.55, 0.0],
-            textSize=1.0,
-            lifeTime=0,
-            **pb,
-        )
-
-
 def run_episode(env, actor, action_space, device, args, live_debug=None):
     obs       = env.reset()
     ep_reward = 0.0
@@ -203,7 +150,6 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
         except Exception:
             new_ep_btn = None
             phase_param = None
-    draw_actor_geometric_median_rays(env)
 
     while not done:
         step += 1
@@ -254,7 +200,6 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
             if updated_phase_name != phase_name:
                 phase_param = sync_phase_gui_param(phase_param, updated_phase_name)
                 phase_name = updated_phase_name
-            draw_actor_geometric_median_rays(env)
 
         if new_ep_btn is not None and btn_val is not None:
             try:
@@ -292,6 +237,9 @@ def main():
     trained_include_shared_count_density = (
         infer_checkpoint_include_shared_count_density_channel(ckpt)
     )
+    trained_include_shared_count_memory_staleness = (
+        infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
+    )
     active_num_drones = resolve_eval_active_num_drones(
         requested_num_drones=args.num_drones,
         trained_num_drones=trained_num_drones,
@@ -325,6 +273,9 @@ def main():
             ),
             "local_people_map_mode": trained_local_people_map_mode,
             "include_shared_count_density_channel": trained_include_shared_count_density,
+            "include_shared_count_memory_staleness_channel": (
+                trained_include_shared_count_memory_staleness
+            ),
             "hotspot_top_k": trained_hotspot_top_k,
         },
     )

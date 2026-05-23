@@ -1,7 +1,7 @@
 """
 MAPPO Trainer for a masked joint-move actor over ((vx, vy), yaw_rate).
 
-Actor grid: (grid_channels, H, W)               — 9 channels by default
+Actor grid: (grid_channels, H, W)               — layout-dependent channel count
                                                   (legacy layouts still load)
 Critic grid: layout-dependent shared channels + per-drone
              local-people/coverage/ego maps
@@ -18,11 +18,14 @@ import torch.nn as nn
 from typing import Dict, List
 
 from config import (
+    MODEL_DEFAULTS,
+    SHARED_DEFAULTS,
     infer_actor_state_grid_channels,
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_persistent_coverage_channel,
+    infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_local_people_map_mode,
     infer_critic_grid_channels,
@@ -96,7 +99,7 @@ class MAPPOTrainer:
         self,
         envs,
         local_dim: int = 11,
-        grid_channels: int = 10,      # actor default: local count density + local recent count memory + historic count + persistent coverage + own/teammate instant FOV + own/teammate coverage + shared drone + own ego
+        grid_channels: int = MODEL_DEFAULTS.grid_channels,
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
@@ -130,7 +133,9 @@ class MAPPOTrainer:
         anneal_lr: bool = True,
         include_local_recent_count_memory_channel: bool = True,
         include_instant_fov_channels: bool = True,
-        include_persistent_coverage_channel: bool = False,
+        include_persistent_coverage_channel: bool = (
+            SHARED_DEFAULTS.include_persistent_coverage_channel
+        ),
     ):
         if not envs:
             raise ValueError("MAPPOTrainer requires at least one environment instance.")
@@ -186,6 +191,13 @@ class MAPPOTrainer:
         self.include_shared_count_density_channel = bool(
             getattr(self.env.obs_builder, "include_shared_count_density_channel", True)
         )
+        self.include_shared_count_memory_staleness_channel = bool(
+            getattr(
+                self.env.obs_builder,
+                "include_shared_count_memory_staleness_channel",
+                False,
+            )
+        )
         self.include_local_recent_count_memory_channel = bool(
             getattr(self.env.obs_builder, "include_local_recent_count_memory_channel", True)
         )
@@ -206,9 +218,9 @@ class MAPPOTrainer:
 
         # poses: [mask + full_local_vector] per agent
         #      + [num_people/30, ever_seen_ratio, visible_ratio, active_agent_ratio,
-        #         step_progress, remaining_progress, search_phase_progress,
-        #         is_search_phase, is_coverage_phase]
-        self.poses_dim = self.num_agents * (1 + local_dim) + 9
+        #         effective_top_k_ratio, step_progress, remaining_progress,
+        #         search_phase_progress, is_search_phase, is_coverage_phase]
+        self.poses_dim = self.num_agents * (1 + local_dim) + 10
 
         self.actor = ActorNetwork(
             local_dim=local_dim,
@@ -569,6 +581,7 @@ class MAPPOTrainer:
             num_people=len(env.people),
             ever_seen=len(env.ever_seen),
             visible_count=env.last_visible_count,
+            effective_reward_top_k_groups=env._effective_reward_top_k_groups(),
             current_step=env.current_step,
             episode_steps=env.episode_steps,
             search_phase_progress=phase_context["search_phase_progress"],
@@ -982,6 +995,9 @@ class MAPPOTrainer:
                 ),
                 "local_people_map_mode": self.local_people_map_mode,
                 "include_shared_count_density_channel": self.include_shared_count_density_channel,
+                "include_shared_count_memory_staleness_channel": (
+                    self.include_shared_count_memory_staleness_channel
+                ),
                 "hide_person_features_during_search": bool(
                     getattr(self.env.obs_builder, "hide_person_features_during_search", False)
                 ),
@@ -1039,6 +1055,9 @@ class MAPPOTrainer:
         ckpt_include_shared_count_density_channel = (
             infer_checkpoint_include_shared_count_density_channel(ckpt)
         )
+        ckpt_include_shared_count_memory_staleness_channel = (
+            infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
+        )
         ckpt_hide_person_features_during_search = (
             infer_checkpoint_hide_person_features_during_search(ckpt)
         )
@@ -1056,6 +1075,13 @@ class MAPPOTrainer:
         )
         current_include_shared_count_density_channel = bool(
             getattr(self.env.obs_builder, "include_shared_count_density_channel", True)
+        )
+        current_include_shared_count_memory_staleness_channel = bool(
+            getattr(
+                self.env.obs_builder,
+                "include_shared_count_memory_staleness_channel",
+                False,
+            )
         )
         current_hide_person_features_during_search = bool(
             getattr(self.env.obs_builder, "hide_person_features_during_search", False)
@@ -1122,6 +1148,17 @@ class MAPPOTrainer:
                 f"checkpoint include_shared_count_density_channel="
                 f"{ckpt_include_shared_count_density_channel}, "
                 f"current={current_include_shared_count_density_channel}."
+            )
+        if (
+            ckpt_include_shared_count_memory_staleness_channel
+            != current_include_shared_count_memory_staleness_channel
+        ):
+            raise ValueError(
+                "Checkpoint shared count-memory staleness layout does not match "
+                "the current observation layout: "
+                f"checkpoint include_shared_count_memory_staleness_channel="
+                f"{ckpt_include_shared_count_memory_staleness_channel}, "
+                f"current={current_include_shared_count_memory_staleness_channel}."
             )
         if (
             ckpt_hide_person_features_during_search

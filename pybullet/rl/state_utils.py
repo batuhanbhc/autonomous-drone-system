@@ -2,10 +2,12 @@
 Utilities for building the centralised global state used by the critic.
 
 Current local-count layout:
-  critic grid shape = ((shared_people_channels + 5) + 5 * max_agents, H, W)
-    shared channels  — actor shared people channels, shared instant FOV
+  critic grid shape = ((shared_people_channels + 6) + 5 * max_agents, H, W)
+    shared channels  — actor shared people channels (including optional
+                       shared count-memory staleness), shared instant FOV
                        footprint, shared FOV coverage, shared drone map,
-                       GT people occupancy, GT people density
+                       GT people occupancy, GT people density,
+                       GT reward-weighted people density
     per-drone blocks — local count density, local recent count memory,
                        own instant footprint, own coverage, ego
 
@@ -22,6 +24,7 @@ The poses vector is (max_agents * (1 + local_dim) + 9,):
                       ever_seen / num_people,
                       visible_count / num_people,
                       active_agents / max_agents,
+                      effective_reward_top_k_groups / max_agents,
                       current_step / episode_steps,
                       remaining_steps / episode_steps,
                       search_phase_progress,
@@ -40,6 +43,7 @@ def build_global_state(
     num_people: int = 0,
     ever_seen: int = 0,
     visible_count: int = 0,
+    effective_reward_top_k_groups: int = 0,
     current_step: int = 0,
     episode_steps: int = 1,
     search_phase_progress: float = 1.0,
@@ -87,6 +91,7 @@ def build_global_state(
             ever_seen / max(num_people, 1),
             visible_count / max(num_people, 1),
             active_agents / max(max_agents, 1),
+            effective_reward_top_k_groups / max(max_agents, 1),
             step_progress,
             remaining_progress,
             min(max(float(search_phase_progress), 0.0), 1.0),
@@ -125,6 +130,17 @@ def build_global_state(
             dtype=np.float32,
         )[np.newaxis, :, :]
     )
+    if getattr(obs_builder, "include_shared_count_memory_staleness_channel", False):
+        shared_people_parts.append(
+            np.asarray(
+                getattr(
+                    obs_builder,
+                    "shared_count_memory_staleness_snapshot",
+                    np.zeros_like(obs_builder.people_count_memory_historic, dtype=np.float32),
+                ),
+                dtype=np.float32,
+            )[np.newaxis, :, :]
+        )
     if getattr(obs_builder, "include_persistent_coverage_channel", False):
         shared_people_parts.append(
             np.asarray(obs_builder.persistent_coverage_map, dtype=np.float32)[np.newaxis, :, :]
@@ -145,6 +161,11 @@ def build_global_state(
         "gt_people_density_snapshot",
         np.zeros_like(shared_coverage, dtype=np.float32),
     ).astype(np.float32)
+    gt_reward_weighted_people_density = getattr(
+        obs_builder,
+        "gt_reward_weighted_people_density_snapshot",
+        np.zeros_like(shared_coverage, dtype=np.float32),
+    ).astype(np.float32)
 
     shared_parts = [
         shared_people,
@@ -156,6 +177,7 @@ def build_global_state(
         shared_drone_map[np.newaxis, :, :],
         gt_people_binary[np.newaxis, :, :],
         gt_people_density[np.newaxis, :, :],
+        gt_reward_weighted_people_density[np.newaxis, :, :],
     ])
     if getattr(obs_builder, "critic_has_shared_local_people_union", False):
         # Legacy layout keeps a shared union of the per-drone instantaneous maps.

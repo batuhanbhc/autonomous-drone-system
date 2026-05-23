@@ -1,0 +1,34 @@
+Dense Crowd Tracking Evaluation Report
+checkpoint: ../checkpoints/run_20260523_021522/final.pt
+episodes_per_drone_count: 100
+paired_episode_seeds: 0..99
+
+Metric notes:
+- 1-drone and 2-drone runs use the same per-episode crowd/layout/motion seeds
+- search_* metrics measure discovery by the end of the search phase
+- coverage_* metrics are averaged over coverage-phase steps only
+- densest_group_* metrics use the largest ground-truth group in each episode
+
+1 Active Drone(s)
+- search_end_seen_ratio: 0.9696
+- search_end_visited_fraction: 0.9080
+- search_densest_group_seen_ratio: 0.9789
+- coverage_mean_ratio: 0.6657
+- coverage_mean_visible_quality: 0.7337
+- densest_group_mean_coverage: 0.8997
+
+2 Active Drone(s)
+- search_end_seen_ratio: 0.9965
+- search_end_visited_fraction: 0.9462
+- search_densest_group_seen_ratio: 0.9989
+- coverage_mean_ratio: 0.7053
+- coverage_mean_visible_quality: 0.7519
+- densest_group_mean_coverage: 0.9419
+
+2 Drone Gain Over 1 Drone
+- delta_search_end_seen_ratio: 0.0269
+- delta_search_end_visited_fraction: 0.0382
+- delta_search_densest_group_seen_ratio: 0.0200
+- delta_coverage_mean_ratio: 0.0396
+- delta_coverage_mean_visible_quality: 0.0182
+- delta_densest_group_mean_coverage: 0.0422

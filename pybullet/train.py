@@ -21,6 +21,7 @@ from config import (
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_instant_fov_channels,
+    infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_include_persistent_coverage_channel,
     infer_checkpoint_hotspot_top_k,
@@ -78,6 +79,9 @@ def main():
         args.local_people_map_mode = infer_checkpoint_local_people_map_mode(ckpt)
         args.include_shared_count_density_channel = (
             infer_checkpoint_include_shared_count_density_channel(ckpt)
+        )
+        args.include_shared_count_memory_staleness_channel = (
+            infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
         )
         trained_num_drones = int(ckpt.get("num_agents", args.num_drones))
         args.cmd_history_len = infer_checkpoint_cmd_history_len(
