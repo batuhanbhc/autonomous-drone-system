@@ -33,6 +33,7 @@ from config import (
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_persistent_coverage_channel,
+    infer_checkpoint_reward_use_base_person_weight,
     infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_local_people_map_mode,
@@ -179,6 +180,9 @@ def build_actor_and_env(
     trained_include_shared_count_memory_staleness = (
         infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
     )
+    trained_reward_use_base_person_weight = (
+        infer_checkpoint_reward_use_base_person_weight(ckpt)
+    )
 
     action_space = build_action_space(args)
     args.cmd_history_len = infer_checkpoint_cmd_history_len(
@@ -213,6 +217,7 @@ def build_actor_and_env(
             "include_shared_count_memory_staleness_channel": (
                 trained_include_shared_count_memory_staleness
             ),
+            "reward_use_base_person_weight": trained_reward_use_base_person_weight,
             "hotspot_top_k": trained_hotspot_top_k,
         },
     )

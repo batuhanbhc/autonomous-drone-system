@@ -1001,6 +1001,9 @@ class MAPPOTrainer:
                 "hide_person_features_during_search": bool(
                     getattr(self.env.obs_builder, "hide_person_features_during_search", False)
                 ),
+                "reward_use_base_person_weight": bool(
+                    getattr(self.env, "reward_use_base_person_weight", False)
+                ),
                 "local_dim": self.buffer.local_dim,
                 "local_visible_delta_feature": True,
                 "local_visited_fraction_feature": True,
@@ -1061,6 +1064,9 @@ class MAPPOTrainer:
         ckpt_hide_person_features_during_search = (
             infer_checkpoint_hide_person_features_during_search(ckpt)
         )
+        ckpt_reward_use_base_person_weight = bool(
+            ckpt.get("reward_use_base_person_weight", False)
+        )
         current_include_persistent_coverage_channel = bool(
             getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
         )
@@ -1085,6 +1091,9 @@ class MAPPOTrainer:
         )
         current_hide_person_features_during_search = bool(
             getattr(self.env.obs_builder, "hide_person_features_during_search", False)
+        )
+        current_reward_use_base_person_weight = bool(
+            getattr(self.env, "reward_use_base_person_weight", False)
         )
         if ckpt_local_dim != current_local_dim:
             raise ValueError(
@@ -1169,6 +1178,16 @@ class MAPPOTrainer:
                 "current observation semantics: "
                 f"checkpoint={ckpt_hide_person_features_during_search}, "
                 f"current={current_hide_person_features_during_search}."
+            )
+        if (
+            ckpt_reward_use_base_person_weight
+            != current_reward_use_base_person_weight
+        ):
+            raise ValueError(
+                "Checkpoint reward_use_base_person_weight does not match the "
+                "current environment configuration: "
+                f"checkpoint={ckpt_reward_use_base_person_weight}, "
+                f"current={current_reward_use_base_person_weight}."
             )
         self.actor.load_state_dict(ckpt["actor"])
         self.actor_opt.load_state_dict(ckpt["actor_opt"])

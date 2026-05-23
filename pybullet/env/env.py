@@ -97,6 +97,7 @@ class MultiUAVEnv:
         hotspot_suppression_radius_scale: float = 4.0,
         hotspot_suppression_radius_min_cells: int = 2,
         reward_top_k_groups: int = 2,
+        reward_use_base_person_weight: bool = False,
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
         actor_grid_channels: int = 11,
@@ -112,6 +113,7 @@ class MultiUAVEnv:
         self.cmd_history_len   = int(cmd_history_len)
         self.status_history_seconds = int(status_history_seconds)
         self.reward_top_k_groups = int(reward_top_k_groups)
+        self.reward_use_base_person_weight = bool(reward_use_base_person_weight)
         self.max_horizontal_velocity = float(max_horizontal_velocity)
         self.max_yaw_rate      = float(max_yaw_rate)
 
@@ -743,7 +745,20 @@ class MultiUAVEnv:
 
         weights: list[float] = []
         for group_id in assignments:
-            if effective_top_k_groups > 0:
+            if self.reward_use_base_person_weight:
+                base_weight = 1.0
+                if (
+                    effective_top_k_groups > 0
+                    and group_id is not None
+                    and int(group_id) in target_group_id_set
+                ):
+                    weights.append(
+                        base_weight
+                        + math.sqrt(float(group_counts.get(int(group_id), 1)))
+                    )
+                else:
+                    weights.append(base_weight)
+            elif effective_top_k_groups > 0:
                 if group_id is None or int(group_id) not in target_group_id_set:
                     weights.append(0.0)
                 else:

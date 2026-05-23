@@ -80,6 +80,7 @@ class SharedConfig:
     hotspot_suppression_radius_scale: float = 5.0
     hotspot_suppression_radius_min_cells: int = 4
     reward_top_k_groups: int = 2
+    reward_use_base_person_weight: bool = False
     reward_wc: float = 1.0
     reward_coverage_exponent: float = 1.0
     reward_wqual: float = 2.0
@@ -109,13 +110,13 @@ class SharedConfig:
 
 @dataclass(frozen=True)
 class TrainConfig:
-    total_updates: int = 2000
+    total_updates: int = 1000
     n_envs: int = 4
     n_steps: int = 512
     num_epochs: int = 2
     batch_size: int = 512
     clip_eps: float = 0.15
-    gamma: float = 0.95
+    gamma: float = 0.97
     gae_lambda: float = 0.95
     lr_actor: float = 1.0e-4
     lr_critic: float = 1.0e-4
@@ -217,6 +218,10 @@ def infer_checkpoint_local_people_map_mode(ckpt: dict) -> str:
 
 def infer_checkpoint_include_shared_count_density_channel(ckpt: dict) -> bool:
     return bool(ckpt.get("include_shared_count_density_channel", True))
+
+
+def infer_checkpoint_reward_use_base_person_weight(ckpt: dict) -> bool:
+    return bool(ckpt.get("reward_use_base_person_weight", False))
 
 
 def infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt: dict) -> bool:
@@ -650,6 +655,16 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         help="Only the top-K densest groups contribute to coverage reward. 0 keeps legacy all-person coverage.",
     )
     parser.add_argument(
+        "--reward_use_base_person_weight",
+        action=argparse.BooleanOptionalAction,
+        default=SHARED_DEFAULTS.reward_use_base_person_weight,
+        help=(
+            "If enabled, give all people a base coverage weight of 1.0 and "
+            "boost only effective top-K group members to 1.0 + sqrt(group size). "
+            "If disabled, keep the current top-K-only weighting behavior."
+        ),
+    )
+    parser.add_argument(
         "--reward_coverage_exponent",
         type=float,
         default=SHARED_DEFAULTS.reward_coverage_exponent,
@@ -975,6 +990,7 @@ def build_env_kwargs(
         "hotspot_suppression_radius_scale": args.hotspot_suppression_radius_scale,
         "hotspot_suppression_radius_min_cells": args.hotspot_suppression_radius_min_cells,
         "reward_top_k_groups": args.reward_top_k_groups,
+        "reward_use_base_person_weight": args.reward_use_base_person_weight,
         "max_horizontal_velocity": args.max_horizontal_velocity,
         "max_yaw_rate": args.max_yaw_rate,
         "debug_observation_plots": args.debug_observation_plots,

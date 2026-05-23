@@ -28,6 +28,7 @@ from config import (
     infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_include_persistent_coverage_channel,
+    infer_checkpoint_reward_use_base_person_weight,
     infer_checkpoint_hotspot_top_k,
     infer_checkpoint_local_people_map_mode,
     infer_checkpoint_status_history_seconds,
@@ -240,6 +241,9 @@ def main():
     trained_include_shared_count_memory_staleness = (
         infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
     )
+    trained_reward_use_base_person_weight = (
+        infer_checkpoint_reward_use_base_person_weight(ckpt)
+    )
     active_num_drones = resolve_eval_active_num_drones(
         requested_num_drones=args.num_drones,
         trained_num_drones=trained_num_drones,
@@ -276,6 +280,7 @@ def main():
             "include_shared_count_memory_staleness_channel": (
                 trained_include_shared_count_memory_staleness
             ),
+            "reward_use_base_person_weight": trained_reward_use_base_person_weight,
             "hotspot_top_k": trained_hotspot_top_k,
         },
     )
