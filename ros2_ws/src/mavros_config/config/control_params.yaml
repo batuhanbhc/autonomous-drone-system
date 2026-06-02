@@ -103,38 +103,41 @@ autonomous_controller:
   max_agents: 2  # match the trained model architecture; teammate slots are zero-filled in single-drone deployment
 
   # PyBullet eval arena / observation defaults
-  x_min: -15.0
-  x_max: 15.0
-  y_min: -15.0
-  y_max: 15.0
+  x_min: -10.0
+  x_max: 10.0
+  y_min: -10.0
+  y_max: 10.0
   max_range: 15.0
   horizontal_fov_deg: 55.8
   vertical_fov_deg: 43.3
-  search_phase_seconds: 30.0
+  search_phase_seconds: 20.0
 
   network:
     local_people_map_mode: count_density
     include_local_recent_count_memory_channel: true
     include_shared_count_density_channel: false
+    include_shared_count_memory_staleness_channel: true
     include_instant_fov_channels: true
     include_persistent_coverage_channel: true
     hide_person_features_during_search: true
+    enable_agent_ids: true
     cmd_history_len: 5
     status_history_seconds: 5
     hotspot_top_k: 2
 
   observation_update:
-    recent_half_life_seconds: 10.0
+    recent_half_life_seconds: 5.0
     historic_half_life_seconds: 60.0
-    coverage_half_life_seconds: 20.0
+    coverage_half_life_seconds: 10.0
     blob_sigma: 1.5
     ego_sigma: 2.0
     people_count_normalizer: 30.0
     count_map_compression_scale: 3.0
-    count_memory_historic_miss_penalty: 0.2
+    count_memory_historic_miss_penalty: 0.5
+    count_memory_decay_grace_period_seconds: 10.0
     hotspot_min_density: 1.5
     hotspot_suppression_radius_scale: 5.0
-    hotspot_suppression_radius_min_cells: 2
+    hotspot_suppression_radius_min_cells: 4
 
   action_bins:
     max_horizontal_velocity: 1.0

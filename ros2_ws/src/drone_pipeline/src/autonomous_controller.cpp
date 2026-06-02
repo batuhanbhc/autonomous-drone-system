@@ -352,6 +352,11 @@ AutonomousController::Config AutonomousController::loadConfig()
     "observation_update",
     "count_memory_historic_miss_penalty",
     cfg.count_memory_historic_miss_penalty);
+  cfg.count_memory_decay_grace_period_seconds = yamlNestedOr<double>(
+    controller,
+    "observation_update",
+    "count_memory_decay_grace_period_seconds",
+    cfg.count_memory_decay_grace_period_seconds);
   cfg.max_horizontal_velocity = yamlNestedOr<double>(
     controller, "action_bins", "max_horizontal_velocity", cfg.max_horizontal_velocity);
   cfg.horizontal_bin_interval = yamlNestedOr<double>(
@@ -391,6 +396,11 @@ AutonomousController::Config AutonomousController::loadConfig()
     "network",
     "include_shared_count_density_channel",
     cfg.include_shared_count_density_channel);
+  cfg.include_shared_count_memory_staleness_channel = yamlNestedOr<bool>(
+    controller,
+    "network",
+    "include_shared_count_memory_staleness_channel",
+    cfg.include_shared_count_memory_staleness_channel);
   cfg.include_instant_fov_channels = yamlNestedOr<bool>(
     controller,
     "network",
@@ -406,6 +416,11 @@ AutonomousController::Config AutonomousController::loadConfig()
     "network",
     "hide_person_features_during_search",
     cfg.hide_person_features_during_search);
+  cfg.enable_agent_ids = yamlNestedOr<bool>(
+    controller,
+    "network",
+    "enable_agent_ids",
+    cfg.enable_agent_ids);
   cfg.save_actor_inputs = yamlNestedOr<bool>(
     controller,
     "input_snapshot",
@@ -425,6 +440,9 @@ AutonomousController::Config AutonomousController::loadConfig()
   }
   if (cfg.count_map_compression_scale <= 0.0) {
     throw std::runtime_error("count_map_compression_scale must be > 0");
+  }
+  if (cfg.count_memory_decay_grace_period_seconds < 0.0) {
+    throw std::runtime_error("count_memory_decay_grace_period_seconds must be >= 0");
   }
   if (cfg.status_history_seconds < 0) {
     throw std::runtime_error("status_history_seconds must be >= 0");
@@ -517,22 +535,31 @@ void AutonomousController::initOnnx()
   include_persistent_coverage_channel_ = config_.include_persistent_coverage_channel;
   include_recent_count_memory_channel_ = config_.include_local_recent_count_memory_channel;
   include_shared_count_density_channel_ = config_.include_shared_count_density_channel;
+  include_shared_count_memory_staleness_channel_ =
+    config_.include_shared_count_memory_staleness_channel;
   include_instant_fov_channels_ = config_.include_instant_fov_channels;
+  enable_agent_ids_ = config_.enable_agent_ids;
   hide_person_features_during_search_ = config_.hide_person_features_during_search;
   const int base_actor_grid_channels =
     6 +
     (include_recent_count_memory_channel_ ? 1 : 0) +
     (include_instant_fov_channels_ ? 2 : 0) +
     (include_persistent_coverage_channel_ ? 1 : 0) +
-    (include_shared_count_density_channel_ ? 1 : 0);
+    (include_shared_count_density_channel_ ? 1 : 0) +
+    (include_shared_count_memory_staleness_channel_ ? 1 : 0);
   const int actor_grid_delta = actor_grid_channels_ - base_actor_grid_channels;
   exposes_spatial_memory_channels_ = (actor_grid_delta == 2);
   shared_people_channels_ =
     1 +
     (exposes_spatial_memory_channels_ ? 2 : 0) +
     (include_shared_count_density_channel_ ? 1 : 0) +
+    (include_shared_count_memory_staleness_channel_ ? 1 : 0) +
     (include_persistent_coverage_channel_ ? 1 : 0);
   historic_half_life_steps_ = std::max(1.0, config_.historic_half_life_seconds * config_.control_hz);
+  count_memory_decay_grace_steps_ = static_cast<std::uint64_t>(std::max<long long>(
+    0LL,
+    std::llround(std::ceil(
+      config_.count_memory_decay_grace_period_seconds * config_.control_hz))));
   hotspot_suppression_radius_cells_ = std::max(
     config_.hotspot_suppression_radius_min_cells,
     static_cast<int>(std::lround(config_.hotspot_suppression_radius_scale * config_.blob_sigma)));
@@ -572,6 +599,7 @@ void AutonomousController::initOnnx()
   {
     const std::size_t static_base_dim = static_cast<std::size_t>(
       13 +
+      (enable_agent_ids_ ? 1 : 0) +
       6 * teammate_slots_candidate +
       5 * std::max(0, config_.status_history_seconds) +
       3 * config_.cmd_history_len);
@@ -593,6 +621,14 @@ void AutonomousController::initOnnx()
   }
   if (config_.hotspot_top_k != hotspot_top_k_inferred_) {
     throw std::runtime_error("Configured hotspot_top_k does not match ONNX local_base layout");
+  }
+  if (teammate_slots_ > 0) {
+    RCLCPP_WARN(
+      get_logger(),
+      "ONNX model expects %d teammate slot(s), but ROS2 autonomous_controller still "
+      "zero-fills teammate state and teammate coverage inputs. The model will load, "
+      "but multi-drone observation parity with training is not implemented.",
+      teammate_slots_);
   }
   const std::size_t expected_move_mask_dim = vx_bins_.size() * vy_bins_.size();
   if (static_cast<std::size_t>(move_mask_shape_[1]) != expected_move_mask_dim) {
@@ -637,10 +673,13 @@ void AutonomousController::resetObservationState()
   obs_state_.coverage_map.assign(cell_count, 0.0f);
   obs_state_.persistent_coverage_map.assign(cell_count, 0.0f);
   obs_state_.own_coverage_map.assign(cell_count, 0.0f);
+  obs_state_.shared_count_memory_staleness.assign(cell_count, 0.0f);
   obs_state_.shared_drone_map.assign(cell_count, 0.0f);
   obs_state_.own_ego_map.assign(cell_count, 0.0f);
   obs_state_.footprint_map.assign(cell_count, 0.0f);
   obs_state_.people_count_last_observed_step.assign(cell_count, -1);
+  obs_state_.people_count_last_visible_step.assign(cell_count, -1);
+  obs_state_.people_count_recent_last_visible_step.assign(cell_count, -1);
   controller_step_ = 0;
   prev_visible_count_ = 0;
   status_history_anchor_ = StatusHistoryAnchor{};
@@ -812,6 +851,9 @@ std::vector<std::string> AutonomousController::actorChannelNames() const
     names.push_back("Shared count density");
   }
   names.push_back("Shared historic count memory");
+  if (include_shared_count_memory_staleness_channel_) {
+    names.push_back("Shared count-memory staleness");
+  }
   if (include_persistent_coverage_channel_) {
     names.push_back("Shared permanent coverage");
   }
@@ -851,6 +893,9 @@ std::vector<std::string> AutonomousController::localFeatureNames() const
     names.push_back(prefix + "lateral_offset");
     names.push_back(prefix + "density");
     names.push_back(prefix + "age");
+  }
+  if (enable_agent_ids_) {
+    names.push_back("agent_id");
   }
   for (int idx = 0; idx < teammate_slots_; ++idx) {
     const std::string prefix = "teammate_" + std::to_string(idx) + "_";
@@ -1283,12 +1328,6 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
       value *= static_cast<float>(decay_historic);
     }
   }
-  for (float & value : obs_state_.people_count_memory_recent) {
-    value *= static_cast<float>(decay_recent);
-  }
-  for (float & value : obs_state_.people_count_memory_historic) {
-    value *= static_cast<float>(decay_historic);
-  }
   for (float & value : obs_state_.own_coverage_map) {
     value *= static_cast<float>(decay_coverage);
   }
@@ -1396,10 +1435,35 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   }
 
   for (std::size_t i = 0; i < cell_count; ++i) {
-    if (obs_state_.footprint_map[i] <= 0.0f) {
-      continue;
+    if (obs_state_.footprint_map[i] > 0.0f) {
+      obs_state_.people_count_last_visible_step[i] = static_cast<int32_t>(controller_step_);
+      obs_state_.people_count_recent_last_visible_step[i] = static_cast<int32_t>(controller_step_);
     }
-    if (obs_state_.people_count_density[i] < static_cast<float>(config_.hotspot_min_density)) {
+  }
+
+  for (std::size_t i = 0; i < cell_count; ++i) {
+    const int last_visible = obs_state_.people_count_last_visible_step[i];
+    if (
+      last_visible >= 0 &&
+      (static_cast<std::uint64_t>(controller_step_) - static_cast<std::uint64_t>(last_visible)) >
+      count_memory_decay_grace_steps_)
+    {
+      obs_state_.people_count_memory_historic[i] *= static_cast<float>(decay_historic);
+    }
+
+    const int local_last_visible = obs_state_.people_count_recent_last_visible_step[i];
+    if (
+      local_last_visible >= 0 &&
+      (static_cast<std::uint64_t>(controller_step_) - static_cast<std::uint64_t>(local_last_visible)) >
+      count_memory_decay_grace_steps_)
+    {
+      obs_state_.people_count_memory_recent[i] *= static_cast<float>(decay_recent);
+    }
+
+    if (
+      obs_state_.footprint_map[i] > 0.0f &&
+      obs_state_.people_count_density[i] < static_cast<float>(config_.hotspot_min_density))
+    {
       obs_state_.people_count_memory_historic[i] *= static_cast<float>(
         1.0 - config_.count_memory_historic_miss_penalty);
       obs_state_.people_count_memory_recent[i] *= static_cast<float>(
@@ -1416,6 +1480,24 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     shared_count_density_obs[i] = compressCountValue(obs_state_.people_count_density[i]);
     local_recent_count_memory_obs[i] = compressCountValue(obs_state_.people_count_memory_recent[i]);
     shared_historic_count_memory_obs[i] = compressCountValue(obs_state_.people_count_memory_historic[i]);
+    if (
+      obs_state_.people_count_last_visible_step[i] < 0 ||
+      obs_state_.people_count_memory_historic[i] <= 1e-6f)
+    {
+      obs_state_.shared_count_memory_staleness[i] = 0.0f;
+    } else {
+      const auto age_steps = static_cast<double>(
+        static_cast<std::uint64_t>(controller_step_) -
+        static_cast<std::uint64_t>(obs_state_.people_count_last_visible_step[i]));
+      const auto post_grace_age = std::max(
+        age_steps - static_cast<double>(count_memory_decay_grace_steps_),
+        0.0);
+      const auto staleness = 1.0 - std::pow(
+        0.5,
+        post_grace_age / std::max(historic_half_life_steps_, 1.0));
+      obs_state_.shared_count_memory_staleness[i] = static_cast<float>(
+        clampDouble(staleness, 0.0, 1.0));
+    }
   }
 
   if (config_.local_people_map_mode == "instant") {
@@ -1457,6 +1539,8 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   const int shared_historic_spatial_channel = exposes_spatial_memory_channels_ ? next_channel++ : -1;
   const int shared_count_density_channel = include_shared_count_density_channel_ ? next_channel++ : -1;
   const int shared_historic_count_channel = next_channel++;
+  const int shared_count_memory_staleness_channel =
+    include_shared_count_memory_staleness_channel_ ? next_channel++ : -1;
   const int shared_persistent_coverage_channel = include_persistent_coverage_channel_ ? next_channel++ : -1;
   const int own_instant_coverage_channel = include_instant_fov_channels_ ? next_channel++ : -1;
   const int teammate_instant_coverage_channel = include_instant_fov_channels_ ? next_channel++ : -1;
@@ -1491,6 +1575,11 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
       }
       inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_historic_count_channel, v, u)] =
         hide_person_features ? 0.0f : shared_historic_count_memory_obs[idx];
+      if (shared_count_memory_staleness_channel >= 0) {
+        inputs.grid[channelIndex(
+          config_.grid_h, config_.grid_w, shared_count_memory_staleness_channel, v, u)] =
+          hide_person_features ? 0.0f : obs_state_.shared_count_memory_staleness[idx];
+      }
       if (shared_persistent_coverage_channel >= 0) {
         inputs.grid[channelIndex(config_.grid_h, config_.grid_w, shared_persistent_coverage_channel, v, u)] =
           obs_state_.persistent_coverage_map[idx];
@@ -1604,6 +1693,19 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
       inputs.local_base[local_idx++] = hotspot.age;
     } else {
       local_idx += 5;
+    }
+  }
+
+  if (enable_agent_ids_) {
+    if (config_.max_agents > 1) {
+      inputs.local_base[local_idx++] = static_cast<float>(
+        clampDouble(
+          (2.0 * static_cast<double>(config_.drone_id) /
+          static_cast<double>(config_.max_agents - 1)) - 1.0,
+          -1.0,
+          1.0));
+    } else {
+      inputs.local_base[local_idx++] = 0.0f;
     }
   }
 
