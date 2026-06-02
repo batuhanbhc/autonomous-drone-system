@@ -43,3 +43,5 @@ arduino_ws/.vscode
 pybullet/checkpoints/
 pybullet/logs/
 pybullet/onnx/venv
+pybullet/results_ws
+pybullet/results_ws/*
