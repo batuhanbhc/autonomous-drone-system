@@ -21,6 +21,7 @@ from config import (
     MODEL_DEFAULTS,
     SHARED_DEFAULTS,
     infer_actor_state_grid_channels,
+    infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
@@ -28,6 +29,7 @@ from config import (
     infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_local_people_map_mode,
+    infer_checkpoint_reward_person_weight_mode,
     infer_critic_grid_channels,
 )
 from rl.action_masking import append_move_masks_to_local, compute_move_action_masks
@@ -881,97 +883,100 @@ class MAPPOTrainer:
             except Exception:
                 self._pause_btn = None
 
-        for _ in range(remaining_updates):
-            update = self.current_update + 1
-            obs_per_env = self._collect_rollout(obs_per_env, update)
-            ep_reward += self.buffer.rewards.sum()
-            done_count = int(self.buffer.dones.sum())
-            if done_count > 0:
-                ep_count += done_count
-            critic_diag = self._compute_critic_diagnostics()
+        try:
+            for _ in range(remaining_updates):
+                update = self.current_update + 1
+                obs_per_env = self._collect_rollout(obs_per_env, update)
+                ep_reward += self.buffer.rewards.sum()
+                done_count = int(self.buffer.dones.sum())
+                if done_count > 0:
+                    ep_count += done_count
+                critic_diag = self._compute_critic_diagnostics()
 
-            if self.anneal_lr:
-                frac = self._annealed_lr_fraction(update, target_update)
-                for pg in self.actor_opt.param_groups:
-                    pg["lr"] = self.lr_actor_init * frac
-                for pg in self.critic_opt.param_groups:
-                    pg["lr"] = self.lr_critic_init * frac
+                if self.anneal_lr:
+                    frac = self._annealed_lr_fraction(update, target_update)
+                    for pg in self.actor_opt.param_groups:
+                        pg["lr"] = self.lr_actor_init * frac
+                    for pg in self.critic_opt.param_groups:
+                        pg["lr"] = self.lr_critic_init * frac
 
-            a_loss, c_loss, ent, clip_frac = self._update()
-            self.current_update = update
+                a_loss, c_loss, ent, clip_frac = self._update()
+                self.current_update = update
 
-            if update % self.log_interval == 0:
-                elapsed       = time.time() - start
-                avg_ep_reward = ep_reward / max(ep_count, 1)
-                sim_seconds        = self.total_steps * self.env.dt
-                steps_this_run     = self.total_steps - steps_at_start
-                rtf                = (steps_this_run * self.env.dt) / elapsed if elapsed > 0 else float("inf")
-                decisions_per_real = steps_this_run / elapsed if elapsed > 0 else float("inf")
-                print(
-                    f"[Update {update:4d}/{target_update}]  "
-                    f"steps={self.total_steps:7d}  "
-                    f"sim_time={sim_seconds:8.1f}s  "
-                    f"RTF={rtf:6.2f}x  "
-                    f"decisions_per_real={decisions_per_real:7.2f}/s  "
-                    f"sticky_rate={self._last_rollout_sticky_rate:5.2%}  "
-                    f"avg_ep_rew={avg_ep_reward:.3f}  "
-                    f"actor_loss={a_loss:.4f}  "
-                    f"critic_loss={c_loss:.4f}  "
-                    f"v_mean={critic_diag['value_mean']:.2f}  "
-                    f"v_std={critic_diag['value_std']:.2f}  "
-                    f"ret_mean={critic_diag['return_mean']:.2f}  "
-                    f"ret_std={critic_diag['return_std']:.2f}  "
-                    f"v_mae={critic_diag['value_return_mae']:.2f}  "
-                    f"ev={critic_diag['explained_variance']:.3f}  "
-                    f"corr={critic_diag['value_return_corr']:.3f}  "
-                    f"entropy={ent:.3f}  "
-                    f"clip_frac={clip_frac:.3f}  "
-                    f"elapsed={elapsed:.1f}s"
-                )
-                if self.writer:
-                    self.writer.add_scalar("train/avg_ep_reward", avg_ep_reward, update)
-                    self.writer.add_scalar("train/actor_loss",    a_loss,        update)
-                    self.writer.add_scalar("train/critic_loss",   c_loss,        update)
-                    self.writer.add_scalar("train/entropy",       ent,           update)
-                    self.writer.add_scalar("train/clip_frac",    clip_frac,     update)
-                    self.writer.add_scalar("critic/value_mean", critic_diag["value_mean"], update)
-                    self.writer.add_scalar("critic/value_std", critic_diag["value_std"], update)
-                    self.writer.add_scalar("critic/return_mean", critic_diag["return_mean"], update)
-                    self.writer.add_scalar("critic/return_std", critic_diag["return_std"], update)
-                    self.writer.add_scalar("critic/value_return_corr", critic_diag["value_return_corr"], update)
-                    self.writer.add_scalar("critic/explained_variance", critic_diag["explained_variance"], update)
-                    self.writer.add_scalar("critic/value_return_mae", critic_diag["value_return_mae"], update)
-                    self.writer.add_scalar("critic/value_return_rmse", critic_diag["value_return_rmse"], update)
-                    self.writer.add_scalar("critic/zero_baseline_mae", critic_diag["zero_baseline_mae"], update)
-                    self.writer.add_scalar("critic/zero_baseline_rmse", critic_diag["zero_baseline_rmse"], update)
-                    self.writer.add_scalar("critic/value_bias_mean", critic_diag["value_bias_mean"], update)
-                    self.writer.add_scalar(
-                        "train/sticky_rate",
-                        self._last_rollout_sticky_rate,
-                        update,
+                if update % self.log_interval == 0:
+                    elapsed       = time.time() - start
+                    avg_ep_reward = ep_reward / max(ep_count, 1)
+                    sim_seconds        = self.total_steps * self.env.dt
+                    steps_this_run     = self.total_steps - steps_at_start
+                    rtf                = (steps_this_run * self.env.dt) / elapsed if elapsed > 0 else float("inf")
+                    decisions_per_real = steps_this_run / elapsed if elapsed > 0 else float("inf")
+                    print(
+                        f"[Update {update:4d}/{target_update}]  "
+                        f"steps={self.total_steps:7d}  "
+                        f"sim_time={sim_seconds:8.1f}s  "
+                        f"RTF={rtf:6.2f}x  "
+                        f"decisions_per_real={decisions_per_real:7.2f}/s  "
+                        f"sticky_rate={self._last_rollout_sticky_rate:5.2%}  "
+                        f"avg_ep_rew={avg_ep_reward:.3f}  "
+                        f"actor_loss={a_loss:.4f}  "
+                        f"critic_loss={c_loss:.4f}  "
+                        f"v_mean={critic_diag['value_mean']:.2f}  "
+                        f"v_std={critic_diag['value_std']:.2f}  "
+                        f"ret_mean={critic_diag['return_mean']:.2f}  "
+                        f"ret_std={critic_diag['return_std']:.2f}  "
+                        f"v_mae={critic_diag['value_return_mae']:.2f}  "
+                        f"ev={critic_diag['explained_variance']:.3f}  "
+                        f"corr={critic_diag['value_return_corr']:.3f}  "
+                        f"entropy={ent:.3f}  "
+                        f"clip_frac={clip_frac:.3f}  "
+                        f"elapsed={elapsed:.1f}s"
                     )
-                self._append_metrics_row(
-                    update=update,
-                    total_updates=target_update,
-                    sim_seconds=sim_seconds,
-                    rtf=rtf,
-                    decisions_per_real=decisions_per_real,
-                    avg_ep_reward=avg_ep_reward,
-                    actor_loss=a_loss,
-                    critic_loss=c_loss,
-                    entropy=ent,
-                    clip_frac=clip_frac,
-                    elapsed=elapsed,
-                )
-                self._append_critic_diag_row(update=update, diagnostics=critic_diag)
-                ep_reward = 0.0
-                ep_count  = 0
+                    if self.writer:
+                        self.writer.add_scalar("train/avg_ep_reward", avg_ep_reward, update)
+                        self.writer.add_scalar("train/actor_loss",    a_loss,        update)
+                        self.writer.add_scalar("train/critic_loss",   c_loss,        update)
+                        self.writer.add_scalar("train/entropy",       ent,           update)
+                        self.writer.add_scalar("train/clip_frac",    clip_frac,     update)
+                        self.writer.add_scalar("critic/value_mean", critic_diag["value_mean"], update)
+                        self.writer.add_scalar("critic/value_std", critic_diag["value_std"], update)
+                        self.writer.add_scalar("critic/return_mean", critic_diag["return_mean"], update)
+                        self.writer.add_scalar("critic/return_std", critic_diag["return_std"], update)
+                        self.writer.add_scalar("critic/value_return_corr", critic_diag["value_return_corr"], update)
+                        self.writer.add_scalar("critic/explained_variance", critic_diag["explained_variance"], update)
+                        self.writer.add_scalar("critic/value_return_mae", critic_diag["value_return_mae"], update)
+                        self.writer.add_scalar("critic/value_return_rmse", critic_diag["value_return_rmse"], update)
+                        self.writer.add_scalar("critic/zero_baseline_mae", critic_diag["zero_baseline_mae"], update)
+                        self.writer.add_scalar("critic/zero_baseline_rmse", critic_diag["zero_baseline_rmse"], update)
+                        self.writer.add_scalar("critic/value_bias_mean", critic_diag["value_bias_mean"], update)
+                        self.writer.add_scalar(
+                            "train/sticky_rate",
+                            self._last_rollout_sticky_rate,
+                            update,
+                        )
+                    self._append_metrics_row(
+                        update=update,
+                        total_updates=target_update,
+                        sim_seconds=sim_seconds,
+                        rtf=rtf,
+                        decisions_per_real=decisions_per_real,
+                        avg_ep_reward=avg_ep_reward,
+                        actor_loss=a_loss,
+                        critic_loss=c_loss,
+                        entropy=ent,
+                        clip_frac=clip_frac,
+                        elapsed=elapsed,
+                    )
+                    self._append_critic_diag_row(update=update, diagnostics=critic_diag)
+                    ep_reward = 0.0
+                    ep_count  = 0
 
-            if update % self.save_interval == 0:
-                self.save(f"ckpt_update_{update}.pt")
+                if update % self.save_interval == 0:
+                    self.save(f"ckpt_update_{update}.pt")
 
-        self.save("final.pt")
-        print("[MAPPO] Training complete.")
+            self.save("final.pt")
+            print("[MAPPO] Training complete.")
+        finally:
+            self.live_debug.close()
 
     def save(self, filename: str):
         path = os.path.join(self.save_dir, filename)
@@ -1001,8 +1006,12 @@ class MAPPOTrainer:
                 "hide_person_features_during_search": bool(
                     getattr(self.env.obs_builder, "hide_person_features_during_search", False)
                 ),
+                "reward_person_weight_mode": str(
+                    getattr(self.env, "reward_person_weight_mode", "top_k_only")
+                ),
                 "reward_use_base_person_weight": bool(
-                    getattr(self.env, "reward_use_base_person_weight", False)
+                    getattr(self.env, "reward_person_weight_mode", "top_k_only")
+                    == "base_plus_group"
                 ),
                 "local_dim": self.buffer.local_dim,
                 "local_visible_delta_feature": True,
@@ -1010,6 +1019,9 @@ class MAPPOTrainer:
                 "cmd_history_len": getattr(self.env, "cmd_history_len", 0),
                 "status_history_seconds": getattr(self.env, "status_history_seconds", 0),
                 "hotspot_top_k": getattr(self.env.obs_builder, "hotspot_top_k", 0),
+                "enable_agent_ids": bool(
+                    getattr(self.env.obs_builder, "enable_agent_ids", False)
+                ),
                 "move_mask_dim": self.move_mask_dim,
                 "total_steps": self.total_steps,
                 "update": self.current_update,
@@ -1064,8 +1076,9 @@ class MAPPOTrainer:
         ckpt_hide_person_features_during_search = (
             infer_checkpoint_hide_person_features_during_search(ckpt)
         )
-        ckpt_reward_use_base_person_weight = bool(
-            ckpt.get("reward_use_base_person_weight", False)
+        ckpt_enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
+        ckpt_reward_person_weight_mode = infer_checkpoint_reward_person_weight_mode(
+            ckpt
         )
         current_include_persistent_coverage_channel = bool(
             getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
@@ -1092,14 +1105,24 @@ class MAPPOTrainer:
         current_hide_person_features_during_search = bool(
             getattr(self.env.obs_builder, "hide_person_features_during_search", False)
         )
-        current_reward_use_base_person_weight = bool(
-            getattr(self.env, "reward_use_base_person_weight", False)
+        current_enable_agent_ids = bool(
+            getattr(self.env.obs_builder, "enable_agent_ids", False)
+        )
+        current_reward_person_weight_mode = str(
+            getattr(self.env, "reward_person_weight_mode", "top_k_only")
         )
         if ckpt_local_dim != current_local_dim:
             raise ValueError(
                 "Checkpoint local_dim does not match the current observation layout: "
                 f"checkpoint={ckpt_local_dim}, current={current_local_dim}. "
                 "This checkpoint was trained with a different local feature vector."
+            )
+        if ckpt_enable_agent_ids != current_enable_agent_ids:
+            raise ValueError(
+                "Checkpoint agent-id local feature setting does not match the current "
+                "observation layout: "
+                f"checkpoint enable_agent_ids={ckpt_enable_agent_ids}, "
+                f"current={current_enable_agent_ids}."
             )
         if ckpt_grid_channels != current_grid_channels:
             raise ValueError(
@@ -1179,15 +1202,12 @@ class MAPPOTrainer:
                 f"checkpoint={ckpt_hide_person_features_during_search}, "
                 f"current={current_hide_person_features_during_search}."
             )
-        if (
-            ckpt_reward_use_base_person_weight
-            != current_reward_use_base_person_weight
-        ):
+        if ckpt_reward_person_weight_mode != current_reward_person_weight_mode:
             raise ValueError(
-                "Checkpoint reward_use_base_person_weight does not match the "
+                "Checkpoint reward_person_weight_mode does not match the "
                 "current environment configuration: "
-                f"checkpoint={ckpt_reward_use_base_person_weight}, "
-                f"current={current_reward_use_base_person_weight}."
+                f"checkpoint={ckpt_reward_person_weight_mode}, "
+                f"current={current_reward_person_weight_mode}."
             )
         self.actor.load_state_dict(ckpt["actor"])
         self.actor_opt.load_state_dict(ckpt["actor_opt"])

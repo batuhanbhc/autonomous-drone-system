@@ -161,6 +161,7 @@ class ObservationBuilder:
         cmd_history_len: int = 0,
         status_history_seconds: int = 4,
         hotspot_top_k: int = 3,
+        enable_agent_ids: bool = True,
         hotspot_min_density: float = 1.5,
         count_map_compression_scale: float = 1.5,
         hotspot_suppression_radius_scale: float = 4.0,
@@ -231,6 +232,7 @@ class ObservationBuilder:
         self.cmd_history_len = int(cmd_history_len)
         self.status_history_seconds = int(status_history_seconds)
         self.hotspot_top_k = max(0, int(hotspot_top_k))
+        self.enable_agent_ids = bool(enable_agent_ids)
         self.hotspot_min_density = float(hotspot_min_density)
         self.count_map_compression_scale = float(count_map_compression_scale)
         self.hotspot_suppression_radius_scale = float(hotspot_suppression_radius_scale)
@@ -1171,6 +1173,7 @@ class ObservationBuilder:
           [13...] hotspot slots: [valid, hotspot_forward_offset_from_principal,
                                   hotspot_lateral_offset_from_principal, density, age]
                                   * hotspot_top_k
+          [...] agent identity scalar — normalized to [-1, 1]
           [...] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
           [...] status history (oldest→newest): [delta_x, delta_y, sin(delta_yaw),
                                                   cos(delta_yaw), num_visible_norm]
@@ -1178,7 +1181,7 @@ class ObservationBuilder:
           [...] command history (oldest→newest): [vx, vy, yaw_rate] * cmd_history_len
 
         Total:
-          13 + 5*hotspot_top_k + 6*(num_drones-1)
+          13 + 5*hotspot_top_k + enable_agent_ids + 6*(num_drones-1)
           + 5*status_history_seconds + 3*cmd_history_len values.
         """
         x, y, z = drone_state["position"]
@@ -1296,6 +1299,15 @@ class ObservationBuilder:
                 ]
             else:
                 vec += [0.0, 0.0, 0.0, 0.0, 0.0]
+
+        if self.enable_agent_ids:
+            if self.num_drones > 1:
+                agent_id_feature = (
+                    2.0 * float(drone_id) / float(self.num_drones - 1)
+                ) - 1.0
+            else:
+                agent_id_feature = 0.0
+            vec.append(agent_id_feature)
 
         other_states = other_drone_states or []
         for other in other_states:

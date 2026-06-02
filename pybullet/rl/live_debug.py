@@ -126,10 +126,28 @@ class LiveDebugWindow:
         )
 
         fig.suptitle("Live Debug: Drone 0 Actor Inputs")
+        fig.canvas.mpl_connect("close_event", self._on_close)
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
         fig.canvas.draw_idle()
         fig.canvas.flush_events()
         self._available = True
+
+    def _on_close(self, _event) -> None:
+        self._available = False
+        self._fig = None
+
+    def close(self) -> None:
+        if self._plt is None:
+            self._available = False
+            self._fig = None
+            return
+        if self._fig is not None:
+            try:
+                self._plt.close(self._fig)
+            except Exception:
+                pass
+        self._available = False
+        self._fig = None
 
     @staticmethod
     def _build_local_labels(

@@ -33,6 +33,7 @@ from config import (
     build_action_space,
     infer_checkpoint_actor_grid_channels,
     infer_checkpoint_cmd_history_len,
+    infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hotspot_top_k,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
@@ -161,6 +162,7 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
     trained_include_persistent_coverage = (
         infer_checkpoint_include_persistent_coverage_channel(ckpt)
     )
+    trained_enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
     trained_include_instant_fov_channels = (
         infer_checkpoint_include_instant_fov_channels(ckpt)
     )
@@ -194,6 +196,7 @@ def build_export_model(args: argparse.Namespace) -> tuple[nn.Module, int, int, i
         ),
         include_instant_fov_channels=trained_include_instant_fov_channels,
         include_persistent_coverage_channel=trained_include_persistent_coverage,
+        enable_agent_ids=trained_enable_agent_ids,
     )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)

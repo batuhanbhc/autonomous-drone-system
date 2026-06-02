@@ -28,7 +28,8 @@ class RewardCalculator:
         wx: float = 0.3,      # exploration bonus
         ws: float = 1.0,      # boundary penalty
         wclose: float = 0.0,  # proximity penalty before collision
-        wfov_overlap: float = 0.0,  # current-step FOV IoU overlap penalty
+        wfov_overlap: float = 0.0,  # current-step redundant-FOV penalty
+        fov_overlap_threshold: float = 0.2,
         wcoll: float = 1.0,   # collision penalty
         we: float = 0.0,      # yaw-rate penalty (disabled)
         wi: float = 0.5,      # idle penalty — strong to force both drones near people
@@ -60,6 +61,7 @@ class RewardCalculator:
         self.ws    = ws
         self.wclose = wclose
         self.wfov_overlap = wfov_overlap
+        self.fov_overlap_threshold = float(fov_overlap_threshold)
         self.wcoll = wcoll
         self.we    = we
         self.wi    = wi
@@ -119,6 +121,11 @@ class RewardCalculator:
             raise ValueError(
                 "reward_completion_power must be > 0, got "
                 f"{self.reward_completion_power}"
+            )
+        if not (0.0 <= self.fov_overlap_threshold < 1.0):
+            raise ValueError(
+                "fov_overlap_threshold must be within [0, 1), got "
+                f"{self.fov_overlap_threshold}"
             )
 
     def coverage_quality_from_components(
@@ -625,26 +632,29 @@ class RewardCalculator:
             return 0.0
 
         penalty = 0.0
-        pair_count = 0
+        valid_drone_count = 0
         for i in range(active_maps.shape[0]):
-            map_i = active_maps[i]
-            if not np.any(map_i > 0.0):
+            own_map = active_maps[i]
+            own_area = float(own_map.sum())
+            if own_area <= eps:
                 continue
-            for j in range(i + 1, active_maps.shape[0]):
-                map_j = active_maps[j]
-                if not np.any(map_j > 0.0):
-                    continue
-                intersection = np.minimum(map_i, map_j)
-                union = np.maximum(map_i, map_j)
-                union_sum = float(union.sum())
-                if union_sum <= eps:
-                    continue
-                penalty += float(intersection.sum()) / union_sum
-                pair_count += 1
+            teammate_indices = [j for j in range(active_maps.shape[0]) if j != i]
+            if not teammate_indices:
+                continue
+            teammate_union = active_maps[teammate_indices].max(axis=0)
+            redundant_area = float(np.minimum(own_map, teammate_union).sum())
+            overlap_fraction = redundant_area / max(own_area, eps)
+            thresholded_overlap = max(
+                0.0,
+                (overlap_fraction - self.fov_overlap_threshold)
+                / max(1.0 - self.fov_overlap_threshold, eps),
+            )
+            penalty += thresholded_overlap
+            valid_drone_count += 1
 
-        if pair_count == 0:
+        if valid_drone_count == 0:
             return 0.0
-        return penalty / pair_count
+        return penalty / valid_drone_count
 
     # ------------------------------------------------------------------ #
     #  Total reward
@@ -712,6 +722,8 @@ class RewardCalculator:
         # Keep discovery reward active for the full episode.
         discovery_scale = 1.0
         energy_scale = is_coverage_phase
+        overlap_scale = is_coverage_phase
+        fov_overlap_scale = is_coverage_phase
 
         total_reward = (
             (self.wc * cov_scale) * r_cov
@@ -719,10 +731,10 @@ class RewardCalculator:
             + (self.wd * discovery_scale) * r_disc
             + (self.wx * exp_scale) * r_exp
             + (self.wcompletion * exp_scale) * r_completion
-            - self.wo  * r_ov
+            - (self.wo * overlap_scale) * r_ov
             - self.wi  * r_idle
             - self.wfov * r_fov
-            - self.wfov_overlap * r_fov_overlap
+            - (self.wfov_overlap * fov_overlap_scale) * r_fov_overlap
             - self.ws  * r_bound
             - self.wclose * r_close
             - self.wcoll * r_coll
@@ -755,8 +767,10 @@ class RewardCalculator:
             "coverage_reward_scale": cov_scale,
             "fov_quality_reward_scale": fovq_scale,
             "discovery_reward_scale": discovery_scale,
+            "overlap_penalty_scale": overlap_scale,
             "energy_penalty_scale": energy_scale,
             "exploration_reward_scale": exp_scale,
+            "fov_overlap_penalty_scale": fov_overlap_scale,
             "is_search_phase": is_search_phase,
             "is_coverage_phase": is_coverage_phase,
             "total_reward":   total_reward,

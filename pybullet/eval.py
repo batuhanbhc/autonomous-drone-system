@@ -22,13 +22,14 @@ from config import (
     build_env,
     infer_checkpoint_actor_grid_channels,
     infer_checkpoint_cmd_history_len,
+    infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_shared_count_memory_staleness_channel,
     infer_checkpoint_include_shared_count_density_channel,
     infer_checkpoint_include_persistent_coverage_channel,
-    infer_checkpoint_reward_use_base_person_weight,
+    infer_checkpoint_reward_person_weight_mode,
     infer_checkpoint_hotspot_top_k,
     infer_checkpoint_local_people_map_mode,
     infer_checkpoint_status_history_seconds,
@@ -46,10 +47,16 @@ def parse_args():
 
 
 def infer_trained_num_drones(ckpt: dict) -> int:
+    enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
+
     def infer_from_base_dim(total_local_dim: int) -> int | None:
         for base_dim in (13, 12, 11, 9, 8, 6):
-            if total_local_dim >= base_dim and (total_local_dim - base_dim) % 6 == 0:
-                return ((total_local_dim - base_dim) // 6) + 1
+            adjusted_base_dim = base_dim + int(enable_agent_ids)
+            if (
+                total_local_dim >= adjusted_base_dim
+                and (total_local_dim - adjusted_base_dim) % 6 == 0
+            ):
+                return ((total_local_dim - adjusted_base_dim) // 6) + 1
         return None
 
     if "num_agents" in ckpt:
@@ -225,6 +232,7 @@ def main():
     trained_include_persistent_coverage = (
         infer_checkpoint_include_persistent_coverage_channel(ckpt)
     )
+    trained_enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
     trained_include_instant_fov_channels = (
         infer_checkpoint_include_instant_fov_channels(ckpt)
     )
@@ -235,15 +243,14 @@ def main():
         infer_checkpoint_include_local_recent_count_memory_channel(ckpt)
     )
     trained_local_people_map_mode = infer_checkpoint_local_people_map_mode(ckpt)
+    args.enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
     trained_include_shared_count_density = (
         infer_checkpoint_include_shared_count_density_channel(ckpt)
     )
     trained_include_shared_count_memory_staleness = (
         infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt)
     )
-    trained_reward_use_base_person_weight = (
-        infer_checkpoint_reward_use_base_person_weight(ckpt)
-    )
+    trained_reward_person_weight_mode = infer_checkpoint_reward_person_weight_mode(ckpt)
     active_num_drones = resolve_eval_active_num_drones(
         requested_num_drones=args.num_drones,
         trained_num_drones=trained_num_drones,
@@ -280,7 +287,7 @@ def main():
             "include_shared_count_memory_staleness_channel": (
                 trained_include_shared_count_memory_staleness
             ),
-            "reward_use_base_person_weight": trained_reward_use_base_person_weight,
+            "reward_person_weight_mode": trained_reward_person_weight_mode,
             "hotspot_top_k": trained_hotspot_top_k,
         },
     )
@@ -296,6 +303,7 @@ def main():
         ),
         include_instant_fov_channels=trained_include_instant_fov_channels,
         include_persistent_coverage_channel=trained_include_persistent_coverage,
+        enable_agent_ids=trained_enable_agent_ids,
     )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)
     actor = ActorNetwork(**actor_config).to(device)
@@ -323,39 +331,42 @@ def main():
             )
         )
 
-    for ep in range(args.episodes):
-        ep_start = time.perf_counter()
-        ep_reward, steps, info = run_episode(
-            env,
-            actor,
-            action_space,
-            device,
-            args,
-            live_debug=live_debug,
-        )
-        elapsed = time.perf_counter() - ep_start
-        sim_seconds = steps * env.dt
-        rtf = sim_seconds / elapsed if elapsed > 0 else float("inf")
+    try:
+        for ep in range(args.episodes):
+            ep_start = time.perf_counter()
+            ep_reward, steps, info = run_episode(
+                env,
+                actor,
+                action_space,
+                device,
+                args,
+                live_debug=live_debug,
+            )
+            elapsed = time.perf_counter() - ep_start
+            sim_seconds = steps * env.dt
+            rtf = sim_seconds / elapsed if elapsed > 0 else float("inf")
 
-        reward_info    = info.get("reward_info", {})
-        active_num_drones = info.get("active_num_drones", len(env.drones))
-        coverage_count = reward_info.get("coverage_count", 0)
-        r_disc         = reward_info.get("r_disc", 0.0)
-        new_disc       = reward_info.get("new_discovered", 0)
+            reward_info    = info.get("reward_info", {})
+            active_num_drones = info.get("active_num_drones", len(env.drones))
+            coverage_count = reward_info.get("coverage_count", 0)
+            r_disc         = reward_info.get("r_disc", 0.0)
+            new_disc       = reward_info.get("new_discovered", 0)
 
-        print(
-            f"Episode {ep + 1:2d}: "
-            f"active_drones={active_num_drones}  "
-            f"total_reward={ep_reward:8.3f}  "
-            f"steps={steps}  "
-            f"sim_time={sim_seconds:6.2f}s  "
-            f"RTF={rtf:6.2f}x  "
-            f"last_coverage={coverage_count}  "
-            f"last_r_disc={r_disc:.3f}  "
-            f"last_new_disc={new_disc}"
-        )
-
-    env.close()
+            print(
+                f"Episode {ep + 1:2d}: "
+                f"active_drones={active_num_drones}  "
+                f"total_reward={ep_reward:8.3f}  "
+                f"steps={steps}  "
+                f"sim_time={sim_seconds:6.2f}s  "
+                f"RTF={rtf:6.2f}x  "
+                f"last_coverage={coverage_count}  "
+                f"last_r_disc={r_disc:.3f}  "
+                f"last_new_disc={new_disc}"
+            )
+    finally:
+        if live_debug is not None:
+            live_debug.close()
+        env.close()
 
 
 if __name__ == "__main__":

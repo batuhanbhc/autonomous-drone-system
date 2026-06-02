@@ -75,6 +75,7 @@ class MultiUAVEnv:
         reward_ws: float = 1.0,
         reward_wclose: float = 1.0,
         reward_wfov_overlap: float = 3.0,
+        reward_fov_overlap_threshold: float = 0.2,
         reward_wcoll: float = 0.0,
         reward_we: float = 0.0,
         reward_wi: float = 0.0,
@@ -92,12 +93,13 @@ class MultiUAVEnv:
         cmd_history_len: int = 0,
         status_history_seconds: int = 4,
         hotspot_top_k: int = 3,
+        enable_agent_ids: bool = True,
         hotspot_min_density: float = 1.5,
         count_map_compression_scale: float = 1.5,
         hotspot_suppression_radius_scale: float = 4.0,
         hotspot_suppression_radius_min_cells: int = 2,
         reward_top_k_groups: int = 2,
-        reward_use_base_person_weight: bool = False,
+        reward_person_weight_mode: str = "base_plus_group",
         max_horizontal_velocity: float = 1.0,
         max_yaw_rate: float = 0.7,
         actor_grid_channels: int = 11,
@@ -113,7 +115,20 @@ class MultiUAVEnv:
         self.cmd_history_len   = int(cmd_history_len)
         self.status_history_seconds = int(status_history_seconds)
         self.reward_top_k_groups = int(reward_top_k_groups)
-        self.reward_use_base_person_weight = bool(reward_use_base_person_weight)
+        self.reward_person_weight_mode = str(reward_person_weight_mode).strip().lower()
+        if self.reward_person_weight_mode not in {
+            "uniform",
+            "base_plus_group",
+            "top_k_only",
+        }:
+            raise ValueError(
+                "reward_person_weight_mode must be one of "
+                "{'uniform', 'base_plus_group', 'top_k_only'}, got "
+                f"{reward_person_weight_mode!r}"
+            )
+        self.reward_use_base_person_weight = (
+            self.reward_person_weight_mode == "base_plus_group"
+        )
         self.max_horizontal_velocity = float(max_horizontal_velocity)
         self.max_yaw_rate      = float(max_yaw_rate)
 
@@ -238,6 +253,7 @@ class MultiUAVEnv:
             cmd_history_len=self.cmd_history_len,
             status_history_seconds=self.status_history_seconds,
             hotspot_top_k=hotspot_top_k,
+            enable_agent_ids=enable_agent_ids,
             hotspot_min_density=hotspot_min_density,
             count_map_compression_scale=count_map_compression_scale,
             hotspot_suppression_radius_scale=hotspot_suppression_radius_scale,
@@ -273,6 +289,7 @@ class MultiUAVEnv:
             ws=reward_ws,
             wclose=reward_wclose,
             wfov_overlap=reward_wfov_overlap,
+            fov_overlap_threshold=reward_fov_overlap_threshold,
             wcoll=reward_wcoll,
             we=reward_we,
             wi=reward_wi,
@@ -485,7 +502,7 @@ class MultiUAVEnv:
         gcx, gcy = group_center
         for _ in range(max_tries):
             angle = self._scenario_rng.uniform(-math.pi, math.pi)
-            r     = self._scenario_rng.uniform(0.0, group_radius)
+            r     = group_radius * math.sqrt(self._scenario_rng.random())
             px    = gcx + r * math.cos(angle)
             py    = gcy + r * math.sin(angle)
             px    = max(self.x_min + self.group_spawn_margin,
@@ -745,7 +762,9 @@ class MultiUAVEnv:
 
         weights: list[float] = []
         for group_id in assignments:
-            if self.reward_use_base_person_weight:
+            if self.reward_person_weight_mode == "uniform":
+                weights.append(1.0)
+            elif self.reward_person_weight_mode == "base_plus_group":
                 base_weight = 1.0
                 if (
                     effective_top_k_groups > 0
@@ -754,7 +773,7 @@ class MultiUAVEnv:
                 ):
                     weights.append(
                         base_weight
-                        + math.sqrt(float(group_counts.get(int(group_id), 1)))
+                        + math.log(1 + float(group_counts.get(int(group_id), 1)))
                     )
                 else:
                     weights.append(base_weight)
@@ -762,11 +781,11 @@ class MultiUAVEnv:
                 if group_id is None or int(group_id) not in target_group_id_set:
                     weights.append(0.0)
                 else:
-                    weights.append(math.sqrt(float(group_counts.get(int(group_id), 1))))
+                    weights.append(math.log(1 + float(group_counts.get(int(group_id), 1))))
             elif group_id is None:
                 weights.append(1.0)
             else:
-                weights.append(math.sqrt(float(group_counts.get(int(group_id), 1))))
+                weights.append(math.log(1 + float(group_counts.get(int(group_id), 1))))
         return weights, target_group_ids, effective_top_k_groups
 
     def _phase_context_for_decision_step(self, decision_step: int) -> dict[str, float]:

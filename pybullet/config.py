@@ -53,8 +53,8 @@ class SharedConfig:
     camera_tilt_deg: float = 55.0
     recent_half_life_seconds: float = 5.0
     historic_half_life_seconds: float = 60.0
-    coverage_half_life_seconds: float = 20.0
-    blob_sigma: float = 0.75
+    coverage_half_life_seconds: float = 10.0
+    blob_sigma: float = 1.5
     ego_sigma: float = 2.0
     people_count_normalizer: float = 30.0
     local_people_map_mode: str = "count_density"
@@ -64,7 +64,7 @@ class SharedConfig:
     include_instant_fov_channels: bool = True
     include_persistent_coverage_channel: bool = True
     hide_person_features_during_search: bool = True
-    count_memory_historic_miss_penalty: float = 0.15
+    count_memory_historic_miss_penalty: float = 0.5
     count_memory_decay_grace_period_seconds: float = 10.0
     max_horizontal_velocity: float = 1.0
     horizontal_bin_interval: float = 1.0
@@ -75,21 +75,23 @@ class SharedConfig:
     cmd_history_len: int = 5
     status_history_seconds: int = 5
     hotspot_top_k: int = 2
+    enable_agent_ids: bool = True
     hotspot_min_density: float = 1.5
     count_map_compression_scale: float = 3
     hotspot_suppression_radius_scale: float = 5.0
     hotspot_suppression_radius_min_cells: int = 4
     reward_top_k_groups: int = 2
-    reward_use_base_person_weight: bool = False
+    reward_person_weight_mode: str = "base_plus_group"
     reward_wc: float = 1.0
     reward_coverage_exponent: float = 1.0
-    reward_wqual: float = 2.0
+    reward_wqual: float = 1.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
     reward_wx: float = 10.0
     reward_ws: float = 10.0
     reward_wclose: float = 10.0
     reward_wfov_overlap: float = 0.0
+    reward_fov_overlap_threshold: float = 0.2
     reward_wcoll: float = 0.0
     reward_we: float = 0.0
     reward_wi: float = 0.0
@@ -110,22 +112,23 @@ class SharedConfig:
 
 @dataclass(frozen=True)
 class TrainConfig:
-    total_updates: int = 1000
+    total_updates: int = 3000
     n_envs: int = 4
     n_steps: int = 512
-    num_epochs: int = 2
+    num_epochs: int = 1
     batch_size: int = 512
     clip_eps: float = 0.15
     gamma: float = 0.97
     gae_lambda: float = 0.95
     lr_actor: float = 1.0e-4
     lr_critic: float = 1.0e-4
-    entropy_coef: float = 0.004
+    entropy_coef: float = 0.0005
     value_coef: float = 0.5
     anneal_lr: bool = True
     save_dir: str = "checkpoints"
+    run_name: str | None = None
     log_interval: int = 1
-    save_interval: int = 25
+    save_interval: int = 50
     tensorboard: bool = False
     live_debug: bool = False
     live_debug_every: int = 100
@@ -220,8 +223,38 @@ def infer_checkpoint_include_shared_count_density_channel(ckpt: dict) -> bool:
     return bool(ckpt.get("include_shared_count_density_channel", True))
 
 
+def normalize_reward_person_weight_mode(
+    mode: str,
+    *,
+    allow_legacy_top_k_only: bool = True,
+) -> str:
+    normalized = str(mode).strip().lower()
+    allowed_modes = {"uniform", "base_plus_group"}
+    if allow_legacy_top_k_only:
+        allowed_modes.add("top_k_only")
+    if normalized not in allowed_modes:
+        raise ValueError(
+            "reward_person_weight_mode must be one of "
+            f"{sorted(allowed_modes)}, got {mode!r}"
+        )
+    return normalized
+
+
+def infer_checkpoint_reward_person_weight_mode(ckpt: dict) -> str:
+    if "reward_person_weight_mode" in ckpt:
+        return normalize_reward_person_weight_mode(
+            ckpt["reward_person_weight_mode"],
+            allow_legacy_top_k_only=True,
+        )
+    return (
+        "base_plus_group"
+        if bool(ckpt.get("reward_use_base_person_weight", False))
+        else "top_k_only"
+    )
+
+
 def infer_checkpoint_reward_use_base_person_weight(ckpt: dict) -> bool:
-    return bool(ckpt.get("reward_use_base_person_weight", False))
+    return infer_checkpoint_reward_person_weight_mode(ckpt) == "base_plus_group"
 
 
 def infer_checkpoint_include_shared_count_memory_staleness_channel(ckpt: dict) -> bool:
@@ -238,6 +271,10 @@ def infer_checkpoint_hide_person_features_during_search(ckpt: dict) -> bool:
 
 def infer_checkpoint_include_local_recent_count_memory_channel(ckpt: dict) -> bool:
     return bool(ckpt.get("include_local_recent_count_memory_channel", False))
+
+
+def infer_checkpoint_enable_agent_ids(ckpt: dict) -> bool:
+    return bool(ckpt.get("enable_agent_ids", False))
 
 
 def infer_base_actor_grid_channels(
@@ -331,8 +368,10 @@ def infer_checkpoint_hotspot_top_k(
         13 if infer_checkpoint_local_visited_fraction_feature(ckpt)
         else (12 if infer_checkpoint_local_visible_delta_feature(ckpt) else 11)
     )
+    enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
     static_base_dim = (
         base_feature_dim
+        + int(enable_agent_ids)
         + 6 * (int(num_drones) - 1)
         + 5 * int(status_history_seconds)
         + 3 * int(cmd_history_len)
@@ -375,11 +414,13 @@ def infer_checkpoint_cmd_history_len(
     move_mask_dim = num_move_actions(action_space.vx_bins, action_space.vy_bins)
     base_local_dim = full_local_dim - move_mask_dim
     hotspot_top_k = int(ckpt.get("hotspot_top_k", 0))
+    enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
     static_base_dim = (
         (
             13 if infer_checkpoint_local_visited_fraction_feature(ckpt)
             else (12 if infer_checkpoint_local_visible_delta_feature(ckpt) else 11)
         )
+        + int(enable_agent_ids)
         + 5 * hotspot_top_k
         + 6 * (int(num_drones) - 1)
     )
@@ -624,6 +665,12 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         help="Number of top historic-density hotspots encoded into each drone's local vector.",
     )
     parser.add_argument(
+        "--enable_agent_ids",
+        action=argparse.BooleanOptionalAction,
+        default=SHARED_DEFAULTS.enable_agent_ids,
+        help="Append a normalized agent index scalar to each drone's actor/critic local vector.",
+    )
+    parser.add_argument(
         "--hotspot_min_density",
         type=float,
         default=SHARED_DEFAULTS.hotspot_min_density,
@@ -655,14 +702,21 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         help="Only the top-K densest groups contribute to coverage reward. 0 keeps legacy all-person coverage.",
     )
     parser.add_argument(
-        "--reward_use_base_person_weight",
-        action=argparse.BooleanOptionalAction,
-        default=SHARED_DEFAULTS.reward_use_base_person_weight,
+        "--reward_person_weight_mode",
+        type=str,
+        choices=("uniform", "base_plus_group"),
+        default=SHARED_DEFAULTS.reward_person_weight_mode,
         help=(
-            "If enabled, give all people a base coverage weight of 1.0 and "
-            "boost only effective top-K group members to 1.0 + sqrt(group size). "
-            "If disabled, keep the current top-K-only weighting behavior."
+            "Person coverage weighting mode. 'uniform' gives every person weight 1.0. "
+            "'base_plus_group' keeps the current base 1.0 plus top-K group bonus."
         ),
+    )
+    parser.add_argument(
+        "--reward_use_base_person_weight",
+        dest="reward_use_base_person_weight_legacy",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--reward_coverage_exponent",
@@ -680,7 +734,13 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         "--reward_wfov_overlap",
         type=float,
         default=SHARED_DEFAULTS.reward_wfov_overlap,
-        help="Weight for the current-step pairwise FOV IoU overlap penalty.",
+        help="Weight for the coverage-phase per-drone redundant FOV penalty.",
+    )
+    parser.add_argument(
+        "--reward_fov_overlap_threshold",
+        type=float,
+        default=SHARED_DEFAULTS.reward_fov_overlap_threshold,
+        help="Per-drone redundant-FOV fraction that is tolerated before overlap penalty starts.",
     )
     parser.add_argument("--reward_wcoll", type=float, default=SHARED_DEFAULTS.reward_wcoll)
     parser.add_argument("--reward_we", type=float, default=SHARED_DEFAULTS.reward_we)
@@ -795,6 +855,12 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--entropy_coef", type=float, default=TRAIN_DEFAULTS.entropy_coef)
     parser.add_argument("--value_coef", type=float, default=TRAIN_DEFAULTS.value_coef)
     parser.add_argument("--save_dir", type=str, default=TRAIN_DEFAULTS.save_dir)
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=TRAIN_DEFAULTS.run_name,
+        help="Custom directory name under --save_dir for fresh training runs.",
+    )
     parser.add_argument("--log_interval", type=int, default=TRAIN_DEFAULTS.log_interval)
     parser.add_argument(
         "--save_interval",
@@ -862,6 +928,20 @@ def build_env_kwargs(
     args: argparse.Namespace,
     overrides: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    reward_person_weight_mode = normalize_reward_person_weight_mode(
+        (
+            "base_plus_group"
+            if getattr(args, "reward_use_base_person_weight_legacy", None) is True
+            else "uniform"
+            if getattr(args, "reward_use_base_person_weight_legacy", None) is False
+            else getattr(
+                args,
+                "reward_person_weight_mode",
+                SHARED_DEFAULTS.reward_person_weight_mode,
+            )
+        ),
+        allow_legacy_top_k_only=False,
+    )
     actor_grid_channels = getattr(args, "actor_grid_channels", None)
     include_persistent_coverage_channel = getattr(
         args,
@@ -968,6 +1048,7 @@ def build_env_kwargs(
         "reward_ws": args.reward_ws,
         "reward_wclose": args.reward_wclose,
         "reward_wfov_overlap": args.reward_wfov_overlap,
+        "reward_fov_overlap_threshold": args.reward_fov_overlap_threshold,
         "reward_wcoll": args.reward_wcoll,
         "reward_we": args.reward_we,
         "reward_wi": args.reward_wi,
@@ -985,12 +1066,13 @@ def build_env_kwargs(
         "cmd_history_len": args.cmd_history_len,
         "status_history_seconds": args.status_history_seconds,
         "hotspot_top_k": args.hotspot_top_k,
+        "enable_agent_ids": args.enable_agent_ids,
         "hotspot_min_density": args.hotspot_min_density,
         "count_map_compression_scale": args.count_map_compression_scale,
         "hotspot_suppression_radius_scale": args.hotspot_suppression_radius_scale,
         "hotspot_suppression_radius_min_cells": args.hotspot_suppression_radius_min_cells,
         "reward_top_k_groups": args.reward_top_k_groups,
-        "reward_use_base_person_weight": args.reward_use_base_person_weight,
+        "reward_person_weight_mode": reward_person_weight_mode,
         "max_horizontal_velocity": args.max_horizontal_velocity,
         "max_yaw_rate": args.max_yaw_rate,
         "debug_observation_plots": args.debug_observation_plots,
@@ -1017,6 +1099,7 @@ def local_dim(
     cmd_history_len: int = 0,
     status_history_seconds: int = 0,
     hotspot_top_k: int = 0,
+    enable_agent_ids: bool = SHARED_DEFAULTS.enable_agent_ids,
 ) -> int:
     # Base local features:
     #   7 ego/search scalars (x, y, sin_yaw, cos_yaw, num_visible,
@@ -1031,6 +1114,7 @@ def local_dim(
     base_dim = (
         13
         + 5 * int(hotspot_top_k)
+        + int(bool(enable_agent_ids))
         + 6 * (num_drones - 1)
         + 5 * int(status_history_seconds)
         + 3 * int(cmd_history_len)
@@ -1085,6 +1169,7 @@ def actor_kwargs(
     cmd_history_len: int = 0,
     status_history_seconds: int = 0,
     hotspot_top_k: int = 0,
+    enable_agent_ids: bool = SHARED_DEFAULTS.enable_agent_ids,
     grid_channels: int | None = None,
     include_local_recent_count_memory_channel: bool = SHARED_DEFAULTS.include_local_recent_count_memory_channel,
     include_instant_fov_channels: bool = SHARED_DEFAULTS.include_instant_fov_channels,
@@ -1097,6 +1182,7 @@ def actor_kwargs(
             cmd_history_len,
             status_history_seconds,
             hotspot_top_k,
+            enable_agent_ids,
         ),
         "grid_channels": MODEL_DEFAULTS.grid_channels if grid_channels is None else int(grid_channels),
         "grid_h": MODEL_DEFAULTS.grid_h,
@@ -1152,6 +1238,7 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
         getattr(args, "cmd_history_len", 0),
         getattr(args, "status_history_seconds", 0),
         getattr(args, "hotspot_top_k", 0),
+        getattr(args, "enable_agent_ids", SHARED_DEFAULTS.enable_agent_ids),
         grid_channels=actor_grid_channels,
         include_local_recent_count_memory_channel=getattr(
             args,
