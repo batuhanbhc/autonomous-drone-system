@@ -47,7 +47,7 @@ ControlGateNode::ControlGateNode(const rclcpp::NodeOptions & options)
   const auto qos_be  = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   const auto qos_rel = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
   const auto qos_rel_latched =
-    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
 
   // Subscriptions
   sub_teleop_command_ = this->create_subscription<TeleopCmd>(

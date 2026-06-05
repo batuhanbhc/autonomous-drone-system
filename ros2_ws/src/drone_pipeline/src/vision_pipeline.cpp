@@ -470,8 +470,8 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
   // ── ROS interfaces ────────────────────────────────────────────────────────
   const auto sensor_qos   = rclcpp::SensorDataQoS();
   const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-  const auto reliable_latched_qos =
-    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+  const auto reliable_state_qos =
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
   const std::string dp    = "/drone_" + std::to_string(config_.drone_id);
 
   frame_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -493,7 +493,7 @@ VisionPipeline::VisionPipeline(const rclcpp::NodeOptions & options)
     frame_sub_opts);
 
   alt_hold_sub_ = create_subscription<drone_msgs::msg::Toggle>(
-    config_.alt_hold_topic, reliable_latched_qos,
+    config_.alt_hold_topic, reliable_state_qos,
     [this](drone_msgs::msg::Toggle::ConstSharedPtr msg) { altHoldCallback(msg); },
     alt_hold_sub_opts);
 
