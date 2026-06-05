@@ -46,6 +46,17 @@ double clampDouble(double value, double min_value, double max_value)
   return std::max(min_value, std::min(max_value, value));
 }
 
+bool pointInBounds(
+  double x,
+  double y,
+  double x_min,
+  double x_max,
+  double y_min,
+  double y_max)
+{
+  return x >= x_min && x <= x_max && y >= y_min && y <= y_max;
+}
+
 double angleWrap(double angle)
 {
   return std::atan2(std::sin(angle), std::cos(angle));
@@ -1060,15 +1071,13 @@ void AutonomousController::saveActorInputSnapshot(
     const auto & track = scene.tracks[i];
     const auto [forward, lateral] =
       worldToDroneLocal(track.x, track.y, scene.drone_x, scene.drone_y, scene.drone_yaw);
-    const auto [track_v, track_u] = worldToGrid(
+    const bool in_bounds = pointInBounds(
       track.x,
       track.y,
       config_.x_min,
       config_.x_max,
       config_.y_min,
-      config_.y_max,
-      config_.grid_h,
-      config_.grid_w);
+      config_.y_max);
     out << "{"
         << "\"track_id\": " << track.track_id << ','
         << "\"x\": " << track.x << ','
@@ -1077,9 +1086,22 @@ void AutonomousController::saveActorInputSnapshot(
         << "\"vy\": " << track.vy << ','
         << "\"forward\": " << forward << ','
         << "\"lateral\": " << lateral << ','
-        << "\"grid_v\": " << track_v << ','
-        << "\"grid_u\": " << track_u
-        << "}";
+        << "\"in_bounds\": " << (in_bounds ? "true" : "false");
+    if (in_bounds) {
+      const auto [track_v, track_u] = worldToGrid(
+        track.x,
+        track.y,
+        config_.x_min,
+        config_.x_max,
+        config_.y_min,
+        config_.y_max,
+        config_.grid_h,
+        config_.grid_w);
+      out << ','
+          << "\"grid_v\": " << track_v << ','
+          << "\"grid_u\": " << track_u;
+    }
+    out << "}";
   }
   out << "],\n";
   out << "    \"hotspots\": [";
@@ -1375,7 +1397,6 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
       obs_state_.footprint_map[i]);
   }
 
-  inputs.visible_count = scene.tracks.size();
   const bool is_search_phase = search_phase_steps_ > 0 && controller_step_ <= search_phase_steps_;
   const double search_phase_progress = [&]() {
       if (search_phase_steps_ == 0) {
@@ -1389,39 +1410,51 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     }();
   double centroid_x = 0.0;
   double centroid_y = 0.0;
-  if (!scene.tracks.empty()) {
-    std::vector<std::pair<double, double>> track_positions;
-    track_positions.reserve(scene.tracks.size());
-    for (const auto & track : scene.tracks) {
-      track_positions.emplace_back(track.x, track.y);
-      const auto [det_v, det_u] = worldToGrid(
+  std::vector<std::pair<double, double>> track_positions;
+  track_positions.reserve(scene.tracks.size());
+  for (const auto & track : scene.tracks) {
+    if (!pointInBounds(
         track.x,
         track.y,
         config_.x_min,
         config_.x_max,
         config_.y_min,
-        config_.y_max,
-        config_.grid_h,
-        config_.grid_w);
-      splatGaussianMax(instant_map, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
-      splatGaussianAdd(step_density, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
-      if (exposes_spatial_memory_channels_) {
-        splatGaussianMax(
-          obs_state_.people_belief_recent,
-          config_.grid_h,
-          config_.grid_w,
-          det_v,
-          det_u,
-          config_.blob_sigma);
-        splatGaussianMax(
-          obs_state_.people_belief_historic,
-          config_.grid_h,
-          config_.grid_w,
-          det_v,
-          det_u,
-          config_.blob_sigma);
-      }
+        config_.y_max))
+    {
+      continue;
     }
+
+    track_positions.emplace_back(track.x, track.y);
+    const auto [det_v, det_u] = worldToGrid(
+      track.x,
+      track.y,
+      config_.x_min,
+      config_.x_max,
+      config_.y_min,
+      config_.y_max,
+      config_.grid_h,
+      config_.grid_w);
+    splatGaussianMax(instant_map, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
+    splatGaussianAdd(step_density, config_.grid_h, config_.grid_w, det_v, det_u, config_.blob_sigma);
+    if (exposes_spatial_memory_channels_) {
+      splatGaussianMax(
+        obs_state_.people_belief_recent,
+        config_.grid_h,
+        config_.grid_w,
+        det_v,
+        det_u,
+        config_.blob_sigma);
+      splatGaussianMax(
+        obs_state_.people_belief_historic,
+        config_.grid_h,
+        config_.grid_w,
+        det_v,
+        det_u,
+        config_.blob_sigma);
+    }
+  }
+  inputs.visible_count = track_positions.size();
+  if (!track_positions.empty()) {
     std::tie(centroid_x, centroid_y) = geometricMedian(track_positions);
   }
 
@@ -1615,9 +1648,9 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     worldToDroneLocal(principal_x, principal_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
   (void)unused_principal_lateral;
 
-  updateStatusHistory(scene, scene.tracks.size());
+  updateStatusHistory(scene, inputs.visible_count);
 
-  if (!scene.tracks.empty() && !hide_person_features) {
+  if (inputs.visible_count > 0 && !hide_person_features) {
     inputs.centroid_present = 1.0f;
     const auto [centroid_forward, centroid_lateral] =
       worldToDroneLocal(centroid_x, centroid_y, scene.drone_x, scene.drone_y, scene.drone_yaw);
@@ -1639,12 +1672,12 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
   }
 
   const float delta_visible = static_cast<float>(clampDouble(
-      static_cast<double>(static_cast<int>(scene.tracks.size()) - prev_visible_count_) /
+      static_cast<double>(static_cast<int>(inputs.visible_count) - prev_visible_count_) /
       config_.people_count_normalizer,
       -1.0,
       1.0));
   const float visible_count_norm = hide_person_features ? 0.0f :
-    static_cast<float>(scene.tracks.size()) / static_cast<float>(config_.people_count_normalizer);
+    static_cast<float>(inputs.visible_count) / static_cast<float>(config_.people_count_normalizer);
 
   inputs.local_base[0] = static_cast<float>(
     2.0 * (scene.drone_x - config_.x_min) / (config_.x_max - config_.x_min) - 1.0);
@@ -1759,7 +1792,7 @@ AutonomousController::InferenceInputs AutonomousController::buildInferenceInputs
     inputs.move_mask[zero_vel_idx] = 1.0f;
   }
 
-  prev_visible_count_ = static_cast<int>(scene.tracks.size());
+  prev_visible_count_ = static_cast<int>(inputs.visible_count);
   return inputs;
 }
 
