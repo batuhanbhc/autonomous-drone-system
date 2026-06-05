@@ -1896,18 +1896,22 @@ void AutonomousController::onControlTimer()
     scene = last_scene_;
   }
 
-  if (!scene.odom_valid) {
-    publishCommand(scene.stamp, 0.0f, 0.0f, 0.0f);
-    logEvent(scene.stamp, "odom_invalid", &scene, nullptr, nullptr, 0.0);
-    return;
-  }
-
   try {
     ++controller_step_;
-    InferenceInputs inputs = buildInferenceInputs(scene);
     const bool should_save_actor_inputs =
       actor_input_snapshot_interval_steps_ > 0 &&
       (controller_step_ % actor_input_snapshot_interval_steps_ == 0);
+    InferenceInputs inputs = buildInferenceInputs(scene);
+
+    if (!scene.odom_valid) {
+      if (should_save_actor_inputs) {
+        saveActorInputSnapshot(scene.stamp, scene, inputs, nullptr);
+      }
+      publishCommand(scene.stamp, 0.0f, 0.0f, 0.0f);
+      logEvent(scene.stamp, "odom_invalid", &scene, nullptr, nullptr, 0.0);
+      return;
+    }
+
     double inference_ms = 0.0;
     std::vector<float> action;
     try {
