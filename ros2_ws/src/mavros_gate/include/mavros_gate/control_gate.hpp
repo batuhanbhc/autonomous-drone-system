@@ -209,7 +209,7 @@ private:
   float  alt_ctrl_min_agl_m_{2.0f};        // below this AGL, negative Vz from PID is suppressed
   float  alt_ctrl_output_min_{-1.5f};
   float  alt_ctrl_output_max_{1.5f};
-  float  alt_hold_estimated_vz_limit_scale_{2.0f};
+  float  alt_hold_estimated_vz_limit_scale_{4.0f};
   float  alt_hold_max_error_deviation_m_{1.0f};
 
   // ── Runtime flags ─────────────────────────────────────────────────────────

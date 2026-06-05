@@ -9,7 +9,7 @@ flight_params:
   alt_ctrl_setpoint_hz: 20.0          # how often guided velocity setpoints are sent to FCU
   cmd_stale_timeout_s: 0.5            
   alt_ctrl_min_agl_m: 3.0
-  alt_hold_estimated_vz_limit_scale: 2.0
+  alt_hold_estimated_vz_limit_scale: 4.0
   alt_hold_max_error_deviation_m: 0.75
 
   takeoff_m: 2.0
