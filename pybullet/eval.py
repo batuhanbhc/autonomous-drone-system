@@ -124,6 +124,17 @@ def current_eval_phase_name(env) -> str:
     return "SEARCH" if phase_context.get("is_search_phase", 0.0) > 0.5 else "COVERAGE"
 
 
+def resolve_eval_rtf(args) -> float | None:
+    rtf = args.rtf
+    if rtf is not None:
+        if rtf <= 0:
+            raise ValueError(f"--rtf must be > 0, got {rtf}")
+        return float(rtf)
+    if args.realtime:
+        return 1.0
+    return None
+
+
 def sync_phase_gui_param(param_id: int | None, phase_name: str) -> int | None:
     if param_id is not None:
         try:
@@ -143,6 +154,8 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
     done      = False
     step      = 0
     info      = {}
+    max_rtf = resolve_eval_rtf(args)
+    ep_wall_start = time.perf_counter()
 
     # Add "New Episode" button after reset (resetSimulation clears debug params).
     new_ep_btn = None
@@ -217,8 +230,11 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
             except Exception:
                 pass
 
-        if args.realtime:
-            time.sleep(env.dt)
+        if max_rtf is not None:
+            target_elapsed = (step * env.dt) / max_rtf
+            sleep_for = target_elapsed - (time.perf_counter() - ep_wall_start)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
 
     return ep_reward, step, info
 
@@ -298,6 +314,8 @@ def main():
         status_history_seconds=args.status_history_seconds,
         hotspot_top_k=trained_hotspot_top_k,
         grid_channels=trained_grid_channels,
+        grid_h=args.grid_h,
+        grid_w=args.grid_w,
         include_local_recent_count_memory_channel=(
             trained_include_local_recent_count_memory_channel
         ),

@@ -18,10 +18,10 @@ from rl.action_masking import num_move_actions
 @dataclass(frozen=True)
 class SharedConfig:
     gui: bool = False
-    x_min: float = -10.0
-    x_max: float = 10.0
-    y_min: float = -10.0
-    y_max: float = 10.0
+    x_min: float = -15.0
+    x_max: float = 15.0
+    y_min: float = -15.0
+    y_max: float = 15.0
     z_min: float = 0.3
     z_max: float = 8.0
     drone_height: float = 6.0
@@ -36,8 +36,8 @@ class SharedConfig:
     max_groups: int = 2
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
-    person_spawn_margin: float = 0.5
-    group_spawn_margin: float = 0.7
+    person_spawn_margin: float = 5.0
+    group_spawn_margin: float = 5.0
     min_person_spawn_dist: float = 0.4
     group_center_speed_min: float = 0.05
     group_center_speed_max: float = 0.3
@@ -143,6 +143,7 @@ class EvalConfig:
     episodes: int = 100
     deterministic: bool = True
     realtime: bool = False
+    rtf: float | None = None
     print_actions: bool = False
     show_drone0_inputs: bool = False
     show_drone0_inputs_every: int = 1
@@ -151,8 +152,8 @@ class EvalConfig:
 @dataclass(frozen=True)
 class ModelConfig:
     grid_channels: int = 11
-    grid_h: int = 40
-    grid_w: int = 40
+    grid_h: int = 60
+    grid_w: int = 60
     cnn_out_dim: int = 128
     hidden_dim: int = 256
 
@@ -558,6 +559,8 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=SHARED_DEFAULTS.coverage_half_life_seconds,
     )
+    parser.add_argument("--grid_h", type=int, default=MODEL_DEFAULTS.grid_h)
+    parser.add_argument("--grid_w", type=int, default=MODEL_DEFAULTS.grid_w)
     parser.add_argument("--blob_sigma", type=float, default=SHARED_DEFAULTS.blob_sigma)
     parser.add_argument("--ego_sigma", type=float, default=SHARED_DEFAULTS.ego_sigma)
     parser.add_argument(
@@ -909,6 +912,12 @@ def add_eval_args(parser: argparse.ArgumentParser) -> None:
         help="Run eval by sampling from the policy instead of taking argmax actions.",
     )
     parser.add_argument("--realtime", action="store_true", default=EVAL_DEFAULTS.realtime)
+    parser.add_argument(
+        "--rtf",
+        type=float,
+        default=EVAL_DEFAULTS.rtf,
+        help="Maximum real-time factor during eval stepping. For example, 10 limits the sim to 10x real time.",
+    )
     parser.add_argument("--print_actions", action="store_true", default=EVAL_DEFAULTS.print_actions)
     parser.add_argument(
         "--show_drone0_inputs",
@@ -1024,8 +1033,8 @@ def build_env_kwargs(
         "recent_half_life_seconds": args.recent_half_life_seconds,
         "historic_half_life_seconds": args.historic_half_life_seconds,
         "coverage_half_life_seconds": args.coverage_half_life_seconds,
-        "grid_h": MODEL_DEFAULTS.grid_h,
-        "grid_w": MODEL_DEFAULTS.grid_w,
+        "grid_h": args.grid_h,
+        "grid_w": args.grid_w,
         "blob_sigma": args.blob_sigma,
         "ego_sigma": args.ego_sigma,
         "people_count_normalizer": args.people_count_normalizer,
@@ -1171,6 +1180,8 @@ def actor_kwargs(
     hotspot_top_k: int = 0,
     enable_agent_ids: bool = SHARED_DEFAULTS.enable_agent_ids,
     grid_channels: int | None = None,
+    grid_h: int = MODEL_DEFAULTS.grid_h,
+    grid_w: int = MODEL_DEFAULTS.grid_w,
     include_local_recent_count_memory_channel: bool = SHARED_DEFAULTS.include_local_recent_count_memory_channel,
     include_instant_fov_channels: bool = SHARED_DEFAULTS.include_instant_fov_channels,
     include_persistent_coverage_channel: bool = SHARED_DEFAULTS.include_persistent_coverage_channel,
@@ -1185,8 +1196,8 @@ def actor_kwargs(
             enable_agent_ids,
         ),
         "grid_channels": MODEL_DEFAULTS.grid_channels if grid_channels is None else int(grid_channels),
-        "grid_h": MODEL_DEFAULTS.grid_h,
-        "grid_w": MODEL_DEFAULTS.grid_w,
+        "grid_h": int(grid_h),
+        "grid_w": int(grid_w),
         "cnn_out_dim": MODEL_DEFAULTS.cnn_out_dim,
         "hidden_dim": MODEL_DEFAULTS.hidden_dim,
         "num_vx_bins": int(action_space.vx_bins.shape[0]),
@@ -1240,6 +1251,8 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
         getattr(args, "hotspot_top_k", 0),
         getattr(args, "enable_agent_ids", SHARED_DEFAULTS.enable_agent_ids),
         grid_channels=actor_grid_channels,
+        grid_h=getattr(args, "grid_h", MODEL_DEFAULTS.grid_h),
+        grid_w=getattr(args, "grid_w", MODEL_DEFAULTS.grid_w),
         include_local_recent_count_memory_channel=getattr(
             args,
             "include_local_recent_count_memory_channel",
