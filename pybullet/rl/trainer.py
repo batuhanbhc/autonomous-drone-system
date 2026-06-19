@@ -21,6 +21,7 @@ from config import (
     MODEL_DEFAULTS,
     SHARED_DEFAULTS,
     infer_actor_state_grid_channels,
+    infer_checkpoint_actor_use_branched_cnn,
     infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_include_instant_fov_channels,
@@ -138,6 +139,7 @@ class MAPPOTrainer:
         include_persistent_coverage_channel: bool = (
             SHARED_DEFAULTS.include_persistent_coverage_channel
         ),
+        use_branched_cnn: bool = MODEL_DEFAULTS.actor_use_branched_cnn,
     ):
         if not envs:
             raise ValueError("MAPPOTrainer requires at least one environment instance.")
@@ -185,6 +187,7 @@ class MAPPOTrainer:
         self.move_mask_dim = int(self.vx_bins.shape[0] * self.vy_bins.shape[0])
 
         self.grid_channels = int(grid_channels)
+        self.actor_use_branched_cnn = bool(use_branched_cnn)
         if self.grid_channels < 6:
             raise ValueError(f"grid_channels must be >= 6, got {self.grid_channels}")
         self.local_people_map_mode = str(
@@ -241,6 +244,7 @@ class MAPPOTrainer:
             include_persistent_coverage_channel=bool(
                 getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
             ),
+            use_branched_cnn=self.actor_use_branched_cnn,
         ).to(self.device)
 
         self.critic = CriticNetwork(
@@ -249,6 +253,7 @@ class MAPPOTrainer:
             grid_w=grid_w,
             cnn_out_dim=cnn_out_dim,
             poses_dim=self.poses_dim,
+            num_agents=self.num_agents,
             hidden_dim=hidden_dim,
         ).to(self.device)
 
@@ -385,8 +390,25 @@ class MAPPOTrainer:
             )
 
     def _compute_critic_diagnostics(self) -> Dict[str, float]:
-        values = self.buffer.values.astype(np.float64).reshape(-1)
-        returns = self.buffer.returns.astype(np.float64).reshape(-1)
+        active_mask = self.buffer.actor_masks.astype(bool)
+        values = self.buffer.values[active_mask].astype(np.float64)
+        returns = self.buffer.returns[active_mask].astype(np.float64)
+        if values.size == 0 or returns.size == 0:
+            return {
+                "value_mean": 0.0,
+                "value_std": 0.0,
+                "return_mean": 0.0,
+                "return_std": 0.0,
+                "value_return_corr": float("nan"),
+                "explained_variance": float("nan"),
+                "value_return_mae": 0.0,
+                "value_return_rmse": 0.0,
+                "zero_baseline_mae": 0.0,
+                "zero_baseline_rmse": 0.0,
+                "value_bias_mean": 0.0,
+                "frac_abs_value_lt_1": 0.0,
+                "frac_abs_return_lt_1": 0.0,
+            }
         errors = values - returns
 
         value_std = float(values.std())
@@ -467,13 +489,10 @@ class MAPPOTrainer:
         packed_log_probs = np.zeros((self.num_agents,), dtype=np.float32)
         packed_move_masks = np.ones((self.num_agents, self.move_mask_dim), dtype=np.float32)
         actor_masks = np.zeros((self.num_agents,), dtype=np.float32)
-        critic_weights = np.zeros((self.num_agents,), dtype=np.float32)
         packed_grids[:active_agents] = grids_t.cpu().numpy()
         packed_locs[:active_agents] = locs_t.cpu().numpy()
         packed_move_masks[:active_agents] = move_masks_t.cpu().numpy()
         actor_masks[:active_agents] = 1.0
-        if active_agents > 0:
-            critic_weights[:active_agents] = 1.0 / active_agents
         return (
             packed_grids,
             packed_locs,
@@ -481,15 +500,14 @@ class MAPPOTrainer:
             packed_log_probs,
             packed_move_masks,
             actor_masks,
-            critic_weights,
         )
 
     def _critic_forward(self, global_state: Dict) -> torch.Tensor:
-        """Run critic forward pass and return denormalized value prediction."""
+        """Run critic forward pass and return denormalized per-agent values."""
         grid_t  = torch.FloatTensor(global_state["grid"]).unsqueeze(0).to(self.device)
         poses_t = torch.FloatTensor(global_state["poses"]).unsqueeze(0).to(self.device)
-        norm_value = self.critic(grid_t, poses_t)
-        return self.value_rms.denormalize_tensor(norm_value)
+        norm_values = self.critic(grid_t, poses_t).squeeze(0)
+        return self.value_rms.denormalize_tensor(norm_values)
 
     def _compute_move_masks(self, env) -> np.ndarray:
         return compute_move_action_masks(
@@ -659,8 +677,8 @@ class MAPPOTrainer:
                 dtype=np.float32,
             )
             step_actor_masks = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
-            step_critic_weights = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
-            step_rewards = np.zeros((self.num_envs,), dtype=np.float32)
+            step_rewards = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
+            step_reward_means = np.zeros((self.num_envs,), dtype=np.float32)
             step_dones = np.zeros((self.num_envs,), dtype=np.float32)
             step_global_grids = np.zeros(
                 (
@@ -672,7 +690,7 @@ class MAPPOTrainer:
                 dtype=np.float32,
             )
             step_global_poses = np.zeros((self.num_envs, self.poses_dim), dtype=np.float32)
-            step_values = np.zeros((self.num_envs,), dtype=np.float32)
+            step_values = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
 
             for env_idx, env in enumerate(self.envs):
                 move_masks = self._compute_move_masks(env)
@@ -694,13 +712,15 @@ class MAPPOTrainer:
                     packed_log_probs,
                     packed_move_masks,
                     actor_masks,
-                    critic_weights,
                 ) = self._pack_actor_inputs(grids_t, locs_t, move_masks_t)
                 packed_actions[:active_agents] = action_indices.cpu().numpy()
                 packed_log_probs[:active_agents] = log_probs.cpu().numpy()
 
                 global_state = self._build_global_state(env, obs_with_masks)
-                value = self._critic_forward(global_state).item()
+                value = (
+                    self._critic_forward(global_state).detach().cpu().numpy().astype(np.float32)
+                    * actor_masks
+                )
 
                 proposed_actions = self._actions_to_env(action_indices)
                 executed_actions, env_overrides, env_candidates = self._apply_sticky_actions(
@@ -709,7 +729,17 @@ class MAPPOTrainer:
                 )
                 sticky_overrides += env_overrides
                 sticky_candidates += env_candidates
-                next_obs, reward, done, _ = env.step(executed_actions)
+                next_obs, reward, done, info = env.step(executed_actions)
+
+                per_agent_rewards = np.zeros((self.num_agents,), dtype=np.float32)
+                raw_per_agent_rewards = info.get("per_agent_rewards", [])
+                if raw_per_agent_rewards:
+                    raw_per_agent_rewards = np.asarray(raw_per_agent_rewards, dtype=np.float32)
+                    valid_reward_count = min(active_agents, raw_per_agent_rewards.shape[0])
+                    per_agent_rewards[:valid_reward_count] = raw_per_agent_rewards[:valid_reward_count]
+                else:
+                    per_agent_rewards[:active_agents] = float(reward)
+                per_agent_rewards *= actor_masks
 
                 if done:
                     next_obs = env.reset()
@@ -721,8 +751,8 @@ class MAPPOTrainer:
                 step_log_probs[env_idx] = packed_log_probs
                 step_move_masks[env_idx] = packed_move_masks
                 step_actor_masks[env_idx] = actor_masks
-                step_critic_weights[env_idx] = critic_weights
-                step_rewards[env_idx] = float(reward)
+                step_rewards[env_idx] = per_agent_rewards
+                step_reward_means[env_idx] = float(reward)
                 step_dones[env_idx] = float(done)
                 step_global_grids[env_idx] = global_state["grid"]
                 step_global_poses[env_idx] = global_state["poses"]
@@ -736,8 +766,8 @@ class MAPPOTrainer:
                 log_probs=step_log_probs,
                 move_masks=step_move_masks,
                 actor_masks=step_actor_masks,
-                critic_weights=step_critic_weights,
                 rewards=step_rewards,
+                reward_means=step_reward_means,
                 dones=step_dones,
                 global_grids=step_global_grids,
                 global_poses=step_global_poses,
@@ -745,12 +775,17 @@ class MAPPOTrainer:
             )
             self.total_steps += self.num_envs
 
-        last_values = np.zeros((self.num_envs,), dtype=np.float32)
+        last_values = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
         for env_idx, env in enumerate(self.envs):
             last_move_masks = self._compute_move_masks(env)
             last_obs_with_masks = self._augment_obs_with_move_masks(obs_per_env[env_idx], last_move_masks)
             last_global_state = self._build_global_state(env, last_obs_with_masks)
-            last_values[env_idx] = self._critic_forward(last_global_state).item()
+            actor_mask = np.zeros((self.num_agents,), dtype=np.float32)
+            actor_mask[:len(last_obs_with_masks)] = 1.0
+            last_values[env_idx] = (
+                self._critic_forward(last_global_state).detach().cpu().numpy().astype(np.float32)
+                * actor_mask
+            )
         self.buffer.compute_returns(last_values)
         self._last_rollout_sticky_rate = (
             sticky_overrides / sticky_candidates if sticky_candidates > 0 else 0.0
@@ -761,16 +796,15 @@ class MAPPOTrainer:
     def _update(self):
         self.actor.train()
         self.critic.train()
-        self.value_rms.update(self.buffer.returns)
+        self.value_rms.update(self.buffer.returns[self.buffer.actor_masks > 0.0])
 
         actor_losses, critic_losses, entropies, clip_fracs = [], [], [], []
 
         for _ in range(self.num_epochs):
-            for batch in self.buffer.get_batches(self.batch_size):
+            for batch in self.buffer.get_actor_batches(self.batch_size):
                 (
                     grids_b, locs_b, actions_b,
-                    old_log_probs_b, move_masks_b, actor_masks_b, critic_weights_b, advantages_b,
-                    returns_b, g_grids_b, g_poses_b,
+                    old_log_probs_b, move_masks_b, actor_masks_b, advantages_b,
                 ) = batch
 
                 # Actor update
@@ -793,18 +827,6 @@ class MAPPOTrainer:
                 nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_opt.step()
 
-                # Critic update
-                values_pred = self.critic(g_grids_b, g_poses_b).squeeze(-1)
-                returns_target = self.value_rms.normalize_tensor(returns_b)
-                critic_loss = self.value_coef * (
-                    nn.functional.smooth_l1_loss(values_pred, returns_target, reduction="none") * critic_weights_b
-                ).sum() / critic_weights_b.sum().clamp_min(1.0)
-
-                self.critic_opt.zero_grad()
-                critic_loss.backward()
-                nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
-                self.critic_opt.step()
-
                 with torch.no_grad():
                     active = actor_masks_b > 0
                     if active.any():
@@ -813,9 +835,29 @@ class MAPPOTrainer:
                         clip_frac = 0.0
 
                 actor_losses.append(actor_loss.item())
-                critic_losses.append(critic_loss.item())
                 entropies.append(((entropy * actor_masks_b).sum() / valid_count).item())
                 clip_fracs.append(clip_frac)
+
+            critic_batch_size = max(1, self.batch_size // max(self.num_agents, 1))
+            for batch in self.buffer.get_critic_batches(critic_batch_size):
+                g_grids_b, g_poses_b, critic_masks_b, returns_b = batch
+
+                values_pred = self.critic(g_grids_b, g_poses_b)
+                returns_target = self.value_rms.normalize_tensor(returns_b)
+                critic_loss = self.value_coef * (
+                    nn.functional.smooth_l1_loss(
+                        values_pred,
+                        returns_target,
+                        reduction="none",
+                    ) * critic_masks_b
+                ).sum() / critic_masks_b.sum().clamp_min(1.0)
+
+                self.critic_opt.zero_grad()
+                critic_loss.backward()
+                nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+                self.critic_opt.step()
+
+                critic_losses.append(critic_loss.item())
 
         return np.mean(actor_losses), np.mean(critic_losses), np.mean(entropies), np.mean(clip_fracs)
 
@@ -887,7 +929,7 @@ class MAPPOTrainer:
             for _ in range(remaining_updates):
                 update = self.current_update + 1
                 obs_per_env = self._collect_rollout(obs_per_env, update)
-                ep_reward += self.buffer.rewards.sum()
+                ep_reward += self.buffer.reward_means.sum()
                 done_count = int(self.buffer.dones.sum())
                 if done_count > 0:
                     ep_count += done_count
@@ -989,6 +1031,7 @@ class MAPPOTrainer:
                 "num_agents":  self.num_agents,
                 "grid_channels": self.grid_channels,
                 "critic_grid_channels": self.critic_grid_channels,
+                "actor_use_branched_cnn": self.actor_use_branched_cnn,
                 "include_persistent_coverage_channel": bool(
                     getattr(self.env.obs_builder, "include_persistent_coverage_channel", False)
                 ),
@@ -1019,10 +1062,12 @@ class MAPPOTrainer:
                 "cmd_history_len": getattr(self.env, "cmd_history_len", 0),
                 "status_history_seconds": getattr(self.env, "status_history_seconds", 0),
                 "hotspot_top_k": getattr(self.env.obs_builder, "hotspot_top_k", 0),
+                "hotspot_include_teammate_offsets": True,
                 "enable_agent_ids": bool(
                     getattr(self.env.obs_builder, "enable_agent_ids", False)
                 ),
                 "move_mask_dim": self.move_mask_dim,
+                "multi_value_critic": True,
                 "total_steps": self.total_steps,
                 "update": self.current_update,
                 "n_envs": self.num_envs,
@@ -1048,8 +1093,12 @@ class MAPPOTrainer:
                 infer_actor_state_grid_channels(ckpt["actor"]),
             )
         )
+        ckpt_actor_use_branched_cnn = infer_checkpoint_actor_use_branched_cnn(ckpt)
         current_local_dim = int(self.actor.local_mlp[0].in_features)
         current_grid_channels = int(self.actor.grid_channels)
+        current_actor_use_branched_cnn = bool(
+            getattr(self.actor, "use_branched_cnn", False)
+        )
         ckpt_critic_grid_channels = int(
             ckpt.get(
                 "critic_grid_channels",
@@ -1129,6 +1178,12 @@ class MAPPOTrainer:
                 "Checkpoint actor grid channel count does not match the current "
                 f"observation layout: checkpoint={ckpt_grid_channels}, "
                 f"current={current_grid_channels}."
+            )
+        if ckpt_actor_use_branched_cnn != current_actor_use_branched_cnn:
+            raise ValueError(
+                "Checkpoint actor CNN layout does not match the current actor "
+                f"architecture: checkpoint use_branched_cnn={ckpt_actor_use_branched_cnn}, "
+                f"current={current_actor_use_branched_cnn}."
             )
         if (
             ckpt_include_persistent_coverage_channel

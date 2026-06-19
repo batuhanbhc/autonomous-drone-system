@@ -9,7 +9,7 @@ Actor and critic grids have different channel counts:
 Stored separately so neither shape pollutes the other.
 
 Key design decision: returns are NOT normalised here.
-Only advantages are normalised (zero mean, unit variance per rollout).
+Only advantages are normalised (zero mean, unit variance over active slots).
 """
 
 import numpy as np
@@ -60,18 +60,18 @@ class RolloutBuffer:
         # policy is evaluated under the same valid-action set as rollout time.
         self.move_masks = np.ones((T, E, N, self.move_mask_dim), dtype=np.float32)
         self.actor_masks = np.zeros((T, E, N), dtype=np.float32)
-        self.critic_weights = np.zeros((T, E, N), dtype=np.float32)
+        self.reward_means = np.zeros((T, E), dtype=np.float32)
 
-        self.rewards = np.zeros((T, E), dtype=np.float32)
+        self.rewards = np.zeros((T, E, N), dtype=np.float32)
         self.dones   = np.zeros((T, E), dtype=np.float32)
 
         # Critic inputs (global, one per step) — separate grid shape from actor
         self.global_grids = np.zeros((T, E, Cc, H, W), dtype=np.float32)
         self.global_poses = np.zeros((T, E, self.poses_dim), dtype=np.float32)
 
-        self.values     = np.zeros((T, E), dtype=np.float32)
-        self.returns    = np.zeros((T, E), dtype=np.float32)
-        self.advantages = np.zeros((T, E), dtype=np.float32)
+        self.values     = np.zeros((T, E, N), dtype=np.float32)
+        self.returns    = np.zeros((T, E, N), dtype=np.float32)
+        self.advantages = np.zeros((T, E, N), dtype=np.float32)
         self.ptr  = 0
         self.full = False
 
@@ -83,8 +83,8 @@ class RolloutBuffer:
         log_probs,
         move_masks,
         actor_masks,
-        critic_weights,
         rewards,
+        reward_means,
         dones,
         global_grids,
         global_poses,
@@ -97,8 +97,8 @@ class RolloutBuffer:
         self.log_probs[t]     = log_probs
         self.move_masks[t]    = move_masks
         self.actor_masks[t]   = actor_masks
-        self.critic_weights[t] = critic_weights
         self.rewards[t]       = rewards
+        self.reward_means[t]  = reward_means
         self.dones[t]         = dones.astype(np.float32)
         self.global_grids[t]  = global_grids
         self.global_poses[t]  = global_poses
@@ -110,29 +110,42 @@ class RolloutBuffer:
 
     def compute_returns(self, last_values: np.ndarray):
         T = self.rollout_steps
-        gae = np.zeros((self.num_envs,), dtype=np.float32)
+        gae = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
         for t in reversed(range(T)):
             next_value = last_values if t == T - 1 else self.values[t + 1]
             next_non_terminal = 1.0 - self.dones[t]
+            current_mask = self.actor_masks[t]
             delta = (
                 self.rewards[t]
-                + self.gamma * next_value * next_non_terminal
+                + self.gamma * next_value * next_non_terminal[:, None]
                 - self.values[t]
-            )
-            gae = delta + self.gamma * self.gae_lambda * next_non_terminal * gae
+            ) * current_mask
+            gae = (
+                delta
+                + self.gamma
+                * self.gae_lambda
+                * next_non_terminal[:, None]
+                * gae
+            ) * current_mask
             self.advantages[t] = gae
-            self.returns[t] = gae + self.values[t]
+            self.returns[t] = (gae + self.values[t]) * current_mask
 
         # Normalise ONLY advantages (zero mean, unit variance).
         # Returns are kept in their original scale so the critic learns
         # the true value function.
-        adv = self.advantages
-        self.advantages = (adv - adv.mean()) / (adv.std() + 1e-8)
+        active_mask = self.actor_masks > 0.0
+        if np.any(active_mask):
+            active_adv = self.advantages[active_mask]
+            adv_mean = float(active_adv.mean())
+            adv_std = float(active_adv.std())
+            self.advantages[active_mask] = (
+                active_adv - adv_mean
+            ) / (adv_std + 1e-8)
+        self.advantages[~active_mask] = 0.0
 
-    def get_batches(self, batch_size: int):
+    def get_actor_batches(self, batch_size: int):
         T, E, N = self.rollout_steps, self.num_envs, self.num_agents
         C, H, W = self.grid_shape
-        Cc      = self.critic_grid_shape[0]
 
         grids      = self.grids.reshape(T * E * N, C, H, W)
         locals_    = self.locals.reshape(T * E * N, self.local_dim)
@@ -140,15 +153,7 @@ class RolloutBuffer:
         log_probs  = self.log_probs.reshape(T * E * N)
         move_masks = self.move_masks.reshape(T * E * N, self.move_mask_dim)
         actor_masks = self.actor_masks.reshape(T * E * N)
-        critic_weights = self.critic_weights.reshape(T * E * N)
-        advantages = np.repeat(self.advantages.reshape(T * E), N)
-        returns    = np.repeat(self.returns.reshape(T * E), N)
-
-        # Repeat critic grid and poses for each agent
-        flat_g_grids = self.global_grids.reshape(T * E, Cc, H, W)
-        flat_g_poses = self.global_poses.reshape(T * E, self.poses_dim)
-        g_grids = np.repeat(flat_g_grids, N, axis=0)  # (T*E*N, Cc, H, W)
-        g_poses = np.repeat(flat_g_poses, N, axis=0)  # (T*E*N, poses_dim)
+        advantages = self.advantages.reshape(T * E * N)
 
         indices = np.arange(T * E * N)
         np.random.shuffle(indices)
@@ -162,9 +167,26 @@ class RolloutBuffer:
                 torch.FloatTensor(log_probs[idx]).to(self.device),
                 torch.FloatTensor(move_masks[idx]).to(self.device),
                 torch.FloatTensor(actor_masks[idx]).to(self.device),
-                torch.FloatTensor(critic_weights[idx]).to(self.device),
                 torch.FloatTensor(advantages[idx]).to(self.device),
+            )
+
+    def get_critic_batches(self, batch_size: int):
+        T, E, N = self.rollout_steps, self.num_envs, self.num_agents
+        Cc, H, W = self.critic_grid_shape
+
+        global_grids = self.global_grids.reshape(T * E, Cc, H, W)
+        global_poses = self.global_poses.reshape(T * E, self.poses_dim)
+        critic_masks = self.actor_masks.reshape(T * E, N)
+        returns = self.returns.reshape(T * E, N)
+
+        indices = np.arange(T * E)
+        np.random.shuffle(indices)
+
+        for start in range(0, T * E, batch_size):
+            idx = indices[start: start + batch_size]
+            yield (
+                torch.FloatTensor(global_grids[idx]).to(self.device),
+                torch.FloatTensor(global_poses[idx]).to(self.device),
+                torch.FloatTensor(critic_masks[idx]).to(self.device),
                 torch.FloatTensor(returns[idx]).to(self.device),
-                torch.FloatTensor(g_grids[idx]).to(self.device),
-                torch.FloatTensor(g_poses[idx]).to(self.device),
             )

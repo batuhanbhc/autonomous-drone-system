@@ -13,11 +13,13 @@ from datetime import datetime
 import torch
 
 from config import (
+    EVAL_DEFAULTS,
     add_shared_args,
     add_train_args,
     build_action_space,
     build_env,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_actor_use_branched_cnn,
     infer_checkpoint_cmd_history_len,
     infer_checkpoint_hide_person_features_during_search,
     infer_checkpoint_enable_agent_ids,
@@ -31,6 +33,7 @@ from config import (
     infer_checkpoint_status_history_seconds,
     trainer_kwargs,
 )
+from results_ws.eval_metrics import run_eval_metrics
 from rl.trainer import MAPPOTrainer
 
 
@@ -79,6 +82,7 @@ def main():
     if args.load:
         ckpt = torch.load(args.load, map_location="cpu")
         args.actor_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
+        args.actor_use_branched_cnn = infer_checkpoint_actor_use_branched_cnn(ckpt)
         args.include_persistent_coverage_channel = (
             infer_checkpoint_include_persistent_coverage_channel(ckpt)
         )
@@ -126,6 +130,22 @@ def main():
     finally:
         for env in envs:
             env.close()
+
+    final_checkpoint_path = os.path.join(args.save_dir, "final.pt")
+    eval_output_path = os.path.join(args.save_dir, "eval_metrics_report.txt")
+    eval_args = argparse.Namespace(**vars(args))
+    eval_args.load = final_checkpoint_path
+    eval_args.output = eval_output_path
+    eval_args.episodes = getattr(eval_args, "episodes", EVAL_DEFAULTS.episodes)
+    eval_args.deterministic = getattr(
+        eval_args,
+        "deterministic",
+        EVAL_DEFAULTS.deterministic,
+    )
+    eval_args.base_seed = getattr(eval_args, "base_seed", 0)
+    eval_args.drone_counts = getattr(eval_args, "drone_counts", "")
+    print(f"[MAPPO] Running final eval metrics on {final_checkpoint_path}")
+    run_eval_metrics(eval_args)
 
 
 if __name__ == "__main__":

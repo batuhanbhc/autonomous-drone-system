@@ -21,6 +21,7 @@ from config import (
     build_action_space,
     build_env,
     infer_checkpoint_actor_grid_channels,
+    infer_checkpoint_actor_use_branched_cnn,
     infer_checkpoint_cmd_history_len,
     infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hide_person_features_during_search,
@@ -245,6 +246,7 @@ def main():
     ckpt = torch.load(args.load, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
     trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
+    trained_actor_use_branched_cnn = infer_checkpoint_actor_use_branched_cnn(ckpt)
     trained_include_persistent_coverage = (
         infer_checkpoint_include_persistent_coverage_channel(ckpt)
     )
@@ -321,6 +323,7 @@ def main():
         ),
         include_instant_fov_channels=trained_include_instant_fov_channels,
         include_persistent_coverage_channel=trained_include_persistent_coverage,
+        actor_use_branched_cnn=trained_actor_use_branched_cnn,
         enable_agent_ids=trained_enable_agent_ids,
     )
     actor_config["local_dim"] = infer_checkpoint_local_dim(ckpt)

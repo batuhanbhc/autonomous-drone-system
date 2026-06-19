@@ -68,6 +68,7 @@ class MultiUAVEnv:
         count_memory_decay_grace_period_seconds: float = 3.0,
         reward_wc: float = 1.0,
         reward_coverage_exponent: float = 1.5,
+        reward_wcoverage_contrib: float = 1.0,
         reward_wqual: float = 2.0,
         reward_wd: float = 0.0,
         reward_wo: float = 0.0,
@@ -282,6 +283,7 @@ class MultiUAVEnv:
             y_max=self.y_max,
             wc=reward_wc,
             coverage_exponent=reward_coverage_exponent,
+            wcoverage_contrib=reward_wcoverage_contrib,
             wqual=reward_wqual,
             wd=reward_wd,
             wo=reward_wo,
@@ -1107,6 +1109,7 @@ class MultiUAVEnv:
             info = {
                 "visible_ids_per_drone": visible_ids_per_drone,
                 "detections_per_drone":  detections_per_drone,
+                "per_agent_rewards":     reward_info.get("per_agent_total_reward", []),
                 "reward_info":           reward_info,
                 "active_num_drones":     self.active_num_drones,
                 "num_groups":            self.episode_group_info["num_groups"],
@@ -1133,11 +1136,19 @@ class MultiUAVEnv:
             )
             info = {
                 "simulation_error": str(e),
+                "per_agent_rewards": [-1.0] * int(self.active_num_drones),
                 "reward_info": {
                     "r_cov": 0.0, "r_fovq": 0.0, "r_disc": 0.0, "new_discovered": 0,
                     "coverage_count": 0, "r_ov": 0.0, "r_idle": 0.0,
                     "r_fov": 0.0, "r_exp": 0.0, "r_bound": 0.0, "r_close": 0.0,
                     "r_fov_overlap": 0.0, "r_coll": 0.0, "r_safe": 0.0, "r_energy": 0.0,
+                    "per_agent_r_fovq": [0.0] * int(self.active_num_drones),
+                    "per_agent_mean_visible_quality": [0.0] * int(self.active_num_drones),
+                    "per_agent_visible_ratio": [0.0] * int(self.active_num_drones),
+                    "per_agent_r_bound": [0.0] * int(self.active_num_drones),
+                    "per_agent_r_close": [0.0] * int(self.active_num_drones),
+                    "shared_reward": -1.0,
+                    "per_agent_total_reward": [-1.0] * int(self.active_num_drones),
                     "total_reward": -1.0,
                 },
                 "active_num_drones": self.active_num_drones,

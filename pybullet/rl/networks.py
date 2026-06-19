@@ -3,7 +3,7 @@ Actor-Critic networks for MAPPO.
 
 Actor:  CNN(grid) + MLP(local) → fused → masked joint move head over (vx, vy)
         plus a yaw-rate head
-Critic: CNN(global grid) + MLP(all_poses) → fused → scalar value
+Critic: CNN(global grid) + MLP(all_poses) → fused → one value per agent slot
 
 Both networks process the spatial grid through the same CNN architecture.
 """
@@ -240,21 +240,33 @@ class ActorNetwork(nn.Module):
         include_local_recent_count_memory_channel: bool = True,
         include_instant_fov_channels: bool = True,
         include_persistent_coverage_channel: bool = False,
+        use_branched_cnn: bool = False,
     ):
         super().__init__()
         self.grid_channels = int(grid_channels)
         self.num_vx_bins = int(num_vx_bins)
         self.num_vy_bins = int(num_vy_bins)
         self.num_move_bins = self.num_vx_bins * self.num_vy_bins
-        self.cnn = BranchedActorEncoder(
-            grid_channels=grid_channels,
-            grid_h=grid_h,
-            grid_w=grid_w,
-            out_dim=cnn_out_dim,
-            include_local_recent_count_memory_channel=include_local_recent_count_memory_channel,
-            include_instant_fov_channels=include_instant_fov_channels,
-            include_persistent_coverage_channel=include_persistent_coverage_channel,
-        )
+        self.use_branched_cnn = bool(use_branched_cnn)
+        if self.use_branched_cnn:
+            self.cnn = BranchedActorEncoder(
+                grid_channels=grid_channels,
+                grid_h=grid_h,
+                grid_w=grid_w,
+                out_dim=cnn_out_dim,
+                include_local_recent_count_memory_channel=(
+                    include_local_recent_count_memory_channel
+                ),
+                include_instant_fov_channels=include_instant_fov_channels,
+                include_persistent_coverage_channel=include_persistent_coverage_channel,
+            )
+        else:
+            self.cnn = CNNEncoder(
+                in_channels=grid_channels,
+                grid_h=grid_h,
+                grid_w=grid_w,
+                out_dim=cnn_out_dim,
+            )
 
         self.local_mlp = nn.Sequential(
             nn.Linear(local_dim, 128),
@@ -357,7 +369,7 @@ class ActorNetwork(nn.Module):
 class CriticNetwork(nn.Module):
     """
     Processes the shared grid spatially (CNN) and all drone poses as a
-    flat vector (small MLP), then fuses both into a scalar value estimate.
+    flat vector (small MLP), then fuses both into a per-agent value estimate.
 
     The grid and poses are kept separate until after the CNN and pose-MLP,
     then concatenated and passed through the shared MLP head.
@@ -368,11 +380,13 @@ class CriticNetwork(nn.Module):
         grid_h: int = 32,
         grid_w: int = 32,
         cnn_out_dim: int = 128,
-        poses_dim: int = 16, 
+        poses_dim: int = 16,
+        num_agents: int = 1,
         hidden_dim: int = 256,
     ):
         super().__init__()
         self.grid_channels = int(grid_channels)
+        self.num_agents = int(num_agents)
 
         # Spatial branch — same CNN architecture as the actor
         self.cnn = CNNEncoder(grid_channels, grid_h, grid_w, cnn_out_dim)
@@ -391,7 +405,7 @@ class CriticNetwork(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, 1),
+            nn.Linear(hidden_dim, self.num_agents),
         )
 
         _orthogonal_init(self.cnn,      gain=1.0)

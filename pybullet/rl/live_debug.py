@@ -173,11 +173,16 @@ class LiveDebugWindow:
             "centroid_lat",
         ]
         for hotspot_idx in range(max(0, hotspot_top_k)):
+            labels.extend([f"hs{hotspot_idx}_valid", f"hs{hotspot_idx}_dx", f"hs{hotspot_idx}_dy"])
+            for teammate_idx in range(max(0, num_drones - 1)):
+                labels.extend(
+                    [
+                        f"hs{hotspot_idx}_tm{teammate_idx}_dx",
+                        f"hs{hotspot_idx}_tm{teammate_idx}_dy",
+                    ]
+                )
             labels.extend(
                 [
-                    f"hs{hotspot_idx}_valid",
-                    f"hs{hotspot_idx}_dx",
-                    f"hs{hotspot_idx}_dy",
                     f"hs{hotspot_idx}_dens",
                     f"hs{hotspot_idx}_age",
                 ]

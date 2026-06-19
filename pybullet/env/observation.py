@@ -762,6 +762,71 @@ class ObservationBuilder:
             self._splat_gaussian(shared, v, u, self.ego_sigma)
         return shared
 
+    def _normalized_target_offsets_from_principal(
+        self,
+        source_drone_state: Dict,
+        target_x: float,
+        target_y: float,
+    ) -> tuple[float, float]:
+        x, y, z = source_drone_state["position"]
+        yaw = float(source_drone_state["yaw"])
+        principal_x, principal_y = principal_point_world(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            camera_tilt_deg=self.camera_tilt_deg,
+        )
+        min_forward, max_forward = footprint_forward_extents(
+            z=z,
+            camera_tilt_deg=self.camera_tilt_deg,
+            vertical_fov_deg=self.vertical_fov_deg,
+        )
+        principal_forward, _ = world_to_drone_local(
+            principal_x,
+            principal_y,
+            x,
+            y,
+            yaw,
+        )
+        forward_norm_scale = max(
+            abs(min_forward - principal_forward),
+            abs(max_forward - principal_forward),
+            1e-6,
+        )
+        max_lateral_scale = max(
+            lateral_half_width_at_forward_distance(
+                forward=min_forward,
+                z=z,
+                horizontal_fov_deg=self.horizontal_fov_deg,
+            ),
+            lateral_half_width_at_forward_distance(
+                forward=principal_forward,
+                z=z,
+                horizontal_fov_deg=self.horizontal_fov_deg,
+            ),
+            lateral_half_width_at_forward_distance(
+                forward=max_forward,
+                z=z,
+                horizontal_fov_deg=self.horizontal_fov_deg,
+            ),
+            1e-6,
+        )
+        target_forward, target_lateral = world_to_drone_local(
+            target_x,
+            target_y,
+            x,
+            y,
+            yaw,
+        )
+        return (
+            max(
+                -1.0,
+                min(1.0, (target_forward - principal_forward) / forward_norm_scale),
+            ),
+            max(-1.0, min(1.0, target_lateral / max_lateral_scale)),
+        )
+
     def _build_gt_people_maps(
         self,
         people_positions,
@@ -1171,7 +1236,10 @@ class ObservationBuilder:
           [11] centroid_forward_offset_from_principal — normalised to [-1, 1]
           [12] centroid_lateral_offset_from_principal — normalised to [-1, 1]
           [13...] hotspot slots: [valid, hotspot_forward_offset_from_principal,
-                                  hotspot_lateral_offset_from_principal, density, age]
+                                  hotspot_lateral_offset_from_principal,
+                                  teammate0_hotspot_forward_offset_from_principal,
+                                  teammate0_hotspot_lateral_offset_from_principal,
+                                  ..., density, age]
                                   * hotspot_top_k
           [...] agent identity scalar — normalized to [-1, 1]
           [...] teammate blocks: [mask, rel_x, rel_y, rel_z, sin(yaw), cos(yaw)]
@@ -1181,57 +1249,15 @@ class ObservationBuilder:
           [...] command history (oldest→newest): [vx, vy, yaw_rate] * cmd_history_len
 
         Total:
-          13 + 5*hotspot_top_k + enable_agent_ids + 6*(num_drones-1)
+          13 + (5 + 2*(num_drones-1))*hotspot_top_k + enable_agent_ids + 6*(num_drones-1)
           + 5*status_history_seconds + 3*cmd_history_len values.
         """
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
-        principal_x, principal_y = principal_point_world(
-            x=x,
-            y=y,
-            z=z,
-            yaw=yaw,
-            camera_tilt_deg=self.camera_tilt_deg,
-        )
 
         x_min, x_max = self.x_min, self.x_max
         y_min, y_max = self.y_min, self.y_max
         area_diag = math.hypot(x_max - x_min, y_max - y_min)
-        min_forward, max_forward = footprint_forward_extents(
-            z=z,
-            camera_tilt_deg=self.camera_tilt_deg,
-            vertical_fov_deg=self.vertical_fov_deg,
-        )
-        principal_forward, _ = world_to_drone_local(
-            principal_x,
-            principal_y,
-            x,
-            y,
-            yaw,
-        )
-        forward_norm_scale = max(
-            abs(min_forward - principal_forward),
-            abs(max_forward - principal_forward),
-            1e-6,
-        )
-        max_lateral_scale = max(
-            lateral_half_width_at_forward_distance(
-                forward=min_forward,
-                z=z,
-                horizontal_fov_deg=self.horizontal_fov_deg,
-            ),
-            lateral_half_width_at_forward_distance(
-                forward=principal_forward,
-                z=z,
-                horizontal_fov_deg=self.horizontal_fov_deg,
-            ),
-            lateral_half_width_at_forward_distance(
-                forward=max_forward,
-                z=z,
-                horizontal_fov_deg=self.horizontal_fov_deg,
-            ),
-            1e-6,
-        )
 
         centroid_present = 0.0
         centroid_forward_offset = 0.0
@@ -1244,20 +1270,12 @@ class ObservationBuilder:
             centroid_x, centroid_y = geometric_median(
                 [(det[0], det[1]) for det in centroid_detections]
             )
-            centroid_forward, centroid_lateral = world_to_drone_local(
-                centroid_x,
-                centroid_y,
-                x,
-                y,
-                yaw,
-            )
-            centroid_forward_offset = max(
-                -1.0,
-                min(1.0, (centroid_forward - principal_forward) / forward_norm_scale),
-            )
-            centroid_lateral_offset = max(
-                -1.0,
-                min(1.0, centroid_lateral / max_lateral_scale),
+            centroid_forward_offset, centroid_lateral_offset = (
+                self._normalized_target_offsets_from_principal(
+                    drone_state,
+                    centroid_x,
+                    centroid_y,
+                )
             )
 
         vec = [
@@ -1277,28 +1295,35 @@ class ObservationBuilder:
         ]
 
         hotspot_items = [] if hide_person_features else (hotspots or [])
+        other_states = other_drone_states or []
+        hotspot_slot_width = 5 + 2 * max(0, self.num_drones - 1)
         for idx in range(self.hotspot_top_k):
             if idx < len(hotspot_items):
                 hx, hy, hdensity, hage = hotspot_items[idx]
-                hotspot_forward, hotspot_lateral = world_to_drone_local(
-                    hx,
-                    hy,
-                    x,
-                    y,
-                    yaw,
-                )
                 vec += [
                     1.0,
-                    max(
-                        -1.0,
-                        min(1.0, (hotspot_forward - principal_forward) / forward_norm_scale),
+                    *self._normalized_target_offsets_from_principal(
+                        drone_state,
+                        hx,
+                        hy,
                     ),
-                    max(-1.0, min(1.0, hotspot_lateral / max_lateral_scale)),
+                ]
+                for other in other_states:
+                    vec += list(
+                        self._normalized_target_offsets_from_principal(
+                            other,
+                            hx,
+                            hy,
+                        )
+                    )
+                for _ in range(max(0, self.num_drones - 1 - len(other_states))):
+                    vec += [0.0, 0.0]
+                vec += [
                     float(hdensity),
                     float(hage),
                 ]
             else:
-                vec += [0.0, 0.0, 0.0, 0.0, 0.0]
+                vec += [0.0] * hotspot_slot_width
 
         if self.enable_agent_ids:
             if self.num_drones > 1:
@@ -1309,7 +1334,6 @@ class ObservationBuilder:
                 agent_id_feature = 0.0
             vec.append(agent_id_feature)
 
-        other_states = other_drone_states or []
         for other in other_states:
             ox, oy, oz = other["position"]
             oyaw = other["yaw"]

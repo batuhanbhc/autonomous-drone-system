@@ -25,15 +25,15 @@ class SharedConfig:
     z_min: float = 0.3
     z_max: float = 8.0
     drone_height: float = 6.0
-    num_drones: int = 2
+    num_drones: int = 3
     random_spawn: bool = False
-    drone_spawn_radius: float = 5.0
+    drone_spawn_radius: float = 10.0
     num_people: int = 20
     min_people: int = 5
-    max_people: int = 30
+    max_people: int = 40
     episode_steps: int = 512
-    search_phase_seconds: float = 20.0
-    max_groups: int = 2
+    search_phase_seconds: float = 30.0
+    max_groups: int = 3
     num_group_regions: int = 4
     drone_wall_margin: float = 0.0
     person_spawn_margin: float = 5.0
@@ -74,16 +74,17 @@ class SharedConfig:
     yaw_rate_tau_s: float = 0.5
     cmd_history_len: int = 5
     status_history_seconds: int = 5
-    hotspot_top_k: int = 2
+    hotspot_top_k: int = 0
     enable_agent_ids: bool = True
     hotspot_min_density: float = 1.5
     count_map_compression_scale: float = 3
     hotspot_suppression_radius_scale: float = 5.0
     hotspot_suppression_radius_min_cells: int = 4
-    reward_top_k_groups: int = 2
+    reward_top_k_groups: int = 3
     reward_person_weight_mode: str = "base_plus_group"
-    reward_wc: float = 1.0
+    reward_wc: float = 3.0
     reward_coverage_exponent: float = 1.0
+    reward_wcoverage_contrib: float = 1.0
     reward_wqual: float = 1.0
     reward_wd: float = 0.0
     reward_wo: float = 0.0
@@ -101,8 +102,8 @@ class SharedConfig:
     reward_quality_gamma: float = 1.5
     reward_wcompletion: float = 0.0
     reward_completion_power: float = 2.0
-    reward_boundary_margin: float = 2.0
-    reward_drone_closeness_margin: float = 1.0
+    reward_boundary_margin: float = 5.0
+    reward_drone_closeness_margin: float = 5.0
     reward_fov_margin: float = 1.0
     debug_observation_plots: bool = False
     debug_observation_plot_every: int = 25
@@ -122,7 +123,7 @@ class TrainConfig:
     gae_lambda: float = 0.95
     lr_actor: float = 1.0e-4
     lr_critic: float = 1.0e-4
-    entropy_coef: float = 0.0005
+    entropy_coef: float = 0.002
     value_coef: float = 0.5
     anneal_lr: bool = True
     save_dir: str = "checkpoints"
@@ -156,6 +157,7 @@ class ModelConfig:
     grid_w: int = 60
     cnn_out_dim: int = 128
     hidden_dim: int = 256
+    actor_use_branched_cnn: bool = False
 
 
 @dataclass(frozen=True)
@@ -202,11 +204,28 @@ def infer_actor_state_grid_channels(actor_state: dict) -> int:
     raise KeyError("Could not infer actor grid channels from checkpoint state dict.")
 
 
+def infer_actor_state_use_branched_cnn(actor_state: dict) -> bool:
+    people_key = "cnn.people_branch.net.0.conv.weight"
+    context_key = "cnn.context_branch.net.0.conv.weight"
+    legacy_key = "cnn.net.0.conv.weight"
+    if people_key in actor_state or context_key in actor_state:
+        return True
+    if legacy_key in actor_state:
+        return False
+    raise KeyError("Could not infer actor CNN layout from checkpoint state dict.")
+
+
 def infer_checkpoint_actor_grid_channels(ckpt: dict) -> int:
     if "grid_channels" in ckpt:
         return int(ckpt["grid_channels"])
     actor_state = ckpt["actor"]
     return infer_actor_state_grid_channels(actor_state)
+
+
+def infer_checkpoint_actor_use_branched_cnn(ckpt: dict) -> bool:
+    if "actor_use_branched_cnn" in ckpt:
+        return bool(ckpt["actor_use_branched_cnn"])
+    return infer_actor_state_use_branched_cnn(ckpt["actor"])
 
 
 def infer_checkpoint_include_persistent_coverage_channel(ckpt: dict) -> bool:
@@ -350,6 +369,16 @@ def infer_critic_grid_channels(
     )
 
 
+def hotspot_local_slot_dim(
+    num_drones: int,
+    include_teammate_offsets: bool = True,
+) -> int:
+    base_slot_dim = 5
+    if not include_teammate_offsets:
+        return base_slot_dim
+    return base_slot_dim + (2 * max(0, int(num_drones) - 1))
+
+
 def infer_checkpoint_hotspot_top_k(
     ckpt: dict,
     num_drones: int,
@@ -378,13 +407,25 @@ def infer_checkpoint_hotspot_top_k(
         + 3 * int(cmd_history_len)
     )
     extra_dim = base_local_dim - static_base_dim
-    if extra_dim < 0 or extra_dim % 5 != 0:
+    hotspot_slot_dim = hotspot_local_slot_dim(
+        num_drones,
+        include_teammate_offsets=bool(
+            ckpt.get("hotspot_include_teammate_offsets", False)
+        ),
+    )
+    if extra_dim >= 0 and extra_dim % hotspot_slot_dim == 0:
+        return extra_dim // hotspot_slot_dim
+    legacy_hotspot_slot_dim = hotspot_local_slot_dim(
+        num_drones,
+        include_teammate_offsets=False,
+    )
+    if extra_dim < 0 or extra_dim % legacy_hotspot_slot_dim != 0:
         raise ValueError(
             "Could not infer hotspot_top_k from checkpoint local_dim: "
             f"full_local_dim={full_local_dim}, base_local_dim={base_local_dim}, "
             f"static_base_dim={static_base_dim}"
         )
-    return extra_dim // 5
+    return extra_dim // legacy_hotspot_slot_dim
 
 
 def infer_checkpoint_status_history_seconds(ckpt: dict) -> int:
@@ -416,13 +457,19 @@ def infer_checkpoint_cmd_history_len(
     base_local_dim = full_local_dim - move_mask_dim
     hotspot_top_k = int(ckpt.get("hotspot_top_k", 0))
     enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
+    hotspot_slot_dim = hotspot_local_slot_dim(
+        num_drones,
+        include_teammate_offsets=bool(
+            ckpt.get("hotspot_include_teammate_offsets", False)
+        ),
+    )
     static_base_dim = (
         (
             13 if infer_checkpoint_local_visited_fraction_feature(ckpt)
             else (12 if infer_checkpoint_local_visible_delta_feature(ckpt) else 11)
         )
         + int(enable_agent_ids)
-        + 5 * hotspot_top_k
+        + hotspot_slot_dim * hotspot_top_k
         + 6 * (int(num_drones) - 1)
     )
     extra_dim = base_local_dim - static_base_dim
@@ -561,6 +608,15 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--grid_h", type=int, default=MODEL_DEFAULTS.grid_h)
     parser.add_argument("--grid_w", type=int, default=MODEL_DEFAULTS.grid_w)
+    parser.add_argument(
+        "--actor_use_branched_cnn",
+        action=argparse.BooleanOptionalAction,
+        default=MODEL_DEFAULTS.actor_use_branched_cnn,
+        help=(
+            "Use separate actor CNN branches for people-focused and context channels. "
+            "Disabled by default to use a single combined CNN like the critic."
+        ),
+    )
     parser.add_argument("--blob_sigma", type=float, default=SHARED_DEFAULTS.blob_sigma)
     parser.add_argument("--ego_sigma", type=float, default=SHARED_DEFAULTS.ego_sigma)
     parser.add_argument(
@@ -726,6 +782,16 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=SHARED_DEFAULTS.reward_coverage_exponent,
         help="Exponent applied to the coverage ratio before the coverage reward is used.",
+    )
+    parser.add_argument(
+        "--reward_wcoverage_contrib",
+        type=float,
+        default=SHARED_DEFAULTS.reward_wcoverage_contrib,
+        help=(
+            "Weight for per-drone leave-one-out marginal coverage contribution. "
+            "A drone is rewarded for the team coverage that would disappear "
+            "if that drone were removed."
+        ),
     )
     parser.add_argument("--reward_wqual", type=float, default=SHARED_DEFAULTS.reward_wqual)
     parser.add_argument("--reward_wd", type=float, default=SHARED_DEFAULTS.reward_wd)
@@ -1050,6 +1116,7 @@ def build_env_kwargs(
         "count_memory_decay_grace_period_seconds": args.count_memory_decay_grace_period_seconds,
         "reward_wc": args.reward_wc,
         "reward_coverage_exponent": args.reward_coverage_exponent,
+        "reward_wcoverage_contrib": args.reward_wcoverage_contrib,
         "reward_wqual": args.reward_wqual,
         "reward_wd": args.reward_wd,
         "reward_wo": args.reward_wo,
@@ -1115,14 +1182,18 @@ def local_dim(
     #                         delta_visible, visited_fraction)
     #   3 phase scalars (search progress, is_search_phase, is_coverage_phase)
     #   3 explicit detection-centroid vs principal-point alignment scalars
-    #   5 scalars per hotspot slot: [valid, hotspot_forward_offset_from_principal,
-    #                                hotspot_lateral_offset_from_principal, density, age]
+    #   (5 + 2*(num_drones-1)) scalars per hotspot slot:
+    #       [valid, own hotspot_forward_offset_from_principal,
+    #        own hotspot_lateral_offset_from_principal,
+    #        teammate0 hotspot_forward_offset_from_principal,
+    #        teammate0 hotspot_lateral_offset_from_principal,
+    #        ..., density, age]
     #   6 scalars per teammate slot
     #   5 scalars per 1 Hz status-history entry
     #   3 scalars per legacy command-history entry (vx, vy, yaw_rate)
     base_dim = (
         13
-        + 5 * int(hotspot_top_k)
+        + hotspot_local_slot_dim(num_drones) * int(hotspot_top_k)
         + int(bool(enable_agent_ids))
         + 6 * (num_drones - 1)
         + 5 * int(status_history_seconds)
@@ -1185,6 +1256,7 @@ def actor_kwargs(
     include_local_recent_count_memory_channel: bool = SHARED_DEFAULTS.include_local_recent_count_memory_channel,
     include_instant_fov_channels: bool = SHARED_DEFAULTS.include_instant_fov_channels,
     include_persistent_coverage_channel: bool = SHARED_DEFAULTS.include_persistent_coverage_channel,
+    actor_use_branched_cnn: bool = MODEL_DEFAULTS.actor_use_branched_cnn,
 ) -> Dict[str, Any]:
     return {
         "local_dim": local_dim(
@@ -1210,6 +1282,7 @@ def actor_kwargs(
         "include_persistent_coverage_channel": bool(
             include_persistent_coverage_channel
         ),
+        "use_branched_cnn": bool(actor_use_branched_cnn),
     }
 
 
@@ -1267,6 +1340,11 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
             args,
             "include_persistent_coverage_channel",
             SHARED_DEFAULTS.include_persistent_coverage_channel,
+        ),
+        actor_use_branched_cnn=getattr(
+            args,
+            "actor_use_branched_cnn",
+            MODEL_DEFAULTS.actor_use_branched_cnn,
         ),
     )
     kwargs.update(
