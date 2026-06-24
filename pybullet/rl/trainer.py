@@ -24,6 +24,7 @@ from config import (
     infer_checkpoint_actor_use_branched_cnn,
     infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hide_person_features_during_search,
+    infer_checkpoint_include_density_summary_scalars,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_persistent_coverage_channel,
@@ -305,6 +306,9 @@ class MAPPOTrainer:
                 cmd_history_len=self.env.cmd_history_len,
                 status_history_seconds=getattr(self.env, "status_history_seconds", 0),
                 hotspot_top_k=getattr(self.env.obs_builder, "hotspot_top_k", 0),
+                include_density_summary_scalars=bool(
+                    getattr(self.env.obs_builder, "include_density_summary_scalars", False)
+                ),
                 actor_channel_names=getattr(self.env.obs_builder, "actor_channel_names", None),
             )
         )
@@ -1062,6 +1066,9 @@ class MAPPOTrainer:
                 "cmd_history_len": getattr(self.env, "cmd_history_len", 0),
                 "status_history_seconds": getattr(self.env, "status_history_seconds", 0),
                 "hotspot_top_k": getattr(self.env.obs_builder, "hotspot_top_k", 0),
+                "include_density_summary_scalars": bool(
+                    getattr(self.env.obs_builder, "include_density_summary_scalars", False)
+                ),
                 "hotspot_include_teammate_offsets": True,
                 "enable_agent_ids": bool(
                     getattr(self.env.obs_builder, "enable_agent_ids", False)
@@ -1126,6 +1133,9 @@ class MAPPOTrainer:
             infer_checkpoint_hide_person_features_during_search(ckpt)
         )
         ckpt_enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
+        ckpt_include_density_summary_scalars = (
+            infer_checkpoint_include_density_summary_scalars(ckpt)
+        )
         ckpt_reward_person_weight_mode = infer_checkpoint_reward_person_weight_mode(
             ckpt
         )
@@ -1157,6 +1167,9 @@ class MAPPOTrainer:
         current_enable_agent_ids = bool(
             getattr(self.env.obs_builder, "enable_agent_ids", False)
         )
+        current_include_density_summary_scalars = bool(
+            getattr(self.env.obs_builder, "include_density_summary_scalars", False)
+        )
         current_reward_person_weight_mode = str(
             getattr(self.env, "reward_person_weight_mode", "top_k_only")
         )
@@ -1172,6 +1185,17 @@ class MAPPOTrainer:
                 "observation layout: "
                 f"checkpoint enable_agent_ids={ckpt_enable_agent_ids}, "
                 f"current={current_enable_agent_ids}."
+            )
+        if (
+            ckpt_include_density_summary_scalars
+            != current_include_density_summary_scalars
+        ):
+            raise ValueError(
+                "Checkpoint density-summary local feature setting does not match "
+                "the current observation layout: "
+                f"checkpoint include_density_summary_scalars="
+                f"{ckpt_include_density_summary_scalars}, "
+                f"current={current_include_density_summary_scalars}."
             )
         if ckpt_grid_channels != current_grid_channels:
             raise ValueError(

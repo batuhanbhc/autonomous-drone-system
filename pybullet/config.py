@@ -75,7 +75,8 @@ class SharedConfig:
     cmd_history_len: int = 5
     status_history_seconds: int = 5
     hotspot_top_k: int = 0
-    enable_agent_ids: bool = True
+    include_density_summary_scalars: bool = True
+    enable_agent_ids: bool = False
     hotspot_min_density: float = 1.5
     count_map_compression_scale: float = 3
     hotspot_suppression_radius_scale: float = 5.0
@@ -123,7 +124,7 @@ class TrainConfig:
     gae_lambda: float = 0.95
     lr_actor: float = 1.0e-4
     lr_critic: float = 1.0e-4
-    entropy_coef: float = 0.002
+    entropy_coef: float = 0.003
     value_coef: float = 0.5
     anneal_lr: bool = True
     save_dir: str = "checkpoints"
@@ -297,6 +298,10 @@ def infer_checkpoint_enable_agent_ids(ckpt: dict) -> bool:
     return bool(ckpt.get("enable_agent_ids", False))
 
 
+def infer_checkpoint_include_density_summary_scalars(ckpt: dict) -> bool:
+    return bool(ckpt.get("include_density_summary_scalars", False))
+
+
 def infer_base_actor_grid_channels(
     include_local_recent_count_memory_channel: bool,
     include_persistent_coverage_channel: bool,
@@ -401,6 +406,7 @@ def infer_checkpoint_hotspot_top_k(
     enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
     static_base_dim = (
         base_feature_dim
+        + 2 * int(infer_checkpoint_include_density_summary_scalars(ckpt))
         + int(enable_agent_ids)
         + 6 * (int(num_drones) - 1)
         + 5 * int(status_history_seconds)
@@ -468,6 +474,7 @@ def infer_checkpoint_cmd_history_len(
             13 if infer_checkpoint_local_visited_fraction_feature(ckpt)
             else (12 if infer_checkpoint_local_visible_delta_feature(ckpt) else 11)
         )
+        + 2 * int(infer_checkpoint_include_density_summary_scalars(ckpt))
         + int(enable_agent_ids)
         + hotspot_slot_dim * hotspot_top_k
         + 6 * (int(num_drones) - 1)
@@ -722,6 +729,15 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=SHARED_DEFAULTS.hotspot_top_k,
         help="Number of top historic-density hotspots encoded into each drone's local vector.",
+    )
+    parser.add_argument(
+        "--include_density_summary_scalars",
+        action=argparse.BooleanOptionalAction,
+        default=SHARED_DEFAULTS.include_density_summary_scalars,
+        help=(
+            "Append raw-density summary scalars to each local vector: "
+            "shared running peak density since coverage start and current per-drone peak density."
+        ),
     )
     parser.add_argument(
         "--enable_agent_ids",
@@ -1142,6 +1158,7 @@ def build_env_kwargs(
         "cmd_history_len": args.cmd_history_len,
         "status_history_seconds": args.status_history_seconds,
         "hotspot_top_k": args.hotspot_top_k,
+        "include_density_summary_scalars": args.include_density_summary_scalars,
         "enable_agent_ids": args.enable_agent_ids,
         "hotspot_min_density": args.hotspot_min_density,
         "count_map_compression_scale": args.count_map_compression_scale,
@@ -1175,6 +1192,7 @@ def local_dim(
     cmd_history_len: int = 0,
     status_history_seconds: int = 0,
     hotspot_top_k: int = 0,
+    include_density_summary_scalars: bool = SHARED_DEFAULTS.include_density_summary_scalars,
     enable_agent_ids: bool = SHARED_DEFAULTS.enable_agent_ids,
 ) -> int:
     # Base local features:
@@ -1182,6 +1200,9 @@ def local_dim(
     #                         delta_visible, visited_fraction)
     #   3 phase scalars (search progress, is_search_phase, is_coverage_phase)
     #   3 explicit detection-centroid vs principal-point alignment scalars
+    #   2 raw density-summary scalars:
+    #       shared running peak density since coverage start,
+    #       current per-drone peak density
     #   (5 + 2*(num_drones-1)) scalars per hotspot slot:
     #       [valid, own hotspot_forward_offset_from_principal,
     #        own hotspot_lateral_offset_from_principal,
@@ -1193,6 +1214,7 @@ def local_dim(
     #   3 scalars per legacy command-history entry (vx, vy, yaw_rate)
     base_dim = (
         13
+        + 2 * int(bool(include_density_summary_scalars))
         + hotspot_local_slot_dim(num_drones) * int(hotspot_top_k)
         + int(bool(enable_agent_ids))
         + 6 * (num_drones - 1)
@@ -1249,6 +1271,7 @@ def actor_kwargs(
     cmd_history_len: int = 0,
     status_history_seconds: int = 0,
     hotspot_top_k: int = 0,
+    include_density_summary_scalars: bool = SHARED_DEFAULTS.include_density_summary_scalars,
     enable_agent_ids: bool = SHARED_DEFAULTS.enable_agent_ids,
     grid_channels: int | None = None,
     grid_h: int = MODEL_DEFAULTS.grid_h,
@@ -1265,6 +1288,7 @@ def actor_kwargs(
             cmd_history_len,
             status_history_seconds,
             hotspot_top_k,
+            include_density_summary_scalars,
             enable_agent_ids,
         ),
         "grid_channels": MODEL_DEFAULTS.grid_channels if grid_channels is None else int(grid_channels),
@@ -1322,6 +1346,11 @@ def trainer_kwargs(args: argparse.Namespace, action_space: DiscreteActionSpace) 
         getattr(args, "cmd_history_len", 0),
         getattr(args, "status_history_seconds", 0),
         getattr(args, "hotspot_top_k", 0),
+        getattr(
+            args,
+            "include_density_summary_scalars",
+            SHARED_DEFAULTS.include_density_summary_scalars,
+        ),
         getattr(args, "enable_agent_ids", SHARED_DEFAULTS.enable_agent_ids),
         grid_channels=actor_grid_channels,
         grid_h=getattr(args, "grid_h", MODEL_DEFAULTS.grid_h),

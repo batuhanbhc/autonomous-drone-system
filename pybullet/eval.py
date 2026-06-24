@@ -25,6 +25,7 @@ from config import (
     infer_checkpoint_cmd_history_len,
     infer_checkpoint_enable_agent_ids,
     infer_checkpoint_hide_person_features_during_search,
+    infer_checkpoint_include_density_summary_scalars,
     infer_checkpoint_include_local_recent_count_memory_channel,
     infer_checkpoint_include_instant_fov_channels,
     infer_checkpoint_include_shared_count_memory_staleness_channel,
@@ -47,11 +48,21 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_torch_device(requested_device: str) -> torch.device:
+    device = torch.device(requested_device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        print(
+            "Requested CUDA device is unavailable; falling back to CPU for eval."
+        )
+        return torch.device("cpu")
+    return device
+
+
 def infer_trained_num_drones(ckpt: dict) -> int:
     enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
 
     def infer_from_base_dim(total_local_dim: int) -> int | None:
-        for base_dim in (13, 12, 11, 9, 8, 6):
+        for base_dim in (15, 14, 13, 12, 11, 10, 9, 8, 6):
             adjusted_base_dim = base_dim + int(enable_agent_ids)
             if (
                 total_local_dim >= adjusted_base_dim
@@ -242,7 +253,7 @@ def run_episode(env, actor, action_space, device, args, live_debug=None):
 
 def main():
     args   = parse_args()
-    device = torch.device(args.device)
+    device = resolve_torch_device(args.device)
     ckpt = torch.load(args.load, map_location=device)
     trained_num_drones = infer_trained_num_drones(ckpt)
     trained_grid_channels = infer_checkpoint_actor_grid_channels(ckpt)
@@ -259,6 +270,9 @@ def main():
     )
     trained_include_local_recent_count_memory_channel = (
         infer_checkpoint_include_local_recent_count_memory_channel(ckpt)
+    )
+    trained_include_density_summary_scalars = (
+        infer_checkpoint_include_density_summary_scalars(ckpt)
     )
     trained_local_people_map_mode = infer_checkpoint_local_people_map_mode(ckpt)
     args.enable_agent_ids = infer_checkpoint_enable_agent_ids(ckpt)
@@ -307,6 +321,7 @@ def main():
             ),
             "reward_person_weight_mode": trained_reward_person_weight_mode,
             "hotspot_top_k": trained_hotspot_top_k,
+            "include_density_summary_scalars": trained_include_density_summary_scalars,
         },
     )
     actor_config = actor_kwargs(
@@ -315,6 +330,7 @@ def main():
         cmd_history_len=args.cmd_history_len,
         status_history_seconds=args.status_history_seconds,
         hotspot_top_k=trained_hotspot_top_k,
+        include_density_summary_scalars=trained_include_density_summary_scalars,
         grid_channels=trained_grid_channels,
         grid_h=args.grid_h,
         grid_w=args.grid_w,
@@ -347,6 +363,7 @@ def main():
                 cmd_history_len=args.cmd_history_len,
                 status_history_seconds=args.status_history_seconds,
                 hotspot_top_k=trained_hotspot_top_k,
+                include_density_summary_scalars=trained_include_density_summary_scalars,
                 move_mask_dim=len(action_space.vx_bins) * len(action_space.vy_bins),
                 actor_channel_names=env.obs_builder.actor_channel_names,
             )

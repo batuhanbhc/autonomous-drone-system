@@ -161,6 +161,7 @@ class ObservationBuilder:
         cmd_history_len: int = 0,
         status_history_seconds: int = 4,
         hotspot_top_k: int = 3,
+        include_density_summary_scalars: bool = False,
         enable_agent_ids: bool = True,
         hotspot_min_density: float = 1.5,
         count_map_compression_scale: float = 1.5,
@@ -232,6 +233,7 @@ class ObservationBuilder:
         self.cmd_history_len = int(cmd_history_len)
         self.status_history_seconds = int(status_history_seconds)
         self.hotspot_top_k = max(0, int(hotspot_top_k))
+        self.include_density_summary_scalars = bool(include_density_summary_scalars)
         self.enable_agent_ids = bool(enable_agent_ids)
         self.hotspot_min_density = float(hotspot_min_density)
         self.count_map_compression_scale = float(count_map_compression_scale)
@@ -485,6 +487,7 @@ class ObservationBuilder:
             f"  Instant FOV channels: {'enabled' if self.include_instant_fov_channels else 'disabled'}\n"
             f"  Exposed spatial-memory channels: {'enabled' if self.exposes_spatial_memory_channels else 'disabled'}\n"
             f"  Persistent coverage channel: {'enabled' if self.include_persistent_coverage_channel else 'disabled'}\n"
+            f"  Density summary scalars: {'enabled' if self.include_density_summary_scalars else 'disabled'}\n"
             f"  Historic count memory channel: enabled\n"
             f"  Count-memory decay grace: {self.count_memory_decay_grace_period_seconds}s "
             f"= {self.count_memory_decay_grace_steps} steps\n"
@@ -519,6 +522,8 @@ class ObservationBuilder:
         self.local_recent_count_memory_maps_snapshot = np.zeros(
             (num_drones, grid_h, grid_w), dtype=np.float32
         )
+        self.shared_coverage_peak_density_raw = 0.0
+        self.local_current_peak_density_raw = np.zeros((num_drones,), dtype=np.float32)
         self.gt_people_binary_snapshot = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.gt_people_density_snapshot = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.gt_reward_weighted_people_density_snapshot = np.zeros(
@@ -550,6 +555,8 @@ class ObservationBuilder:
         self.instant_maps_snapshot = self.people_detect_instant.copy()
         self.local_people_maps_snapshot = self.people_detect_instant.copy()
         self.local_recent_count_memory_maps_snapshot.fill(0.0)
+        self.shared_coverage_peak_density_raw = 0.0
+        self.local_current_peak_density_raw.fill(0.0)
         self.gt_people_binary_snapshot.fill(0.0)
         self.gt_people_density_snapshot.fill(0.0)
         self.gt_reward_weighted_people_density_snapshot.fill(0.0)
@@ -1092,6 +1099,10 @@ class ObservationBuilder:
             count_density_obs,
             out=self.people_count_memory_historic,
         )
+        self.local_current_peak_density_raw[...] = np.max(
+            per_drone_count_density_obs,
+            axis=(1, 2),
+        ).astype(np.float32)
         count_density_obs = self.compress_count_map(count_density_obs)
         per_drone_count_density_obs = self.compress_count_map(
             per_drone_count_density_obs
@@ -1217,6 +1228,8 @@ class ObservationBuilder:
         status_history: Optional[deque] = None,
         cmd_history: Optional[deque] = None,
         hide_person_features: bool = False,
+        shared_coverage_peak_density_raw: float = 0.0,
+        local_current_peak_density_raw: float = 0.0,
     ) -> np.ndarray:
         """
         Local feature vector for one drone.
@@ -1235,7 +1248,9 @@ class ObservationBuilder:
           [10] detection_centroid_present
           [11] centroid_forward_offset_from_principal — normalised to [-1, 1]
           [12] centroid_lateral_offset_from_principal — normalised to [-1, 1]
-          [13...] hotspot slots: [valid, hotspot_forward_offset_from_principal,
+          [13] shared_coverage_peak_density_raw (if enabled)
+          [14] local_current_peak_density_raw (if enabled)
+          [15...] hotspot slots: [valid, hotspot_forward_offset_from_principal,
                                   hotspot_lateral_offset_from_principal,
                                   teammate0_hotspot_forward_offset_from_principal,
                                   teammate0_hotspot_lateral_offset_from_principal,
@@ -1249,8 +1264,9 @@ class ObservationBuilder:
           [...] command history (oldest→newest): [vx, vy, yaw_rate] * cmd_history_len
 
         Total:
-          13 + (5 + 2*(num_drones-1))*hotspot_top_k + enable_agent_ids + 6*(num_drones-1)
-          + 5*status_history_seconds + 3*cmd_history_len values.
+          13 + 2*include_density_summary_scalars
+          + (5 + 2*(num_drones-1))*hotspot_top_k + enable_agent_ids
+          + 6*(num_drones-1) + 5*status_history_seconds + 3*cmd_history_len values.
         """
         x, y, z = drone_state["position"]
         yaw = drone_state["yaw"]
@@ -1265,6 +1281,12 @@ class ObservationBuilder:
         visible_count_norm = float(num_visible) / self.people_count_normalizer
         delta_visible_value = float(delta_visible)
         centroid_detections = [] if hide_person_features else (detections or [])
+        shared_peak_density_value = (
+            0.0 if hide_person_features else float(shared_coverage_peak_density_raw)
+        )
+        local_peak_density_value = (
+            0.0 if hide_person_features else float(local_current_peak_density_raw)
+        )
         if centroid_detections:
             centroid_present = 1.0
             centroid_x, centroid_y = geometric_median(
@@ -1293,6 +1315,11 @@ class ObservationBuilder:
             centroid_forward_offset,
             centroid_lateral_offset,
         ]
+        if self.include_density_summary_scalars:
+            vec += [
+                shared_peak_density_value,
+                local_peak_density_value,
+            ]
 
         hotspot_items = [] if hide_person_features else (hotspots or [])
         other_states = other_drone_states or []
@@ -1439,6 +1466,11 @@ class ObservationBuilder:
         hide_person_features = self._actor_hides_person_features(
             phase_context["is_search_phase"]
         )
+        if float(phase_context["is_coverage_phase"]) > 0.5:
+            self.shared_coverage_peak_density_raw = max(
+                float(self.shared_coverage_peak_density_raw),
+                float(np.max(self.people_count_density)),
+            )
         actor_shared_people = self._mask_actor_shared_people(
             shared_people,
             hide_person_features=hide_person_features,
@@ -1470,6 +1502,8 @@ class ObservationBuilder:
                 detections=detections_per_drone[i],
                 other_drone_states=other_states,
                 hotspots=hotspots,
+                shared_coverage_peak_density_raw=self.shared_coverage_peak_density_raw,
+                local_current_peak_density_raw=self.local_current_peak_density_raw[i],
                 status_history=self._status_histories[i] if self.status_history_seconds > 0 else None,
                 cmd_history=self._cmd_histories[i] if self.cmd_history_len > 0 else None,
                 hide_person_features=False,
@@ -1486,6 +1520,8 @@ class ObservationBuilder:
                 detections=detections_per_drone[i],
                 other_drone_states=other_states,
                 hotspots=hotspots,
+                shared_coverage_peak_density_raw=self.shared_coverage_peak_density_raw,
+                local_current_peak_density_raw=self.local_current_peak_density_raw[i],
                 status_history=self._status_histories[i] if self.status_history_seconds > 0 else None,
                 cmd_history=self._cmd_histories[i] if self.cmd_history_len > 0 else None,
                 hide_person_features=hide_person_features,

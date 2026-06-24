@@ -15,6 +15,7 @@ class LiveDebugConfig:
     cmd_history_len: int = 0
     status_history_seconds: int = 0
     hotspot_top_k: int = 0
+    include_density_summary_scalars: bool = False
     move_mask_dim: int = 0
     actor_channel_names: Sequence[str] | None = None
 
@@ -37,6 +38,7 @@ class LiveDebugWindow:
             config.cmd_history_len,
             config.status_history_seconds,
             config.hotspot_top_k,
+            config.include_density_summary_scalars,
             config.move_mask_dim,
         )
         self._available = False
@@ -155,6 +157,7 @@ class LiveDebugWindow:
         cmd_history_len: int,
         status_history_seconds: int,
         hotspot_top_k: int,
+        include_density_summary_scalars: bool,
         move_mask_dim: int,
     ) -> list[str]:
         labels = [
@@ -172,6 +175,13 @@ class LiveDebugWindow:
             "centroid_fwd",
             "centroid_lat",
         ]
+        if include_density_summary_scalars:
+            labels.extend(
+                [
+                    "shared_cov_peak_density_raw",
+                    "local_cur_peak_density_raw",
+                ]
+            )
         for hotspot_idx in range(max(0, hotspot_top_k)):
             labels.extend([f"hs{hotspot_idx}_valid", f"hs{hotspot_idx}_dx", f"hs{hotspot_idx}_dy"])
             for teammate_idx in range(max(0, num_drones - 1)):
